@@ -135,7 +135,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func clickProject(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String, let p = projects.first(where: { $0.id == id }) else { return }
         switch p.state {
-        case "available" where p.canOpen, "partial" where p.canOpen:
+        case "available" where p.canOpen, "partial" where p.canOpen, "external" where p.canOpen:
             request("POST", "api/projects/\(id)/open") { _, _ in }
         case "stopped" where !p.observeOnly:
             request("POST", "api/projects/\(id)/start", body: ["open": true]) { [weak self] _, _ in self?.refresh() }

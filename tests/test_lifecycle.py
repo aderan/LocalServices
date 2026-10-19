@@ -160,22 +160,61 @@ class LifecycleTest(Base):
         self.ctl.start("fx")
         self.assertTrue(self.wait_state("available"))
 
-    def test_3_conflict_with_external_instance(self):
+    def test_3_external_instance_adopt_takeover_and_foreign(self):
         self.ctl.stop("fx")
         self.assertTrue(self.wait_state("stopped"))
-        ext = subprocess.Popen([PY, str(FIXTURE), str(self.port)], cwd=self.src,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        # same project started elsewhere: usable as-is, never killed without an explicit takeover
+        ext = subprocess.Popen([PY, str(FIXTURE), str(self.port), "--busy-file", str(self.busy)], cwd=self.src, **quiet)
+        try:
+            self.assertTrue(wait(lambda: procs.tcp_ok(f"127.0.0.1:{self.port}"), 10))
+            self.assertFalse(self.ctl.start("fx")["accepted"])
+            self.assertTrue(self.wait_state("external"), self.status())
+            st = self.status()
+            self.assertIn(str(ext.pid), st["reason"])
+            self.assertTrue(st["can_open"] and st["can_takeover"], st)
+            self.assertIsNone(ext.poll(), "external process must not be killed")
+            # takeover requested during active work: deferred, instance keeps running
+            self.busy.write_text("1")
+            r = self.ctl.takeover("fx")
+            self.assertFalse(r["accepted"])
+            self.assertIn("空闲后", r["message"])
+            self.ctl.reconcile()
+            time.sleep(1)
+            self.assertIsNone(ext.poll())
+            self.assertIn("空闲后自动接管", self.status()["reason"])
+            # work finished: the pending takeover applies at the next reconcile
+            self.busy.unlink()
+            self.ctl.reconcile()
+            self.assertTrue(wait(lambda: ext.poll() is not None, 30), "external instance was not stopped")
+            self.assertTrue(self.wait_state("available"), self.status())
+            pid = launchd.info(self.ctl.label(self.ctl.projects["fx"], self.ctl.projects["fx"].components[0])).pid
+            self.assertIn(procs.listeners().get(self.port), procs.descendants(pid, procs.snapshot()))
+        finally:
+            if ext.poll() is None:
+                ext.terminate()
+            ext.wait()
+
+        # unrelated process holding our port: conflict, takeover refused, left untouched
+        self.ctl.stop("fx")
+        self.assertTrue(self.wait_state("stopped"))
+        other = TMP / "unrelated"
+        other.mkdir(exist_ok=True)
+        foreign = subprocess.Popen([PY, str(FIXTURE), str(self.port)], cwd=other, **quiet)
         try:
             self.assertTrue(wait(lambda: procs.tcp_ok(f"127.0.0.1:{self.port}"), 10))
             self.ctl.start("fx")
             self.assertTrue(self.wait_state("conflict"), self.status())
             st = self.status()
-            self.assertIn(str(ext.pid), st["reason"])
-            self.assertIsNone(ext.poll(), "external process must not be killed")
+            self.assertIn(str(foreign.pid), st["reason"])
+            self.assertFalse(st["can_takeover"])
+            self.assertFalse(self.ctl.takeover("fx")["ok"])
+            time.sleep(1)
+            self.assertIsNone(foreign.poll(), "unrelated process must not be killed")
             self.assertEqual(st["intent"], "stopped")
         finally:
-            ext.terminate()
-            ext.wait()
+            foreign.terminate()
+            foreign.wait()
 
     def test_4_code_update_busy_deferral_and_build_failure(self):
         self.ctl.start("fx")

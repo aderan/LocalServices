@@ -129,7 +129,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/refresh":
                 self._send(200, self.ctl.refresh_snapshot(wait=6))
                 return
-            m = re.fullmatch(r"/api/projects/([\w-]+)/(start|stop|restart|open|open-source|action)", u.path)
+            m = re.fullmatch(r"/api/projects/([\w-]+)/(start|stop|restart|open|open-source|action|takeover)", u.path)
             if not m:
                 self._send(404, {"ok": False, "error": "not found"})
                 return
@@ -144,6 +144,8 @@ class Handler(BaseHTTPRequestHandler):
                 res = self.ctl.open(pid)
             elif act == "open-source":
                 res = self.ctl.open_source(pid)
+            elif act == "takeover":
+                res = self.ctl.takeover(pid)
             else:
                 res = self.ctl.project_action(pid, str(body.get("name", "")))
             threading.Thread(target=self.ctl.refresh_snapshot, daemon=True).start()

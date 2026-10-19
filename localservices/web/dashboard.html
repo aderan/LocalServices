@@ -24,6 +24,7 @@
   .s-available::before { background: var(--ok); } .s-partial::before { background: var(--warn); }
   .s-failed::before, .s-conflict::before { background: var(--bad); }
   .s-starting::before, .s-stopping::before { background: var(--btn); }
+  .s-external::before { background: var(--ok); box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--ok); }
   .code { color: var(--mute); font-size: 13px; }
   .code.pending, .code.failed { color: var(--warn); font-weight: 600; }
   .code.failed { color: var(--bad); }
@@ -34,6 +35,7 @@
   main > p.reason { margin: 8px 0; }
   .reason { margin: 6px 0 0 192px; color: var(--bad); font-size: 13px; white-space: pre-wrap; }
   .reason.warn { color: var(--warn); }
+  .reason.info { color: var(--mute); }
   details { margin: 6px 0 0 192px; font-size: 13px; }
   summary { cursor: pointer; color: var(--mute); }
   table { border-collapse: collapse; margin: 6px 0; }
@@ -87,7 +89,7 @@ function primary(p) {
   if (p.state === "unknown") return `<button class="primary" disabled>状态未知</button>`;
   const busy = pending[p.id] || p.op || p.state === "starting" || p.state === "stopping";
   if (busy) return `<button class="primary" disabled>${p.state === "stopping" || pending[p.id] === "stop" ? "停止中…" : "启动中…"}</button>`;
-  if (p.state === "available" || p.state === "partial")
+  if (p.state === "available" || p.state === "partial" || p.state === "external")
     return p.can_open ? `<button class="primary" onclick="act('${p.id}','open')">打开</button>` : "";
   if (p.state === "failed" || p.state === "conflict")
     return `<button class="primary" onclick="open['${p.id}']=true;render()">查看原因</button>`;
@@ -100,8 +102,9 @@ function secondary(p) {
     for (const a of (p.actions || [])) b.push(`<button onclick="act('${p.id}','action',{name:'${a.id}'})">${esc(a.label)}</button>`);
   } else {
     const dis = (pending[p.id] || p.op) ? "disabled" : "";
-    if (p.state === "failed" || p.state === "conflict") b.push(`<button ${dis} onclick="act('${p.id}','start',{open:true})">重试</button>`);
-    if (p.intent === "running" || p.state !== "stopped") b.push(`<button ${dis} onclick="act('${p.id}','stop')">停止</button>`);
+    if (p.can_takeover) b.push(`<button ${dis} onclick="if(confirm('接管会停止这个外部启动的 ${esc(p.name)} 实例，并由本工具从最新源码启动。有活动任务时会等空闲再接管。继续？'))act('${p.id}','takeover')">接管</button>`);
+    if ((p.state === "failed" || p.state === "conflict") && !p.can_takeover) b.push(`<button ${dis} onclick="act('${p.id}','start',{open:true})">重试</button>`);
+    if (p.state !== "external" && (p.intent === "running" || p.state !== "stopped")) b.push(`<button ${dis} onclick="act('${p.id}','stop')">停止</button>`);
     if (p.intent === "running") b.push(`<button ${dis} onclick="act('${p.id}','restart')">重启</button>`);
     b.push(`<button onclick="loadLogs('${p.id}')">日志</button>`);
   }
@@ -129,7 +132,7 @@ function render() {
   const sys = (last.system_warnings || []).map(w => `<p class="reason warn">⚠︎ ${esc(w)}</p>`).join("");
   el.innerHTML = sys + (last.manifest_error ? `<p class="reason">${esc(last.manifest_error)}</p>` : "") + last.projects.map(p => {
     const code = p.code || {};
-    const reason = p.reason ? `<div class="reason ${p.state === "partial" ? "warn" : ""}">${esc(p.reason)}</div>` : "";
+    const reason = p.reason ? `<div class="reason ${p.state === "partial" ? "warn" : p.state === "external" ? "info" : ""}">${esc(p.reason)}</div>` : "";
     const msg = msgs[p.id] ? `<div class="msg">${esc(msgs[p.id])}</div>` : "";
     return `<section class="row" id="p-${p.id}">
       <div class="line">

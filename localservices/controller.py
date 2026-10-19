@@ -6,9 +6,11 @@ same `snapshot()`; there is no other status source.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -30,6 +32,7 @@ STATE_LABELS = {
     "conflict": "冲突",
     "external": "外部运行",
 }
+LAUNCHER_RE = re.compile(r"^(\S*/)?(npm|npx|pnpm|yarn|bun|node)(\s|$)|^(\S*/)?sh -c ")
 SETTLE = 3.0  # seconds a source change must be quiet before applying
 SECRET_RE = re.compile(
     r"(?i)((?:token|secret|password|passwd|api[_-]?key|authorization|cookie|session)[\"']?\s*[:=]\s*[\"']?)"
@@ -185,31 +188,147 @@ class Controller:
                     pids |= procs.descendants(ji.pid, ps)
         return pids
 
-    def conflicts(self, p: Project, ps: dict | None = None, fresh: bool = True) -> list[str]:
-        """Instances not started by us that would collide with starting p."""
+    def external_instances(self, p: Project, ps: dict | None = None, fresh: bool = True) -> list[dict]:
+        """Instances of p's components not started by us. `same_project` = runs from p's own source
+        folder (can be adopted / taken over); otherwise an unrelated process holds our port."""
         ps = ps or procs.snapshot()
         ours = self.our_pids(ps)
         listen = procs.listeners()
-        out = []
-        cwds = None
+        ports_of: dict[int, list[int]] = {}
+        for port, pid in listen.items():
+            ports_of.setdefault(pid, []).append(port)
+        cwds = self.cwds(0 if fresh else 15)
+        held = [listen[c.port] for c in p.managed_components() if c.port in listen and listen[c.port] not in ours]
+        if any(pid not in cwds for pid in held):
+            cwds = self.cwds(0)
+        src = str(p.source.resolve())
+
+        def inside(pid: int, root: str = src) -> bool:
+            cwd = cwds.get(pid, "")
+            return cwd == root or cwd.startswith(root + "/")
+
+        out, roots = [], set()
         for c in p.managed_components():
+            cands = []
             if c.port and c.port in listen and listen[c.port] not in ours:
-                pid = listen[c.port]
-                cmd = ps[pid].cmd[:120] if pid in ps else "?"
-                out.append(f"{c.name or c.id}：端口被非本工具进程占用（pid {pid}：{cmd}）")
-                continue
+                cands.append((listen[c.port], "port"))
             if c.external_cmd:
-                cwds = cwds or self.cwds(0 if fresh else 15)
                 want = str((p.source / (c.external_cwd or c.cwd)).resolve())
                 rx = re.compile(c.external_cmd)
-                for pid, pr in ps.items():
-                    if pid in ours or pid == os.getpid():
-                        continue
-                    pcwd = cwds.get(pid, "")
-                    if (pcwd == want or pcwd.startswith(want + "/")) and rx.search(pr.cmd):
-                        out.append(f"{c.name or c.id}：已有非本工具启动的实例（pid {pid}：{pr.cmd[:120]}）")
+                cands += [(pid, "cmd") for pid, pr in ps.items()
+                          if pid not in ours and pid != os.getpid() and inside(pid, want) and rx.search(pr.cmd)]
+            for pid, why in cands:
+                root = pid
+                # climb through launcher wrappers (npm run dev → sh -c → node), never into shells/apps
+                while root in ps:
+                    par = ps[root].ppid
+                    if par <= 1 or par in ours or par not in ps or not inside(par) or not LAUNCHER_RE.search(ps[par].cmd):
                         break
+                    root = par
+                if root in roots:
+                    continue
+                roots.add(root)
+                tree = procs.descendants(root, ps)
+                out.append({"component": c.id, "name": c.name or c.id, "pid": root, "tree": sorted(tree),
+                            "ports": sorted(pt for t in tree for pt in ports_of.get(t, [])), "why": why,
+                            "cmd": ps[root].cmd[:120] if root in ps else "?", "same_project": inside(pid)})
         return out
+
+    def conflicts(self, p: Project, ps: dict | None = None, fresh: bool = True) -> list[str]:
+        """Instances not started by us that would collide with starting p."""
+        return [f"{e['name']}：" + ("端口被非本工具进程占用" if e["why"] == "port" else "已有非本工具启动的实例")
+                + f"（pid {e['pid']}：{e['cmd']}）" for e in self.external_instances(p, ps, fresh)]
+
+    def _adoptable(self, p: Project, ext: list[dict]) -> tuple[bool, dict[str, int]]:
+        """External instances run p from its own folder and every required server answers its probe
+        on the port it actually listens on. Returns (ok, component -> port)."""
+        if not ext or not all(e["same_project"] for e in ext):
+            return False, {}
+        ports: dict[str, int] = {}
+        for c in p.managed_components():
+            if not c.required or not c.port:
+                continue
+            mine = sorted((e for e in ext if e["component"] == c.id and e["ports"]),
+                          key=lambda e: c.port not in e["ports"])
+            e = mine[0] if mine else None
+            if not e:
+                return False, {}
+            port = c.port if c.port in e["ports"] else (e["ports"][0] if e["ports"] else None)
+            if not port:
+                return False, {}
+            if c.ready:
+                pr = dataclasses.replace(c.ready, http=c.ready.http.replace(f":{c.port}", f":{port}") if c.ready.http else None,
+                                         tcp=c.ready.tcp.replace(f":{c.port}", f":{port}") if c.ready.tcp else None)
+                key = f"ext.{p.id}.{c.id}.{port}"
+                hit = self._probe_cache.get(key)
+                if not (hit and pr.interval and time.time() - hit < pr.interval):
+                    ok, _ = procs.probe(pr, min(pr.timeout, 4.0))
+                    if not ok:
+                        return False, {}
+                    self._probe_cache[key] = time.time()
+            ports[c.id] = port
+        return True, ports
+
+    def _external_url(self, p: Project, ports: dict[str, int]) -> str | None:
+        url = self.adapters[p.id].open_url()
+        if not url:
+            return None
+        for c in p.managed_components():
+            if c.id in ports and c.port and ports[c.id] != c.port:
+                url = url.replace(f":{c.port}", f":{ports[c.id]}")
+        return url
+
+    def takeover(self, pid: str) -> dict:
+        """User-confirmed: stop the external instance of this same project and run ours instead.
+        Never applies to unrelated processes; deferred while the project reports active work."""
+        p = self.projects.get(pid)
+        if not p or p.observe_only:
+            return {"ok": False, "error": "不可接管"}
+        ext = self.external_instances(p)
+        if not ext:
+            self.store.proj(pid).pop("takeover_pending", None)
+            self.store.save()
+            return self.start(pid)
+        foreign = [e for e in ext if not e["same_project"]]
+        if foreign:
+            e = foreign[0]
+            return {"ok": False, "error": f"端口 {e['ports'] or '?'} 被其他程序占用（pid {e['pid']}：{e['cmd']}），"
+                                         "它不是本项目的实例，本工具不会停止它"}
+        busy = self.adapters[pid].busy()
+        if busy:
+            self.store.proj(pid)["takeover_pending"] = time.time()
+            self.store.save()
+            return {"ok": True, "accepted": False, "message": f"有活动任务（{busy}），空闲后自动接管"}
+        if not self._begin(pid, "starting"):
+            return {"ok": True, "accepted": False, "message": "操作进行中，请稍候"}
+        self.store.set_intent(pid, "running")
+        threading.Thread(target=self._do_takeover, args=(p, ext), daemon=True).start()
+        return {"ok": True, "accepted": True, "message": "接管中：停止外部实例并由本工具启动"}
+
+    def _do_takeover(self, p: Project, ext: list[dict]) -> None:
+        try:
+            self.store.proj(p.id).pop("takeover_pending", None)
+            self.store.save()
+            ps = procs.snapshot()
+            tree = {t for e in ext for t in e["tree"] if t in ps}
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                for t in tree:
+                    try:
+                        os.kill(t, sig)
+                    except OSError:
+                        pass
+                if procs.wait_until(lambda: not (tree & set(procs.snapshot())), 20 if sig == signal.SIGTERM else 5):
+                    break
+            self.errors.pop(p.id, None)
+        except Exception as e:  # noqa: BLE001
+            self._set_error(p.id, "", f"接管失败：{e}")
+            self._end(p.id)
+            return
+        self._do_start(p, False)
+        err = self.errors.get(p.id)
+        if err and err["message"].startswith("无法启动"):
+            err["message"] = ("外部实例停止后又被它的启动方重新拉起，需在启动它的程序（如 IDE / agent 会话）中关闭："
+                              + err["message"].removeprefix("无法启动："))
 
     def _set_error(self, pid: str, comp: str, msg: str) -> None:
         self.errors[pid] = {"component": comp, "message": msg, "at": time.time()}
@@ -352,10 +471,11 @@ class Controller:
         if cur:
             return {"ok": True, "accepted": False, "message": f"{STATE_LABELS.get(cur['kind'], cur['kind'])}，请稍候"}
         snap = self.project_status(p)
-        if snap["state"] == "available":
+        if snap["state"] in ("available", "external"):
             if open_after:
                 self.open(pid)
-            return {"ok": True, "accepted": False, "message": "已在运行"}
+            return {"ok": True, "accepted": False,
+                    "message": "已在运行" if snap["state"] == "available" else "已有外部实例在运行，已直接打开；可点「接管」改由本工具管理"}
         if not self._begin(pid, "starting"):
             return {"ok": True, "accepted": False, "message": "启动中，请稍候"}
         self.store.set_intent(pid, "running")
@@ -431,6 +551,11 @@ class Controller:
         p = self.projects.get(pid)
         if not p or p.observe_only:
             return {"ok": False, "error": "不可停止"}
+        if self.store.proj(pid).pop("takeover_pending", None):
+            self.store.save()
+        if not any(launchd.info(self.label(p, c)).loaded for c in p.managed_components()) and self.external_instances(p):
+            self.store.set_intent(pid, "stopped")
+            return {"ok": True, "accepted": False, "message": "运行中的是外部实例，本工具不停止它；已取消待接管"}
         busy = self.adapters[pid].busy()
         if busy:
             return {"ok": False, "error": f"有活动任务，暂不停止：{busy}"}
@@ -483,6 +608,10 @@ class Controller:
         if not p:
             return {"ok": False, "error": "未知项目"}
         url = self.adapters[pid].open_url()
+        if not p.observe_only and not any(launchd.info(self.label(p, c)).running for c in p.managed_components()):
+            adopt, ports = self._adoptable(p, self.external_instances(p, fresh=False))
+            if adopt:
+                url = self._external_url(p, ports)
         if not url:
             return {"ok": False, "error": "没有可打开的地址"}
         subprocess.Popen(["/usr/bin/open", url])
@@ -624,6 +753,10 @@ class Controller:
         for p in list(self.projects.values()):
             if p.observe_only or p.id in self.ops:
                 continue
+            if self.store.proj(p.id).get("takeover_pending"):
+                if not self.adapters[p.id].busy():
+                    self.takeover(p.id)
+                continue
             intent = self.store.intent(p)
             err = self.errors.get(p.id)
             if intent == "running" and err and time.time() - err["at"] < 120:
@@ -755,11 +888,29 @@ class Controller:
         if (state in ("stopped", "failed") and err and err.get("message", "").startswith("无法启动")
                 and not any_running):
             state = "conflict"
-        external = []
-        if state == "stopped" and not any_running and not p.observe_only:
-            external = self.conflicts(p, fresh=False)
-            if external:
-                state = "conflict"
+        external, ext_ports, ext_reason = [], {}, ""
+        if state in ("stopped", "failed", "conflict") and not any_running and not op:
+            ext = external = self.external_instances(p, ps, fresh=False)
+            if ext:
+                adopt, ext_ports = self._adoptable(p, ext)
+                desc = "；".join(f"{e['name']} pid {e['pid']}" + (f"，端口 {'/'.join(map(str, e['ports']))}" if e["ports"] else "")
+                                 + f"（{e['cmd']}）" for e in ext)
+                for cs in managed:
+                    mine = [e for e in ext if e["component"] == cs["id"]]
+                    if mine:
+                        cs.update(label="外部实例运行中", detail="；".join(
+                            f"pid {e['pid']}" + (f" 端口 {'/'.join(map(str, e['ports']))}" if e["ports"] else "") for e in mine))
+                if adopt:
+                    state = "external"
+                    pending = self.store.proj(p.id).get("takeover_pending")
+                    ext_reason = (f"由其他程序启动，正在运行：{desc}。可直接打开；"
+                                  + ("有活动任务，空闲后自动接管" if pending else "点「接管」改由本工具管理（会停止该实例）"))
+                    if err and err.get("message", "").startswith("无法启动"):
+                        err = None
+                else:
+                    state = "conflict"
+                    ext_reason = ("检测到非本工具启动的实例，" + ("但未通过就绪检查" if all(e["same_project"] for e in ext)
+                                                       else "且不是本项目的进程，本工具不会停止它") + "：" + desc)
         problems = []
         for cs in managed:
             if intent == "running" and cs["state"] not in ("ready",):
@@ -771,8 +922,8 @@ class Controller:
             problems.append(f"{g['name']}：{g['label']}")
         if err:
             reason = err["message"]
-        elif external:
-            reason = "检测到非本工具启动的实例，本工具不会停止它：" + "；".join(external)
+        elif ext_reason:
+            reason = ext_reason
         elif problems and state in ("partial", "failed"):
             reason = "；".join(problems)
 
@@ -792,7 +943,9 @@ class Controller:
             "intent_by": self.store.proj(p.id).get("intent_by"),
             "op": op["kind"] if op else None, "reason": reason, "error": err,
             "components": comps, "dependencies": deps, "code": code,
-            "can_open": bool(ad.open_url()) and state in ("available", "partial"),
+            "can_open": bool(ad.open_url()) and state in ("available", "partial", "external"),
+            "can_takeover": bool(external) and all(e["same_project"] for e in external),
+            "external_ports": ext_ports,
             "managed_by": "localservices",
         })
         return base

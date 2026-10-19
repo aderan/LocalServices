@@ -38,10 +38,10 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="lsctl")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status").add_argument("--json", action="store_true")
-    for name in ("start", "stop", "restart", "open", "logs"):
+    for name in ("start", "stop", "restart", "open", "logs", "takeover"):
         sp = sub.add_parser(name)
         sp.add_argument("project")
-        if name == "start":
+        if name in ("start", "takeover"):
             sp.add_argument("--open", action="store_true")
             sp.add_argument("--wait", type=float, default=0, help="seconds to wait for 可用")
         if name == "logs":
@@ -62,13 +62,13 @@ def main(argv=None) -> int:
         body = {"open": True} if getattr(a, "open", False) else {}
         code, res = call("POST", f"/api/projects/{a.project}/{a.cmd}", body)
         print(res.get("message") or res.get("error") or res)
-        if a.cmd == "start" and a.wait and res.get("ok"):
+        if a.cmd in ("start", "takeover") and a.wait and res.get("ok"):
             end = time.time() + a.wait
             while time.time() < end:
                 time.sleep(2)
                 _, snap = call("POST", "/api/refresh")
                 st = next(p for p in snap["projects"] if p["id"] == a.project)
-                if st["state"] in ("available", "partial", "failed", "conflict") and not st.get("op"):
+                if st["state"] in ("available", "partial", "failed", "conflict", "external") and not st.get("op"):
                     print(f"{st['label']} {st.get('reason','')}")
                     return 0 if st["state"] in ("available", "partial") else 2
             print("等待超时")
