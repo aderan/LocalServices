@@ -1,0 +1,7 @@
+id = "orx-analytics"
+name = "orx-analytics"
+description = "仅观察：协调引擎由 ORX Analytics App 管理"
+source = "~/Sources/Tools/orx-analytics"
+observe_only = true
+adapter = "orx_analytics"
+options = { data_dir = "~/.orx-analytics", app = "/Applications/ORX Analytics (Internal Preview).app" }

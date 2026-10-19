@@ -1,0 +1,37 @@
+id = "mediascope"
+name = "MediaScope"
+description = "工作台（不主动创建采集任务）"
+source = "~/Sources/Products/MediaScope"
+open = "http://127.0.0.1:8790/"
+autostart = true
+adapter = "mediascope"
+
+[[components]]
+id = "dashboard"
+name = "Dashboard"
+cmd = ["/Users/flb/.pyenv/versions/3.12.9/bin/python3", "-m", "mediascope.cli", "dashboard", "--host", "127.0.0.1", "--port", "8790"]
+env = { PYTHONPATH = "src" }
+port = 8790
+# /api/tasks is SQLite-only; /api/health would call LLM/sidecars, /api/live/stream may hit Douyin
+ready = { http = "http://127.0.0.1:8790/api/tasks", timeout = 8, interval = 15 }
+start_timeout = 60
+watch = ["src", "config.toml", "config.override.toml"]
+external_cmd = "mediascope(\\.cli)? dashboard"
+
+[[dependencies]]
+name = "Ollama"
+probe = { tcp = "127.0.0.1:11434" }
+affects = ["本地模型摘要"]
+note = "共享服务，只观察"
+
+[[dependencies]]
+name = "抖音 API sidecar"
+probe = { tcp = "127.0.0.1:8766" }
+affects = ["抖音解析"]
+note = "MediaScope 按需拉起，只观察"
+
+[[dependencies]]
+name = "XHS-Downloader"
+probe = { tcp = "127.0.0.1:5556" }
+affects = ["小红书下载"]
+note = "MediaScope 按需拉起，只观察"

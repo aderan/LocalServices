@@ -1,0 +1,29 @@
+id = "ui-atlas"
+name = "UI-Atlas"
+description = "Vite 热更新 + 注册表自动重建"
+source = "~/Sources/Products/UI-Atlas"
+open = "http://127.0.0.1:5175/"
+
+[[components]]
+id = "web"
+name = "Vite dev"
+cmd = ["node_modules/.bin/vite", "--host", "127.0.0.1", "--port", "5175", "--strictPort"]
+port = 5175
+ready = { http = "http://127.0.0.1:5175/" }
+start_timeout = 60
+hot = true
+watch = ["src", "index.html"]  # used only when FSEvents is down (restart fallback)
+restart_on = ["vite.config.ts", "package.json"]
+install = ["pnpm", "install"]
+install_when = ["pnpm-lock.yaml"]
+install_marker = "node_modules"
+external_cmd = "vite"
+
+[[components]]
+id = "registry"
+name = "案例/主题/规格注册表"
+kind = "generator"
+# validates before writing; on invalid input exits 1 without touching public/*.json
+cmd = ["node", "scripts/build-registry.mjs"]
+watch = ["themes", "specs", "public/previews", "scripts/build-registry.mjs", "scripts/registry-validation.mjs"]
+debounce = 2.0

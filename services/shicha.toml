@@ -1,0 +1,43 @@
+id = "shicha"
+name = "ShiCha"
+description = "管理后台 + Go API（依赖 Colima 中的 shicha-postgres）"
+source = "~/Sources/Products/ShiCha"
+open = "http://127.0.0.1:5176/"
+
+[[components]]
+id = "api"
+name = "Go API"
+cwd = "services/api"
+# compile first; a failed build keeps the running binary (config/ is read relative to cwd)
+build = ["go", "build", "-o", "{build}/shicha-api", "."]
+cmd = ["{build}/shicha-api"]
+port = 8000
+# /v1/brands reads the DB, so ready implies Postgres reachable too
+ready = { http = "http://127.0.0.1:8000/v1/brands", timeout = 5, interval = 15 }
+start_timeout = 60
+watch = ["."]
+ignore = ["uploads"]
+external_cmd = "go-build.*/exe/main|shicha-api|go run main.go"
+
+[[components]]
+id = "admin"
+name = "管理前端"
+cwd = "apps/admin-web"
+cmd = ["node_modules/.bin/vite", "--host", "127.0.0.1", "--port", "5176", "--strictPort"]
+after = ["api"]
+port = 5176
+ready = { http = "http://127.0.0.1:5176/" }
+start_timeout = 60
+hot = true
+watch = ["src", "index.html"]  # used only when FSEvents is down (restart fallback)
+restart_on = ["vite.config.ts", "package.json", ".env.development"]
+install = ["npm", "install"]
+install_when = ["package-lock.json"]
+install_marker = "node_modules"
+external_cmd = "vite"
+
+[[dependencies]]
+name = "Postgres（shicha-postgres :5435）"
+probe = { tcp = "127.0.0.1:5435" }
+affects = ["Go API"]
+note = "Colima/Docker 容器，外部管理"

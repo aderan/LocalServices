@@ -1,0 +1,49 @@
+id = "to2050"
+name = "To2050"
+description = "研究工作台：研究 API + 真实 worker + Web"
+source = "~/Sources/Products/To2050"
+open = "http://127.0.0.1:5173/research"
+adapter = "to2050"
+options = { api = "http://127.0.0.1:8002", artifact_root = "artifacts" }
+
+[[components]]
+id = "api"
+name = "研究 API"
+cmd = [".venv/bin/python", "-m", "uvicorn", "to2050.api.research:create_app", "--factory", "--host", "127.0.0.1", "--port", "8002"]
+port = 8002
+ready = { http = "http://127.0.0.1:8002/api/v2/jobs?limit=1", timeout = 5 }
+start_timeout = 60
+watch = ["src"]
+install = ["uv", "sync", "--locked"]
+install_when = ["uv.lock"]
+install_marker = ".venv"
+external_cmd = "to2050\\.api"
+
+[[components]]
+id = "worker"
+name = "真实 worker（CoreExecutor）"
+# runtime.job_adapter = real executor; jobs.worker defaults to synthetic and is not used
+cmd = [".venv/bin/python", "-m", "to2050.runtime.job_adapter", "--artifact-root", "artifacts"]
+after = ["api"]
+start_timeout = 45
+watch = ["src"]
+external_cmd = "to2050\\.(runtime\\.job_adapter|jobs\\.worker)"
+
+[[components]]
+id = "web"
+name = "Web"
+cwd = "apps/web"
+# 5173 is in the research API CORS allowlist
+cmd = ["node_modules/.bin/vite"]
+env = { VITE_API_BASE_URL = "http://127.0.0.1:8002" }
+after = ["api"]
+port = 5173
+ready = { http = "http://127.0.0.1:5173/" }
+start_timeout = 60
+hot = true
+watch = ["src", "index.html"]  # used only when FSEvents is down (restart fallback)
+restart_on = ["vite.config.ts", "package.json", ".env", ".env.local"]
+install = ["npm", "install"]
+install_when = ["package-lock.json"]
+install_marker = "node_modules"
+external_cmd = "vite"

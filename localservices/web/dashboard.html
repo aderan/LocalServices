@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyBrain Services</title>
+<style>
+  :root { color-scheme: light dark; --fg:#1d1d1f; --mute:#6e6e73; --line:#e5e5ea; --bg:#fff; --soft:#f5f5f7;
+          --ok:#1f7a3a; --warn:#9a6700; --bad:#b42318; --btn:#0b57d0; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#f5f5f7; --mute:#a1a1a6; --line:#38383a; --bg:#1c1c1e; --soft:#2c2c2e;
+          --ok:#5bd17a; --warn:#f2c14e; --bad:#ff6b5e; --btn:#7aa7ff; } }
+  body { font: 14px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
+  header { display:flex; align-items:baseline; gap:12px; padding: 20px 28px 8px; }
+  h1 { font-size: 18px; margin: 0; }
+  #conn { color: var(--mute); font-size: 12px; }
+  #conn.bad { color: var(--bad); font-weight: 600; }
+  main { padding: 0 28px 40px; max-width: 1080px; }
+  .row { border-bottom: 1px solid var(--line); padding: 12px 0; }
+  .line { display:grid; grid-template-columns: 180px 150px 1fr auto; gap: 12px; align-items:center; }
+  .name { font-weight: 600; }
+  .name small { display:block; font-weight: 400; color: var(--mute); font-size: 12px; }
+  .state { font-weight: 600; }
+  .state::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background: var(--mute); vertical-align: 1px; }
+  .s-available::before { background: var(--ok); } .s-partial::before { background: var(--warn); }
+  .s-failed::before, .s-conflict::before { background: var(--bad); }
+  .s-starting::before, .s-stopping::before { background: var(--btn); }
+  .code { color: var(--mute); font-size: 13px; }
+  .code.pending, .code.failed { color: var(--warn); font-weight: 600; }
+  .code.failed { color: var(--bad); }
+  .acts { display:flex; gap:6px; flex-wrap: wrap; justify-content:flex-end; }
+  button { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--soft); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--btn); border-color: var(--btn); color: #fff; }
+  button:disabled { opacity: .55; cursor: default; }
+  main > p.reason { margin: 8px 0; }
+  .reason { margin: 6px 0 0 192px; color: var(--bad); font-size: 13px; white-space: pre-wrap; }
+  .reason.warn { color: var(--warn); }
+  details { margin: 6px 0 0 192px; font-size: 13px; }
+  summary { cursor: pointer; color: var(--mute); }
+  table { border-collapse: collapse; margin: 6px 0; }
+  td { padding: 2px 14px 2px 0; vertical-align: top; }
+  td.k { color: var(--mute); }
+  pre { background: var(--soft); padding: 8px; border-radius: 6px; max-height: 320px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+  .msg { color: var(--mute); font-size: 12px; margin-left: 192px; }
+</style>
+</head>
+<body>
+<header><h1>MyBrain Services</h1><span id="conn">连接中…</span></header>
+<main id="list"></main>
+<script>
+const TOKEN = "__TOKEN__";
+const H = {"X-LocalServices-Token": TOKEN, "Content-Type": "application/json"};
+const pending = {};   // project -> label while a click is in flight
+const open = {};      // project -> details open
+const logs = {};      // project -> log text
+const msgs = {};
+let last = null;
+
+async function api(method, path, body) {
+  const r = await fetch(path, {method, headers: H, body: body ? JSON.stringify(body) : undefined});
+  return [r.status, await r.json()];
+}
+
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function t(ts) { return ts ? new Date(ts*1000).toLocaleString("zh-CN", {hour12:false}) : "—"; }
+
+async function act(id, action, body) {
+  if (pending[id]) return;
+  pending[id] = action;
+  render();
+  try {
+    const [code, res] = await api("POST", `/api/projects/${id}/${action}`, body);
+    msgs[id] = res.message || res.error || "";
+    if (code !== 200 && res.error) msgs[id] = res.error;
+  } catch (e) { msgs[id] = "无法连接控制服务"; }
+  pending[id] = null;
+  await refresh();
+}
+
+async function loadLogs(id) {
+  const [, res] = await api("GET", `/api/projects/${id}/logs?lines=120`);
+  logs[id] = Object.entries(res.logs || {}).map(([c, txt]) => `===== ${c}\n${txt || "(无日志)"}`).join("\n\n");
+  open[id] = true; render();
+}
+
+function primary(p) {
+  if (p.observe_only) return "";
+  if (p.state === "unknown") return `<button class="primary" disabled>状态未知</button>`;
+  const busy = pending[p.id] || p.op || p.state === "starting" || p.state === "stopping";
+  if (busy) return `<button class="primary" disabled>${p.state === "stopping" || pending[p.id] === "stop" ? "停止中…" : "启动中…"}</button>`;
+  if (p.state === "available" || p.state === "partial")
+    return p.can_open ? `<button class="primary" onclick="act('${p.id}','open')">打开</button>` : "";
+  if (p.state === "failed" || p.state === "conflict")
+    return `<button class="primary" onclick="open['${p.id}']=true;render()">查看原因</button>`;
+  return `<button class="primary" onclick="act('${p.id}','start',{open:true})">启动并打开</button>`;
+}
+
+function secondary(p) {
+  const b = [];
+  if (p.observe_only) {
+    for (const a of (p.actions || [])) b.push(`<button onclick="act('${p.id}','action',{name:'${a.id}'})">${esc(a.label)}</button>`);
+  } else {
+    const dis = (pending[p.id] || p.op) ? "disabled" : "";
+    if (p.state === "failed" || p.state === "conflict") b.push(`<button ${dis} onclick="act('${p.id}','start',{open:true})">重试</button>`);
+    if (p.intent === "running" || p.state !== "stopped") b.push(`<button ${dis} onclick="act('${p.id}','stop')">停止</button>`);
+    if (p.intent === "running") b.push(`<button ${dis} onclick="act('${p.id}','restart')">重启</button>`);
+    b.push(`<button onclick="loadLogs('${p.id}')">日志</button>`);
+  }
+  b.push(`<button onclick="act('${p.id}','open-source')">源码</button>`);
+  return b.join("");
+}
+
+function detailsHtml(p) {
+  const rows = (p.components || []).map(c =>
+    `<tr><td class="k">${esc(c.name)}</td><td>${esc(c.label)}${c.detail ? "：" + esc(c.detail) : ""}</td>
+     <td class="k">${c.kind === "generator" ? (c.last_run ? "最近 " + t(c.last_run) : "") : (c.pid ? "pid " + c.pid + " · 启动于 " + t(c.started_at) : "")}</td>
+     <td class="k">${c.code ? esc(c.code.label) + (c.code.detail ? "：" + esc(c.code.detail) : "") : ""}</td></tr>`).join("");
+  const deps = (p.dependencies || []).map(d =>
+    `<tr><td class="k">依赖 ${esc(d.name)}</td><td>${d.ok ? "可用" : "不可用"}${d.detail ? "：" + esc(d.detail) : ""}</td><td class="k">${d.managed ? "" : "外部管理"}</td><td class="k">${esc(d.note || "")}</td></tr>`).join("");
+  const extra = p.observe_only ? `<tr><td class="k">状态</td><td colspan="3">${esc(p.detail || "")}</td></tr>` : "";
+  const src = `<tr><td class="k">源码</td><td colspan="3">${esc(p.source)}${p.code && p.code.process_started ? " · 进程启动于 " + t(p.code.process_started) : ""}${p.code && p.code.newest_change ? " · 最近源码修改 " + t(p.code.newest_change) : ""}</td></tr>`;
+  const lg = logs[p.id] ? `<pre>${esc(logs[p.id])}</pre>` : "";
+  return `<details ${open[p.id] ? "open" : ""} ontoggle="open['${p.id}']=this.open"><summary>组件与详情</summary><table>${extra}${rows}${deps}${src}</table>${lg}</details>`;
+}
+
+function render() {
+  const el = document.getElementById("list");
+  if (!last) return;
+  if (last.manifest_error) el.dataset.err = last.manifest_error;
+  const sys = (last.system_warnings || []).map(w => `<p class="reason warn">⚠︎ ${esc(w)}</p>`).join("");
+  el.innerHTML = sys + (last.manifest_error ? `<p class="reason">${esc(last.manifest_error)}</p>` : "") + last.projects.map(p => {
+    const code = p.code || {};
+    const reason = p.reason ? `<div class="reason ${p.state === "partial" ? "warn" : ""}">${esc(p.reason)}</div>` : "";
+    const msg = msgs[p.id] ? `<div class="msg">${esc(msgs[p.id])}</div>` : "";
+    return `<section class="row" id="p-${p.id}">
+      <div class="line">
+        <div class="name">${esc(p.name)}<small>${esc(p.description || "")}</small></div>
+        <div class="state s-${p.state}">${esc(p.label)}</div>
+        <div class="code ${code.state}">${esc(code.label || "")}${code.state === "pending" || code.state === "failed" ? "：" + esc((code.detail || "").split("\n")[0]) : ""}</div>
+        <div class="acts">${primary(p)}${secondary(p)}</div>
+      </div>${reason}${msg}${detailsHtml(p)}</section>`;
+  }).join("");
+}
+
+async function refresh() {
+  try {
+    const [code, snap] = await api("GET", "/api/status");
+    if (code !== 200) throw new Error(snap.error);
+    last = snap;
+    const c = document.getElementById("conn");
+    c.textContent = "更新于 " + new Date(snap.generated_at * 1000).toLocaleTimeString("zh-CN", {hour12:false});
+    c.className = "";
+    if (location.hash && !open[location.hash.slice(3)]) open[location.hash.slice(3)] = true;
+  } catch (e) {
+    const c = document.getElementById("conn");
+    c.textContent = "无法连接控制服务（状态未知，不代表项目已停止）";
+    c.className = "bad";
+    if (last) for (const p of last.projects) { p.state = "unknown"; p.label = "未知"; p.op = null; p.can_open = false; p.reason = ""; }
+  }
+  render();
+}
+refresh();
+setInterval(() => { if (!document.querySelector("details[open] pre:hover")) refresh(); }, 2000);
+</script>
+</body>
+</html>
