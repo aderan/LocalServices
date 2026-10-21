@@ -34,6 +34,7 @@ STATE_LABELS = {
 }
 LAUNCHER_RE = re.compile(r"^(\S*/)?(npm|npx|pnpm|yarn|bun|node)(\s|$)|^(\S*/)?sh -c ")
 SETTLE = 3.0  # seconds a source change must be quiet before applying
+STARTUP_TIMEOUT = 30.0  # one budget for preparation and readiness, shared by all components
 SECRET_RE = re.compile(
     r"(?i)((?:token|secret|password|passwd|api[_-]?key|authorization|cookie|session)[\"']?\s*[:=]\s*[\"']?)"
     r"([^\s\"'&,;]{6,})"
@@ -179,9 +180,9 @@ class Controller:
             self._cwd_cache = (time.time(), cache)
         return cache
 
-    def our_pids(self, ps: dict) -> set[int]:
+    def our_pids(self, ps: dict, project: Project | None = None) -> set[int]:
         pids: set[int] = set()
-        for p in self.projects.values():
+        for p in ([project] if project else self.projects.values()):
             for c in p.managed_components():
                 ji = launchd.info(self.label(p, c))
                 if ji.pid:
@@ -192,7 +193,9 @@ class Controller:
         """Instances of p's components not started by us. `same_project` = runs from p's own source
         folder (can be adopted / taken over); otherwise an unrelated process holds our port."""
         ps = ps or procs.snapshot()
-        ours = self.our_pids(ps)
+        ours = self.our_pids(ps, p)
+        other_owners = {pid: other.id for other in self.projects.values() if other.id != p.id
+                        for pid in self.our_pids(ps, other)}
         listen = procs.listeners()
         ports_of: dict[int, list[int]] = {}
         for port, pid in listen.items():
@@ -231,12 +234,14 @@ class Controller:
                 tree = procs.descendants(root, ps)
                 out.append({"component": c.id, "name": c.name or c.id, "pid": root, "tree": sorted(tree),
                             "ports": sorted(pt for t in tree for pt in ports_of.get(t, [])), "why": why,
-                            "cmd": ps[root].cmd[:120] if root in ps else "?", "same_project": inside(pid)})
+                            "cmd": ps[root].cmd[:120] if root in ps else "?", "same_project": inside(pid),
+                            "managed_project": other_owners.get(pid)})
         return out
 
     def conflicts(self, p: Project, ps: dict | None = None, fresh: bool = True) -> list[str]:
         """Instances not started by us that would collide with starting p."""
-        return [f"{e['name']}：" + ("端口被非本工具进程占用" if e["why"] == "port" else "已有非本工具启动的实例")
+        return [f"{e['name']}：" + (f"端口被项目 {e['managed_project']} 占用" if e.get("managed_project") else
+                ("端口被非本工具进程占用" if e["why"] == "port" else "已有非本工具启动的实例"))
                 + f"（pid {e['pid']}：{e['cmd']}）" for e in self.external_instances(p, ps, fresh)]
 
     def _adoptable(self, p: Project, ext: list[dict]) -> tuple[bool, dict[str, int]]:
@@ -334,6 +339,8 @@ class Controller:
         self.errors[pid] = {"component": comp, "message": msg, "at": time.time()}
 
     def _run_step(self, p: Project, c: Component, cmd: list[str], what: str, timeout: float) -> tuple[bool, str]:
+        if self.ops.get(p.id, {}).get("deadline") is not None:
+            timeout = min(timeout, self._startup_remaining(p))
         env = manifest.component_env(p, c)
         lp = log_path(p.id, c.id)
         lp.parent.mkdir(parents=True, exist_ok=True)
@@ -341,17 +348,25 @@ class Controller:
             log.write(f"[localservices] {time.strftime('%Y-%m-%d %H:%M:%S')} {what}: {' '.join(cmd)}\n".encode())
             log.flush()
             try:
-                r = subprocess.run(cmd, cwd=p.comp_cwd(c), env=env, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, timeout=timeout)
+                proc = subprocess.Popen(cmd, cwd=p.comp_cwd(c), env=env, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, start_new_session=True)
+                output, _ = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
+                # Dependency installers/build tools can spawn children. Only this newly
+                # created process group belongs to the timed-out preparation step.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.communicate()
                 log.write(f"[localservices] {what} timed out\n".encode())
-                return False, f"{what}超时"
+                return False, f"启动超时（总预算 {STARTUP_TIMEOUT:g}s）：{what}未完成"
             except OSError as e:
                 return False, f"{what}无法执行：{e}"
-            log.write(r.stdout)
-        if r.returncode != 0:
-            out = "\n".join(redact(r.stdout.decode("utf-8", "replace")).strip().splitlines()[-12:])
-            return False, f"{what}失败（exit {r.returncode}）\n{out}"
+            log.write(output)
+        if proc.returncode != 0:
+            out = "\n".join(redact(output.decode("utf-8", "replace")).strip().splitlines()[-12:])
+            return False, f"{what}失败（exit {proc.returncode}）\n{out}"
         return True, ""
 
     def _maybe_install(self, p: Project, c: Component, force: bool = False) -> tuple[bool, str]:
@@ -390,7 +405,8 @@ class Controller:
         runner.reset_record(p.id, c.id)
         return launchd.bootstrap(label)
 
-    def _ready(self, p: Project, c: Component, cached: bool = True) -> tuple[bool, str]:
+    def _ready(self, p: Project, c: Component, cached: bool = True,
+               timeout: float | None = None) -> tuple[bool, str]:
         ok, detail = (True, "")
         if c.ready:
             key = f"{p.id}.{c.id}"
@@ -400,7 +416,10 @@ class Controller:
             else:
                 # status path: short timeout so one slow dev server can't stall the shared snapshot;
                 # start path (cached=False) uses the manifest timeout to let first compiles finish
-                ok, detail = procs.probe(c.ready, None if not cached else min(c.ready.timeout, 4.0))
+                probe_timeout = min(c.ready.timeout, 4.0 if cached else c.ready.timeout)
+                if timeout is not None:
+                    probe_timeout = min(probe_timeout, timeout)
+                ok, detail = procs.probe(c.ready, probe_timeout)
                 if ok:
                     self._probe_cache[key] = time.time()
                 else:
@@ -455,7 +474,16 @@ class Controller:
             if pid in self.ops:
                 return False
             self.ops[pid] = {"kind": kind, "since": time.time()}
+            if kind == "starting":
+                self.ops[pid]["deadline"] = time.monotonic() + STARTUP_TIMEOUT
             return True
+
+    def _startup_remaining(self, p: Project) -> float:
+        deadline = self.ops.get(p.id, {}).get("deadline")
+        remaining = deadline - time.monotonic() if deadline is not None else STARTUP_TIMEOUT
+        if remaining <= 0:
+            raise TimeoutError(f"启动超时（总预算 {STARTUP_TIMEOUT:g}s）")
+        return remaining
 
     def _end(self, pid: str) -> None:
         with self.lock:
@@ -471,6 +499,15 @@ class Controller:
         if cur:
             return {"ok": True, "accepted": False, "message": f"{STATE_LABELS.get(cur['kind'], cur['kind'])}，请稍候"}
         snap = self.project_status(p)
+        if snap["state"] == "conflict":
+            # A previous failure remains visible until retry. Recheck live ownership
+            # rather than rejecting a retry based on that historical error.
+            conflicts = self.conflicts(p)
+            if conflicts:
+                reason = "；".join(conflicts)
+                self.store.set_intent(pid, "stopped", by="conflict")
+                self._set_error(pid, "", "无法启动：" + reason)
+                return {"ok": False, "accepted": False, "error": reason}
         if snap["state"] in ("available", "external"):
             if open_after:
                 self.open(pid)
@@ -484,12 +521,17 @@ class Controller:
 
     def _do_start(self, p: Project, open_after: bool, only: list[str] | None = None, skip_build: bool = False,
                   by_user: bool = True) -> None:
+        started: list[Component] = []
+        previous: list[Component] = []
+        success, conflicted = False, False
         try:
             self.errors.pop(p.id, None)
             ps = procs.snapshot()
             mine = self.our_pids(ps)
+            previous = [c for c in p.managed_components() if launchd.info(self.label(p, c)).running]
             conf = self.conflicts(p, ps)
             if conf:
+                conflicted = True
                 self._set_error(p.id, "", "无法启动：" + "；".join(conf))
                 if by_user:
                     self.store.set_intent(p.id, "stopped", by="conflict")
@@ -498,9 +540,10 @@ class Controller:
             for c in self._order(p):
                 if only and c.id not in only:
                     continue
+                self._startup_remaining(p)
                 ji = launchd.info(self.label(p, c))
                 if ji.running and ji.pid in mine:
-                    ok, _ = self._ready(p, c)
+                    ok, _ = self._ready(p, c, timeout=self._startup_remaining(p))
                     if ok:
                         continue
                 if not skip_build:
@@ -512,6 +555,8 @@ class Controller:
                         return
                 if ji.loaded:
                     self._bootout_wait(p, c)
+                self._startup_remaining(p)
+                started.append(c)
                 ok, err = self._bootstrap(p, c)
                 if not ok:
                     self._set_error(p.id, c.id, f"launchd 拒绝启动：{err}")
@@ -520,31 +565,70 @@ class Controller:
                     return
             for g in p.generators():
                 self._run_generator(p, g, reason="启动")
+            self._startup_remaining(p)
+            success = True
             if open_after:
                 self.open(p.id)
+        except TimeoutError as e:
+            self._set_error(p.id, "", str(e))
         except Exception as e:  # noqa: BLE001
             self._set_error(p.id, "", f"内部错误：{e}\n{traceback.format_exc(limit=3)}")
         finally:
-            self._end(p.id)
+            try:
+                if not success and not conflicted:
+                    if not previous:
+                        self.store.set_intent(p.id, "stopped", by="start-failed")
+                    if started:
+                        with self.lock:
+                            self.ops[p.id]["kind"] = "stopping"
+                        for c in reversed(started):
+                            try:
+                                ok, err = self._bootout_wait(p, c)
+                            except Exception as e:  # still release the operation if launchctl fails
+                                ok, err = False, str(e)
+                            if not ok:
+                                original = self.errors.get(p.id, {}).get("message", "启动失败")
+                                self._set_error(p.id, c.id, f"{original}；清理失败：{err}")
+            finally:
+                self._end(p.id)
 
     def _wait_ready(self, p: Project, c: Component) -> bool:
-        end = time.time() + c.start_timeout
+        end = time.monotonic() + min(c.start_timeout, self._startup_remaining(p))
         label = self.label(p, c)
         detail = ""
-        while time.time() < end:
+        while time.monotonic() < end:
             rec = runner.read_record(p.id, c.id)
             if rec.get("gave_up"):
                 self._set_error(p.id, c.id, f"{rec.get('error')}\n{tail(log_path(p.id, c.id), 15)}")
                 return False
-            ok, detail = self._ready(p, c, cached=False)
-            if ok:
-                return True
             ji = launchd.info(label)
             if not ji.loaded:
                 self._set_error(p.id, c.id, "进程未在 launchd 中运行")
                 return False
-            time.sleep(1.0)
-        self._set_error(p.id, c.id, f"就绪检查超时（{int(c.start_timeout)}s）：{detail}\n{tail(log_path(p.id, c.id), 15)}")
+            if not ji.running and ji.last_exit not in (None, "(never exited)"):
+                self._set_error(p.id, c.id, f"进程在就绪前退出（exit {ji.last_exit}）\n{tail(log_path(p.id, c.id), 15)}")
+                return False
+            if not ji.running:
+                time.sleep(min(0.1, max(0, end - time.monotonic())))
+                continue
+            if c.port:
+                listener = procs.listeners().get(c.port)
+                if listener is not None and listener not in procs.descendants(ji.pid, procs.snapshot()):
+                    self._set_error(p.id, c.id, f"端口 {c.port} 被其他进程占用（pid {listener}）")
+                    return False
+            remaining = min(end - time.monotonic(), self._startup_remaining(p))
+            if remaining <= 0:
+                break
+            future = self._pool.submit(self._ready, p, c, cached=False, timeout=remaining)
+            try:
+                ok, detail = future.result(timeout=remaining)
+            except TimeoutError:
+                future.cancel()
+                break
+            if ok and time.monotonic() < end:
+                return True
+            time.sleep(min(0.1, max(0, end - time.monotonic())))
+        self._set_error(p.id, c.id, f"启动就绪超时（总预算 {STARTUP_TIMEOUT:g}s）：{detail}\n{tail(log_path(p.id, c.id), 15)}")
         return False
 
     def stop(self, pid: str) -> dict:
@@ -589,19 +673,24 @@ class Controller:
         return {"ok": True, "accepted": True, "message": "重启中"}
 
     def _do_restart(self, p: Project, components: list[str] | None, by_user: bool = False) -> None:
-        comps = [c for c in self._order(p) if not components or c.id in components]
-        # compile first so a broken build never takes down the running instance
-        for c in comps:
-            ok, err = self._maybe_install(p, c)
-            if ok:
-                ok, err = self._build(p, c)
-            if not ok:
-                self._set_error(p.id, c.id, err)
-                self._end(p.id)
-                return
-        for c in reversed(comps):
-            self._bootout_wait(p, c)
-        self._do_start(p, False, only=[c.id for c in comps], skip_build=True, by_user=by_user)
+        try:
+            comps = [c for c in self._order(p) if not components or c.id in components]
+            # Compile first so a broken/slow build never takes down the running instance.
+            for c in comps:
+                ok, err = self._maybe_install(p, c)
+                if ok:
+                    ok, err = self._build(p, c)
+                if not ok:
+                    self._set_error(p.id, c.id, err)
+                    self._end(p.id)
+                    return
+            self._startup_remaining(p)
+            for c in reversed(comps):
+                self._bootout_wait(p, c)
+            self._do_start(p, False, only=[c.id for c in comps], skip_build=True, by_user=by_user)
+        except Exception as e:  # a preparation timeout must not leave a stuck operation
+            self._set_error(p.id, "", f"重启失败：{e}")
+            self._end(p.id)
 
     def open(self, pid: str) -> dict:
         p = self.projects.get(pid)
@@ -873,7 +962,7 @@ class Controller:
         elif op:
             state = "starting"
         elif intent != "running":
-            state = "stopped"
+            state = "failed" if err and self.store.proj(p.id).get("intent_by") == "start-failed" else "stopped"
             if any_running:
                 state = "stopping"
         else:
@@ -893,7 +982,8 @@ class Controller:
             ext = external = self.external_instances(p, ps, fresh=False)
             if ext:
                 adopt, ext_ports = self._adoptable(p, ext)
-                desc = "；".join(f"{e['name']} pid {e['pid']}" + (f"，端口 {'/'.join(map(str, e['ports']))}" if e["ports"] else "")
+                desc = "；".join(f"{e['name']}" + (f"（项目 {e['managed_project']}）" if e.get("managed_project") else "")
+                                 + f" pid {e['pid']}" + (f"，端口 {'/'.join(map(str, e['ports']))}" if e["ports"] else "")
                                  + f"（{e['cmd']}）" for e in ext)
                 for cs in managed:
                     mine = [e for e in ext if e["component"] == cs["id"]]

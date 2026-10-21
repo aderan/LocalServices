@@ -10,9 +10,9 @@ name = "Next.js dev"
 # port 3000 = NEXT_PUBLIC_SITE_URL default; .env.local is loaded by Next itself
 cmd = ["node_modules/.bin/next", "dev", "--turbopack", "-p", "3000", "-H", "127.0.0.1"]
 port = 3000
-# cold Turbopack start ≈ 50s + first /zh compile ≈ 75s on this Mac
-ready = { http = "http://127.0.0.1:3000/zh", timeout = 180, interval = 30 }
-start_timeout = 420
+# A cold compile exceeding the startup budget is a visible failure, not an endless start.
+ready = { http = "http://127.0.0.1:3000/zh", timeout = 2, interval = 30 }
+start_timeout = 30
 hot = true
 watch = ["src", "messages"]
 restart_on = ["next.config.ts", ".env.local", "package.json", "tsconfig.json"]

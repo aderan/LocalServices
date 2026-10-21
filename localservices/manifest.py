@@ -52,7 +52,7 @@ class Component:
     port: int | None = None
     ready: Probe | None = None
     required: bool = True
-    start_timeout: float = 90.0
+    start_timeout: float = 30.0
     after: list[str] = field(default_factory=list)
     # code update
     hot: bool = False  # dev server applies source edits itself
@@ -146,6 +146,15 @@ def load_all(directory: Path | None = None) -> dict[str, Project]:
         if p.id in out:
             raise ValueError(f"duplicate project id {p.id}")
         out[p.id] = p
+    ports: dict[int, str] = {}
+    for p in out.values():
+        for c in p.managed_components():
+            if not c.port:
+                continue
+            owner = f"{p.id}.{c.id}"
+            if c.port in ports:
+                raise ValueError(f"duplicate listen port {c.port}: {ports[c.port]} and {owner}")
+            ports[c.port] = owner
     return out
 
 

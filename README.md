@@ -22,6 +22,10 @@ scripts/uninstall.sh --purge  # 另删本工具状态与日志；子项目数据
 
 - `services/<id>.toml` 是项目清单：组件（server / worker / generator）、命令、端口、就绪探针、
   依赖、热更新与监视范围。端口固定写在清单里，用户不需要管理地址。
+  清单加载时拒绝重复监听端口；运行时其他受管项目占用端口也会报告冲突。
+- 每次启动共用 30 秒预算（包括安装、编译、生成和就绪探测）；进程提前退出立即报错。
+  超时后清理本轮拉起的组件，保留错误并释放操作状态；可以停止或重试，不自动循环启动。
+  Next.js 首次冷编译若超过预算，同样显示失败；不会把仅端口可连接当作页面已就绪。
 - 每个组件一个 LaunchAgent `com.mybrain.ls.<project>.<component>`，由 runner 包装：
   短命退出计失败，指数退避（最多 60s），连续 5 次后停止自动恢复；源码再变化时自动重试一次。
 - 运行意图持久化在 `~/Library/Application Support/LocalServices/state.json`；
@@ -37,6 +41,9 @@ scripts/uninstall.sh --purge  # 另删本工具状态与日志；子项目数据
   - generator 组件在输入变化后重新生成，失败保留上次有效输出。
 - 适配器（`localservices/adapters/`）：MediaScope、BrowserCapture、To2050 的忙碌/健康判断，
   orx-analytics 仅只读观察。
+- Climbo 模板编辑（`services/climbo.toml`）：从当前源码起管理端 `127.0.0.1:3001/admin/templates`
+  与本地 API `:8080`，数据库指向已有的 `climbo-postgres :5434`。Postgres、Redis、Metadata
+  只观察，不随项目启停，也不连接生产管理端。
 - 日志 `~/Library/Logs/LocalServices/`（0600，轮转，令牌与凭据脱敏）。
 
 ## 测试
