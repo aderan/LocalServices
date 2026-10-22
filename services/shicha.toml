@@ -9,13 +9,14 @@ id = "api"
 name = "Go API"
 cwd = "services/api"
 # compile first; a failed build keeps the running binary (config/ is read relative to cwd)
-build = ["go", "build", "-o", "{build}/shicha-api", "."]
-cmd = ["{build}/shicha-api"]
+build = ["python3", "../../scripts/dev_api.py", "build", "--binary", "{build}/shicha-api"]
+cmd = ["python3", "../../scripts/dev_api.py", "run", "--binary", "{build}/shicha-api"]
+env = { SHICHA_APP_PORT = "8000" }
 port = 8000
-# /v1/brands reads the DB, so ready implies Postgres reachable too
-ready = { http = "http://127.0.0.1:8000/v1/brands", timeout = 5, interval = 15 }
+# API initializes Postgres before this route; receiver configuration must also be present.
+ready = { http = "http://127.0.0.1:8000/v1/admin/commerce/runtime", json_ok = "receiverEnabled", timeout = 5, interval = 15 }
 start_timeout = 60
-watch = ["."]
+watch = [".", "../../scripts/dev_api.py", "../../tools/crawler", "../../tools/acquire", "../../packages/capture-contract"]
 ignore = ["uploads"]
 external_cmd = "go-build.*/exe/main|shicha-api|go run main.go"
 
@@ -24,6 +25,7 @@ id = "admin"
 name = "管理前端"
 cwd = "apps/admin-web"
 cmd = ["node_modules/.bin/vite", "--host", "127.0.0.1", "--port", "5176", "--strictPort"]
+env = { VITE_PROXY_TARGET = "http://127.0.0.1:8000" }
 after = ["api"]
 port = 5176
 ready = { http = "http://127.0.0.1:5176/" }

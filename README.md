@@ -58,3 +58,9 @@ python3 tests/verify_next_clone.py         # Next.js 热更新：在 Buildbase �
 ```
 
 测试不触碰真实项目实例与数据。
+
+### ShiCha 开发启动契约
+
+ShiCha 的受管 API 和终端 `make api-run` 共用其仓内 `scripts/dev_api.py`：构建 API/commerce-sync，生成与 API 端口一致的接收配置，再启动。就绪探针要求实时 `/v1/admin/commerce/runtime` 的 `receiverEnabled=true`，避免仅数据库可用却没有接收采集的实例被标为就绪。crawler/acquire/采集契约变化也触发重建。管理端代理明确指向 API :8000。
+
+排查配置漂移或“本地保存但未进入整理”：在 ShiCha 仓运行 `make api-dev-doctor`。它核对实际进程配置并检查待接收回执；非零退出须查看 ShiCha API 的 `[commerce-auto]` 日志。旧 Application Support 下手工维护的 receive.json 不再是受管启动配置源。
