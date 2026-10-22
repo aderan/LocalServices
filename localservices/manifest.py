@@ -78,6 +78,9 @@ class Dependency:
     affects: list[str] = field(default_factory=list)
     managed: bool = False
     note: str = ""
+    required: bool = False  # must be ready before compiling or starting the application
+    container: str | None = None  # permission to start this existing Colima container, never create/stop it
+    volume: str | None = None  # required existing named volume; prevents attaching the wrong database
 
 
 @dataclass

@@ -223,6 +223,52 @@ class StartupTest(unittest.TestCase):
         self.assertTrue(state["loaded"])
         self.assertEqual(state["bootouts"], 0)
 
+    def test_missing_required_dependency_blocks_api_before_bootstrap(self):
+        def probe(target, timeout=None):
+            return (False, "connection refused") if target.tcp else (True, "")
+
+        ctl, state = self.simulated_service(probe)
+        dependency = manifest.Dependency("Postgres", manifest.Probe(tcp="127.0.0.1:49002"))
+        dependency.required = True
+        ctl.projects["fixture"].dependencies.append(dependency)
+        self.assertTrue(ctl.start("fixture")["accepted"])
+        self.assertTrue(self.wait_finished(ctl))
+        status = ctl.project_status(ctl.projects["fixture"])
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("Postgres", status["reason"])
+        self.assertFalse(state["loaded"])
+        self.assertFalse((self.root / "runtime/logs/fixture.web.log").exists(),
+                         "no compilation or launch may happen before required dependencies are ready")
+
+    def test_environment_preparation_is_visible_and_has_a_separate_budget(self):
+        entered, release = threading.Event(), threading.Event()
+        caller = threading.current_thread()
+
+        def probe(target, timeout=None):
+            if target.tcp and threading.current_thread() is not caller and not entered.is_set():
+                entered.set()
+                release.wait(2)
+            return True, ""
+
+        ctl, state = self.simulated_service(probe)
+        ctl.projects["fixture"].dependencies.append(manifest.Dependency(
+            "Postgres", manifest.Probe(tcp="127.0.0.1:49002"), required=True))
+        with patch("localservices.controller.STARTUP_TIMEOUT", 0.1):
+            try:
+                self.assertTrue(ctl.start("fixture")["accepted"])
+                self.assertTrue(entered.wait(1))
+                time.sleep(0.15)  # environment preparation does not consume the application's budget
+                status = ctl.project_status(ctl.projects["fixture"])
+                self.assertEqual(status["state"], "preparing")
+                self.assertIn("Postgres", status["reason"])
+                self.assertFalse(state["loaded"])
+                release.set()
+                self.assertTrue(self.wait_finished(ctl))
+                self.assertEqual(ctl.project_status(ctl.projects["fixture"])["state"], "available")
+            finally:
+                release.set()
+                self.wait_finished(ctl)
+
 
 if __name__ == "__main__":
     unittest.main()

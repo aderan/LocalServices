@@ -26,6 +26,10 @@ scripts/uninstall.sh --purge  # 另删本工具状态与日志；子项目数据
 - 每次启动共用 30 秒预算（包括安装、编译、生成和就绪探测）；进程提前退出立即报错。
   超时后清理本轮拉起的组件，保留错误并释放操作状态；可以停止或重试，不自动循环启动。
   Next.js 首次冷编译若超过预算，同样显示失败；不会把仅端口可连接当作页面已就绪。
+- 必要依赖先检查，未就绪前不编译或启动 API。Climbo/ShiCha 可自动恢复已有 Colima default
+  及清单登记的原 PostgreSQL/Redis 容器；独立显示「准备环境」（最多 120 秒），环境就绪后
+  才开始应用的 30 秒预算。共享恢复串行执行；容器不存在、数据卷或端口映射不符时明确拒绝。
+  不创建数据库/容器、不拉镜像、不切换用户的 Docker 上下文；停止项目不停止容器或 Colima。
 - 每个组件一个 LaunchAgent `com.mybrain.ls.<project>.<component>`，由 runner 包装：
   短命退出计失败，指数退避（最多 60s），连续 5 次后停止自动恢复；源码再变化时自动重试一次。
 - 运行意图持久化在 `~/Library/Application Support/LocalServices/state.json`；
@@ -42,8 +46,8 @@ scripts/uninstall.sh --purge  # 另删本工具状态与日志；子项目数据
 - 适配器（`localservices/adapters/`）：MediaScope、BrowserCapture、To2050 的忙碌/健康判断，
   orx-analytics 仅只读观察。
 - Climbo 模板编辑（`services/climbo.toml`）：从当前源码起管理端 `127.0.0.1:3001/admin/templates`
-  与本地 API `:8080`，数据库指向已有的 `climbo-postgres :5434`。Postgres、Redis、Metadata
-  只观察，不随项目启停，也不连接生产管理端。
+  与本地 API `:8080`，数据库指向已有的 `climbo-postgres :5434`。Postgres/Redis 可按需恢复，
+  Metadata 只观察；停止项目均不停止这些依赖，也不连接生产管理端。
 - 日志 `~/Library/Logs/LocalServices/`（0600，轮转，令牌与凭据脱敏）。
 
 ## 测试

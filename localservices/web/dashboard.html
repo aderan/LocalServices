@@ -23,7 +23,7 @@
   .state::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background: var(--mute); vertical-align: 1px; }
   .s-available::before { background: var(--ok); } .s-partial::before { background: var(--warn); }
   .s-failed::before, .s-conflict::before { background: var(--bad); }
-  .s-starting::before, .s-stopping::before { background: var(--btn); }
+  .s-starting::before, .s-stopping::before, .s-preparing::before { background: var(--btn); }
   .s-external::before { background: var(--ok); box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--ok); }
   .code { color: var(--mute); font-size: 13px; }
   .code.pending, .code.failed { color: var(--warn); font-weight: 600; }
@@ -88,7 +88,7 @@ function primary(p) {
   if (p.observe_only) return "";
   if (p.state === "unknown") return `<button class="primary" disabled>状态未知</button>`;
   const busy = pending[p.id] || p.op || p.state === "starting" || p.state === "stopping";
-  if (busy) return `<button class="primary" disabled>${p.state === "stopping" || pending[p.id] === "stop" ? "停止中…" : "启动中…"}</button>`;
+  if (busy) return `<button class="primary" disabled>${p.state === "preparing" ? "准备环境…" : p.state === "stopping" || pending[p.id] === "stop" ? "停止中…" : "启动中…"}</button>`;
   if (p.state === "available" || p.state === "partial" || p.state === "external")
     return p.can_open ? `<button class="primary" onclick="act('${p.id}','open')">打开</button>` : "";
   if (p.state === "failed" || p.state === "conflict")

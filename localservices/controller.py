@@ -20,10 +20,12 @@ from pathlib import Path
 
 from . import adapters, launchd, manifest, paths, procs, runner, sourcewatch
 from .manifest import Component, Project
+from .infrastructure import DependencyError, Infrastructure
 
 STATE_LABELS = {
     "stopped": "已停止",
     "starting": "启动中",
+    "preparing": "准备环境",
     "available": "可用",
     "partial": "部分可用",
     "failed": "故障",
@@ -143,6 +145,7 @@ class Controller:
         self.fsevents: dict = {"ok": None, "at": 0.0, "detail": ""}
         self._refresh_lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="probe")
+        self.infrastructure = Infrastructure()
         self.reload()
 
     # ---------- manifests ----------
@@ -489,6 +492,20 @@ class Controller:
         with self.lock:
             self.ops.pop(pid, None)
 
+    def _prepare_dependencies(self, p: Project) -> None:
+        if not any(d.required for d in p.dependencies):
+            return
+
+        def progress(detail):
+            with self.lock:
+                self.ops[p.id].update(kind="preparing", detail=detail)
+                self.ops[p.id].pop("deadline", None)
+
+        progress("检查必要依赖")
+        self.infrastructure.ensure(p.dependencies, progress)
+        with self.lock:
+            self.ops[p.id].update(kind="starting", detail="", deadline=time.monotonic() + STARTUP_TIMEOUT)
+
     def start(self, pid: str, open_after: bool = False) -> dict:
         p = self.projects.get(pid)
         if not p:
@@ -537,6 +554,8 @@ class Controller:
                     self.store.set_intent(p.id, "stopped", by="conflict")
                 # automatic start (autostart / re-login): keep intent, retry after the guard period
                 return
+            if not skip_build:
+                self._prepare_dependencies(p)
             for c in self._order(p):
                 if only and c.id not in only:
                     continue
@@ -569,6 +588,8 @@ class Controller:
             success = True
             if open_after:
                 self.open(p.id)
+        except DependencyError as e:
+            self._set_error(p.id, "", "必要依赖未就绪：" + str(e))
         except TimeoutError as e:
             self._set_error(p.id, "", str(e))
         except Exception as e:  # noqa: BLE001
@@ -674,6 +695,7 @@ class Controller:
 
     def _do_restart(self, p: Project, components: list[str] | None, by_user: bool = False) -> None:
         try:
+            self._prepare_dependencies(p)
             comps = [c for c in self._order(p) if not components or c.id in components]
             # Compile first so a broken/slow build never takes down the running instance.
             for c in comps:
@@ -946,7 +968,8 @@ class Controller:
         for d in p.dependencies:
             ok, detail = procs.probe(d.probe)
             deps.append({"name": d.name, "ok": ok, "detail": detail, "affects": d.affects,
-                         "managed": d.managed, "note": d.note})
+                         "managed": d.managed, "note": d.note, "required": d.required,
+                         "recoverable": bool(d.required and d.container)})
 
         managed = [cs for cs in comps if cs["kind"] != "generator"]
         required = [cs for cs in managed if cs["required"]]
@@ -959,6 +982,8 @@ class Controller:
         reason = ""
         if op and op["kind"] == "stopping":
             state = "stopping"
+        elif op and op["kind"] == "preparing":
+            state = "preparing"
         elif op:
             state = "starting"
         elif intent != "running":
@@ -1007,10 +1032,14 @@ class Controller:
                 problems.append(f"{cs['name']}：{cs['label']}" + (f"（{cs['detail']}）" if cs.get("detail") else ""))
         for d in dep_bad:
             aff = "、".join(d["affects"]) or p.name
-            problems.append(f"依赖 {d['name']} 不可用，影响 {aff}" + ("（外部管理，本工具不启动）" if not d["managed"] else ""))
+            hint = "（启动项目时可恢复原容器）" if d["recoverable"] else (
+                "（外部管理，本工具不启动）" if not d["managed"] else "")
+            problems.append(f"依赖 {d['name']} 不可用，影响 {aff}" + hint)
         for g in gen_bad:
             problems.append(f"{g['name']}：{g['label']}")
-        if err:
+        if op and op.get("detail"):
+            reason = op["detail"]
+        elif err:
             reason = err["message"]
         elif ext_reason:
             reason = ext_reason

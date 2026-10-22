@@ -40,4 +40,7 @@ external_cmd = "vite"
 name = "Postgres（shicha-postgres :5435）"
 probe = { tcp = "127.0.0.1:5435" }
 affects = ["Go API"]
-note = "Colima/Docker 容器，外部管理"
+required = true
+container = "shicha-postgres"
+volume = "shicha_postgres_data"
+note = "可恢复 Colima 与现有容器及原数据卷；不随项目停止"
