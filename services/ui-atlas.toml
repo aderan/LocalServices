@@ -18,6 +18,7 @@ install = ["pnpm", "install"]
 install_when = ["pnpm-lock.yaml"]
 install_marker = "node_modules"
 external_cmd = "vite"
+external_cwd_exact = true  # Explore is a separate Vite app under apps/explore
 
 [[components]]
 id = "registry"

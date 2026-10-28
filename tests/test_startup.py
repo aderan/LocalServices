@@ -86,6 +86,36 @@ class StartupTest(unittest.TestCase):
             time.sleep(0.01)
         return not ctl.ops
 
+    def monorepo_instance(self, *, nested, port):
+        self.project("atlas", 49001)
+        ctl = self.controller()
+        project = ctl.projects["atlas"]
+        component = project.component("web")
+        component.external_cmd = "vite"
+        component.external_cwd_exact = True
+        cwd = project.source / "apps/explore" if nested else project.source
+        process = {42: procs.Proc(42, 1, 0, f"node vite --port {port}")}
+        with patch.object(launchd, "info", return_value=launchd.JobInfo()), \
+                patch.object(procs, "listeners", return_value={port: 42}), \
+                patch.object(procs, "all_cwds", return_value={42: str(cwd.resolve())}):
+            return ctl, project, ctl.external_instances(project, process)
+
+    def test_exact_cwd_does_not_adopt_a_monorepo_subapp(self):
+        _, _, instances = self.monorepo_instance(nested=True, port=49002)
+        self.assertEqual(instances, [])
+
+    def test_exact_cwd_recognizes_the_root_app_on_another_port(self):
+        _, _, instances = self.monorepo_instance(nested=False, port=49002)
+        self.assertEqual(len(instances), 1)
+        self.assertTrue(instances[0]["same_project"])
+        self.assertEqual(instances[0]["ports"], [49002])
+
+    def test_exact_cwd_rejects_takeover_of_a_subapp_holding_the_root_port(self):
+        ctl, project, instances = self.monorepo_instance(nested=True, port=49001)
+        self.assertEqual(len(instances), 1)
+        self.assertFalse(instances[0]["same_project"])
+        self.assertFalse(ctl._adoptable(project, instances)[0])
+
     def test_duplicate_ports_rejected_before_start(self):
         self.project("buildbase", 3000)
         self.project("climbo", 3000)

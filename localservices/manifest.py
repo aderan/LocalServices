@@ -67,6 +67,7 @@ class Component:
     # ownership: recognise instances we did not start
     external_cmd: str | None = None  # regex on process command line
     external_cwd: str | None = None  # relative to source; defaults to cwd
+    external_cwd_exact: bool = False  # distinguish apps that share a monorepo source
     # generator only
     debounce: float = 2.0
 

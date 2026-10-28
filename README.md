@@ -64,3 +64,12 @@ python3 tests/verify_next_clone.py         # Next.js 热更新：在 Buildbase �
 ShiCha 的受管 API 和终端 `make api-run` 共用其仓内 `scripts/dev_api.py`：构建 API/commerce-sync，生成与 API 端口一致的接收配置，再启动。就绪探针要求实时 `/v1/admin/commerce/runtime` 的 `receiverEnabled=true`，避免仅数据库可用却没有接收采集的实例被标为就绪。crawler/acquire/采集契约变化也触发重建。管理端代理明确指向 API :8000。
 
 排查配置漂移或“本地保存但未进入整理”：在 ShiCha 仓运行 `make api-dev-doctor`。它核对实际进程配置并检查待接收回执；非零退出须查看 ShiCha API 的 `[commerce-auto]` 日志。旧 Application Support 下手工维护的 receive.json 不再是受管启动配置源。
+
+### Explore 采集与灵感库
+
+- 菜单栏／Dashboard 独立入口为 **Explore**，`lsctl start explore --open`，打开 `http://127.0.0.1:5178/explore/#/capture?mode=agent`。
+- 前端从 UI-Atlas 的 `apps/explore` 运行，后台为 `tools/explore-server/src/server.mjs`（8787）；后台先就绪，再启动前端。复用项目 `.env`／`.env.local` 与既有资料目录，不另建空库、不自动开始采集。
+- 后台设置 `auto_update = false`，代码更新后在任务结束时手动重启，避免采集过程中因源码变化自动中断。前端继续热更新。
+- Explore 与原 UI-Atlas（5175）独立启停。Atlas 的 `/explore` 只是代理入口，需要 Explore 服务也运行；直接打开 Explore 不依赖 Atlas。
+- 两者都使用 Vite 且同仓库，声明 `external_cwd_exact = true`，按各自工作目录识别外部实例，防止将 Explore 当作 Atlas 打开或接管。其他清单默认保留子目录匹配。
+- 已从终端／Agent 启动的 Explore 显示「外部运行」并可打开；登记入口不意味着已接管，也不会停止原实例。

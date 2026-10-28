@@ -209,20 +209,20 @@ class Controller:
             cwds = self.cwds(0)
         src = str(p.source.resolve())
 
-        def inside(pid: int, root: str = src) -> bool:
+        def inside(pid: int, root: str = src, exact: bool = False) -> bool:
             cwd = cwds.get(pid, "")
-            return cwd == root or cwd.startswith(root + "/")
+            return cwd == root or (not exact and cwd.startswith(root + "/"))
 
         out, roots = [], set()
         for c in p.managed_components():
+            want = str((p.source / (c.external_cwd or c.cwd)).resolve())
             cands = []
             if c.port and c.port in listen and listen[c.port] not in ours:
                 cands.append((listen[c.port], "port"))
             if c.external_cmd:
-                want = str((p.source / (c.external_cwd or c.cwd)).resolve())
                 rx = re.compile(c.external_cmd)
                 cands += [(pid, "cmd") for pid, pr in ps.items()
-                          if pid not in ours and pid != os.getpid() and inside(pid, want) and rx.search(pr.cmd)]
+                          if pid not in ours and pid != os.getpid() and inside(pid, want, c.external_cwd_exact) and rx.search(pr.cmd)]
             for pid, why in cands:
                 root = pid
                 # climb through launcher wrappers (npm run dev → sh -c → node), never into shells/apps
@@ -237,7 +237,8 @@ class Controller:
                 tree = procs.descendants(root, ps)
                 out.append({"component": c.id, "name": c.name or c.id, "pid": root, "tree": sorted(tree),
                             "ports": sorted(pt for t in tree for pt in ports_of.get(t, [])), "why": why,
-                            "cmd": ps[root].cmd[:120] if root in ps else "?", "same_project": inside(pid),
+                            "cmd": ps[root].cmd[:120] if root in ps else "?",
+                            "same_project": inside(pid, want, True) if c.external_cwd_exact else inside(pid),
                             "managed_project": other_owners.get(pid)})
         return out
 
