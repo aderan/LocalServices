@@ -673,11 +673,12 @@ class Controller:
 
     def _do_stop(self, p: Project) -> None:
         try:
+            self.errors.pop(p.id, None)
             for c in reversed(self._order(p)):
                 ok, err = self._bootout_wait(p, c)
                 if not ok:
                     self._set_error(p.id, c.id, f"停止失败：{err}")
-            self.errors.pop(p.id, None)
+                    break
         finally:
             self._end(p.id)
 
@@ -685,6 +686,14 @@ class Controller:
         p = self.projects.get(pid)
         if not p or p.observe_only:
             return {"ok": False, "error": "不可重启"}
+        if components is not None:
+            known = {c.id for c in p.managed_components()}
+            if (not isinstance(components, list) or not components
+                    or any(not isinstance(cid, str) or cid not in known for cid in components)
+                    or len(set(components)) != len(components)):
+                return {"ok": False, "error": "重启组件必须为非空且不重复的已登记组件列表"}
+        if self.external_instances(p):
+            return {"ok": False, "error": "存在外部实例，请先接管，再重启指定组件"}
         busy = self.adapters[pid].busy()
         if busy:
             return {"ok": False, "error": f"有活动任务，已延后：{busy}"}
@@ -693,6 +702,52 @@ class Controller:
         self.store.set_intent(pid, "running")
         threading.Thread(target=self._do_restart, args=(p, components, True), daemon=True).start()
         return {"ok": True, "accepted": True, "message": "重启中"}
+
+    def group_action(self, group: str, action: str) -> dict:
+        """Operate a declared workspace using existing per-project lifecycle operations."""
+        members = sorted((p for p in self.projects.values() if p.group == group),
+                         key=lambda p: (p.group_order, p.id))
+        if not members or action not in ("start", "stop", "restart"):
+            return {"ok": False, "error": "未知工作区或操作"}
+        with self.lock:
+            if any(p.id in self.ops for p in members):
+                return {"ok": False, "error": "工作区成员操作进行中，请稍候"}
+            for p in members:
+                if p.observe_only or self.external_instances(p):
+                    return {"ok": False, "error": f"{p.name} 包含外部实例／仅观察，请先处理其归属"}
+                busy = self.adapters[p.id].busy()
+                if busy:
+                    return {"ok": False, "error": f"{p.name} 有活动任务，暂不操作：{busy}"}
+            for p in members:
+                self._begin(p.id, "stopping" if action == "stop" else "starting")
+        threading.Thread(target=self._do_group_action, args=(members, action), daemon=True).start()
+        return {"ok": True, "accepted": True, "message": "工作区操作中，按组件依赖顺序执行"}
+
+    def _do_group_action(self, members: list[Project], action: str) -> None:
+        order = list(reversed(members)) if action == "stop" else members
+        try:
+            for p in order:
+                busy = self.adapters[p.id].busy()
+                if busy:
+                    self._set_error(p.id, "", f"工作区操作已停止：{busy}")
+                    break
+                # Each project keeps its own existing startup budget; queue time is excluded.
+                if action != "stop":
+                    self.ops[p.id]["deadline"] = time.monotonic() + STARTUP_TIMEOUT
+                self.store.set_intent(p.id, "stopped" if action == "stop" else "running")
+                if action == "restart":
+                    self._do_restart(p, None, True)
+                elif action == "start":
+                    self._do_start(p, False)
+                else:
+                    self._do_stop(p)
+                if p.id in self.errors:
+                    break
+        except Exception as err:
+            self._set_error(p.id, "", f"工作区操作失败：{err}")
+        finally:
+            for p in members:
+                self._end(p.id)
 
     def _do_restart(self, p: Project, components: list[str] | None, by_user: bool = False) -> None:
         try:
@@ -709,7 +764,9 @@ class Controller:
                     return
             self._startup_remaining(p)
             for c in reversed(comps):
-                self._bootout_wait(p, c)
+                ok, err = self._bootout_wait(p, c)
+                if not ok:
+                    raise RuntimeError(f"{c.name or c.id} 停止失败：{err}")
             self._do_start(p, False, only=[c.id for c in comps], skip_build=True, by_user=by_user)
         except Exception as e:  # a preparation timeout must not leave a stuck operation
             self._set_error(p.id, "", f"重启失败：{e}")
@@ -902,7 +959,8 @@ class Controller:
     def project_status(self, p: Project, ps: dict | None = None, listen: dict | None = None) -> dict:
         ad = self.adapters[p.id]
         base = {"id": p.id, "name": p.name, "source": str(p.source), "observe_only": p.observe_only,
-                "description": p.description}
+                "description": p.description, "group": p.group,
+                "group_name": p.group_name, "group_order": p.group_order}
         if p.observe_only:
             try:
                 ob = ad.observe()
@@ -1084,7 +1142,8 @@ class Controller:
             return self.project_status(p, ps)
         except Exception as e:  # noqa: BLE001
             return {"id": p.id, "name": p.name, "state": "unknown", "label": "未知", "reason": f"状态探测失败：{e}",
-                    "components": [], "code": {"state": "unknown", "label": "未知"}, "source": str(p.source)}
+                    "components": [], "code": {"state": "unknown", "label": "未知"}, "source": str(p.source),
+                    "group": p.group, "group_name": p.group_name, "group_order": p.group_order}
 
     def _refresh(self) -> dict:
         self.reload()

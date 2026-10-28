@@ -129,6 +129,12 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/refresh":
                 self._send(200, self.ctl.refresh_snapshot(wait=6))
                 return
+            workspace = re.fullmatch(r"/api/groups/([\w-]+)/(start|stop|restart)", u.path)
+            if workspace:
+                res = self.ctl.group_action(*workspace.groups())
+                threading.Thread(target=self.ctl.refresh_snapshot, daemon=True).start()
+                self._send(200 if res.get("ok") else 409, res)
+                return
             m = re.fullmatch(r"/api/projects/([\w-]+)/(start|stop|restart|open|open-source|action|takeover)", u.path)
             if not m:
                 self._send(404, {"ok": False, "error": "not found"})
@@ -139,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
             elif act == "stop":
                 res = self.ctl.stop(pid)
             elif act == "restart":
-                res = self.ctl.restart(pid)
+                res = self.ctl.restart(pid, components=body.get("components"))
             elif act == "open":
                 res = self.ctl.open(pid)
             elif act == "open-source":

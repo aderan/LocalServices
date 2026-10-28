@@ -47,6 +47,10 @@ def main(argv=None) -> int:
         if name == "logs":
             sp.add_argument("--component")
             sp.add_argument("-n", type=int, default=60)
+        if name == "restart":
+            sp.add_argument("--component", action="append", help="restart only this registered component")
+    for name in ("start-group", "stop-group", "restart-group"):
+        sub.add_parser(name).add_argument("group")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "status":
@@ -59,7 +63,14 @@ def main(argv=None) -> int:
             for comp, text in res.get("logs", {}).items():
                 print(f"===== {comp}\n{text}")
             return 0 if code == 200 else 1
+        if a.cmd.endswith("-group"):
+            action = a.cmd.removesuffix("-group")
+            code, res = call("POST", f"/api/groups/{a.group}/{action}")
+            print(res.get("message") or res.get("error") or res)
+            return 0 if res.get("ok") else 1
         body = {"open": True} if getattr(a, "open", False) else {}
+        if a.cmd == "restart" and a.component:
+            body["components"] = a.component
         code, res = call("POST", f"/api/projects/{a.project}/{a.cmd}", body)
         print(res.get("message") or res.get("error") or res)
         if a.cmd in ("start", "takeover") and a.wait and res.get("ok"):

@@ -42,6 +42,23 @@
   td { padding: 2px 14px 2px 0; vertical-align: top; }
   td.k { color: var(--mute); }
   pre { background: var(--soft); padding: 8px; border-radius: 6px; max-height: 320px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+  .workspace { margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 2px; }
+  .workspace-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: space-between; }
+  .workspace h2 { font-size: 16px; margin: 0; }
+  .workspace-note { color: var(--mute); margin: 4px 0 10px; font-size: 13px; }
+  .workspace .row:last-child { border-bottom: 0; }
+  .table-scroll { overflow-x: auto; }
+  button:focus-visible, summary:focus-visible { outline: 2px solid var(--btn); outline-offset: 3px; }
+  @media (max-width: 800px) {
+    header { padding: 16px 16px 8px; flex-wrap: wrap; }
+    main { padding: 0 16px 24px; }
+    .line { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .code, .acts { grid-column: 1 / -1; }
+    .acts { justify-content: flex-start; }
+    .reason, details, .msg { margin-left: 0; overflow-wrap: anywhere; }
+    .workspace { padding: 12px 10px 0; }
+    button { min-height: 40px; }
+  }
   .msg { color: var(--mute); font-size: 12px; margin-left: 192px; }
 </style>
 </head>
@@ -66,7 +83,8 @@ function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","
 function t(ts) { return ts ? new Date(ts*1000).toLocaleString("zh-CN", {hour12:false}) : "—"; }
 
 async function act(id, action, body) {
-  if (pending[id]) return;
+  if (pending[id] || pending['g-' + last?.projects.find(p => p.id === id)?.group]) return;
+  msgs[id] = "";
   pending[id] = action;
   render();
   try {
@@ -75,6 +93,21 @@ async function act(id, action, body) {
     if (code !== 200 && res.error) msgs[id] = res.error;
   } catch (e) { msgs[id] = "无法连接控制服务"; }
   pending[id] = null;
+  await refresh();
+}
+
+async function groupAct(id, action) {
+  const members = last.projects.filter(p => p.group === id);
+  if (members.some(p => pending[p.id] || p.op) || pending['g-' + id]) return;
+  for (const member of members) delete msgs[member.id];
+  msgs['g-' + id] = '';
+  pending['g-' + id] = action;
+  render();
+  try {
+    const [, res] = await api("POST", `/api/groups/${id}/${action}`);
+    msgs['g-' + id] = res.message || res.error || "";
+  } catch (e) { msgs['g-' + id] = "无法连接控制服务"; }
+  pending['g-' + id] = null;
   await refresh();
 }
 
@@ -87,7 +120,7 @@ async function loadLogs(id) {
 function primary(p) {
   if (p.observe_only) return "";
   if (p.state === "unknown") return `<button class="primary" disabled>状态未知</button>`;
-  const busy = pending[p.id] || p.op || p.state === "starting" || p.state === "stopping";
+  const busy = pending[p.id] || pending['g-' + p.group] || p.op || p.state === "starting" || p.state === "stopping";
   if (busy) return `<button class="primary" disabled>${p.state === "preparing" ? "准备环境…" : p.state === "stopping" || pending[p.id] === "stop" ? "停止中…" : "启动中…"}</button>`;
   if (p.state === "available" || p.state === "partial" || p.state === "external")
     return p.can_open ? `<button class="primary" onclick="act('${p.id}','open')">打开</button>` : "";
@@ -101,11 +134,11 @@ function secondary(p) {
   if (p.observe_only) {
     for (const a of (p.actions || [])) b.push(`<button onclick="act('${p.id}','action',{name:'${a.id}'})">${esc(a.label)}</button>`);
   } else {
-    const dis = (pending[p.id] || p.op) ? "disabled" : "";
+    const dis = (pending[p.id] || pending['g-' + p.group] || p.op) ? "disabled" : "";
     if (p.can_takeover) b.push(`<button ${dis} onclick="if(confirm('接管会停止这个外部启动的 ${esc(p.name)} 实例，并由本工具从最新源码启动。有活动任务时会等空闲再接管。继续？'))act('${p.id}','takeover')">接管</button>`);
     if ((p.state === "failed" || p.state === "conflict") && !p.can_takeover) b.push(`<button ${dis} onclick="act('${p.id}','start',{open:true})">重试</button>`);
     if (p.state !== "external" && (p.intent === "running" || p.state !== "stopped")) b.push(`<button ${dis} onclick="act('${p.id}','stop')">停止</button>`);
-    if (p.intent === "running") b.push(`<button ${dis} onclick="act('${p.id}','restart')">重启</button>`);
+    if (p.intent === "running" && p.state !== "external") b.push(`<button ${dis} onclick="act('${p.id}','restart')">${p.group ? (p.components.some(c => c.id === "api") ? "重启 Explore（前端＋API）" : "重启图鉴") : "重启"}</button>`);
     b.push(`<button onclick="loadLogs('${p.id}')">日志</button>`);
   }
   b.push(`<button onclick="act('${p.id}','open-source')">源码</button>`);
@@ -113,16 +146,18 @@ function secondary(p) {
 }
 
 function detailsHtml(p) {
+  const componentAction = c => p.group && c.kind === "server" && c.running && p.state !== "external"
+    ? `<button ${p.op || pending[p.id] || pending['g-' + p.group] ? "disabled" : ""} onclick="act('${p.id}','restart',{components:['${c.id}']})">仅重启${c.id === "api" ? " API" : c.id === "web" ? "前端" : " " + esc(c.name)}</button>` : "";
   const rows = (p.components || []).map(c =>
     `<tr><td class="k">${esc(c.name)}</td><td>${esc(c.label)}${c.detail ? "：" + esc(c.detail) : ""}</td>
      <td class="k">${c.kind === "generator" ? (c.last_run ? "最近 " + t(c.last_run) : "") : (c.pid ? "pid " + c.pid + " · 启动于 " + t(c.started_at) : "")}</td>
-     <td class="k">${c.code ? esc(c.code.label) + (c.code.detail ? "：" + esc(c.code.detail) : "") : ""}</td></tr>`).join("");
+     <td class="k">${c.code ? esc(c.code.label) + (c.code.detail ? "：" + esc(c.code.detail) : "") : ""}</td><td>${componentAction(c)}</td></tr>`).join("");
   const deps = (p.dependencies || []).map(d =>
     `<tr><td class="k">依赖 ${esc(d.name)}</td><td>${d.ok ? "可用" : "不可用"}${d.detail ? "：" + esc(d.detail) : ""}</td><td class="k">${d.managed ? "" : "外部管理"}</td><td class="k">${esc(d.note || "")}</td></tr>`).join("");
   const extra = p.observe_only ? `<tr><td class="k">状态</td><td colspan="3">${esc(p.detail || "")}</td></tr>` : "";
   const src = `<tr><td class="k">源码</td><td colspan="3">${esc(p.source)}${p.code && p.code.process_started ? " · 进程启动于 " + t(p.code.process_started) : ""}${p.code && p.code.newest_change ? " · 最近源码修改 " + t(p.code.newest_change) : ""}</td></tr>`;
   const lg = logs[p.id] ? `<pre>${esc(logs[p.id])}</pre>` : "";
-  return `<details ${open[p.id] ? "open" : ""} ontoggle="open['${p.id}']=this.open"><summary>组件与详情</summary><table>${extra}${rows}${deps}${src}</table>${lg}</details>`;
+  return `<details ${open[p.id] ? "open" : ""} ontoggle="if(this.isConnected)open['${p.id}']=this.open"><summary>${p.group ? "组件操作与详情" : "组件与详情"}</summary><div class="table-scroll"><table>${extra}${rows}${deps}${src}</table></div>${lg}</details>`;
 }
 
 function render() {
@@ -130,7 +165,7 @@ function render() {
   if (!last) return;
   if (last.manifest_error) el.dataset.err = last.manifest_error;
   const sys = (last.system_warnings || []).map(w => `<p class="reason warn">⚠︎ ${esc(w)}</p>`).join("");
-  el.innerHTML = sys + (last.manifest_error ? `<p class="reason">${esc(last.manifest_error)}</p>` : "") + last.projects.map(p => {
+  const projectHtml = p => {
     const code = p.code || {};
     const reason = p.reason ? `<div class="reason ${p.state === "partial" ? "warn" : p.state === "external" ? "info" : ""}">${esc(p.reason)}</div>` : "";
     const msg = msgs[p.id] ? `<div class="msg">${esc(msgs[p.id])}</div>` : "";
@@ -141,6 +176,25 @@ function render() {
         <div class="code ${code.state}">${esc(code.label || "")}${code.state === "pending" || code.state === "failed" ? "：" + esc((code.detail || "").split("\n")[0]) : ""}</div>
         <div class="acts">${primary(p)}${secondary(p)}</div>
       </div>${reason}${msg}${detailsHtml(p)}</section>`;
+  };
+  const rendered = new Set();
+  el.innerHTML = sys + (last.manifest_error ? `<p class="reason">${esc(last.manifest_error)}</p>` : "") + last.projects.map(p => {
+    if (!p.group) return projectHtml(p);
+    if (rendered.has(p.group)) return "";
+    rendered.add(p.group);
+    const members = last.projects.filter(m => m.group === p.group).sort((a,b) => b.group_order - a.group_order);
+    const busy = pending['g-' + p.group] || members.some(m => m.op || pending[m.id]);
+    const disabled = busy || members.some(m => m.state === "unknown" || m.state === "external" || m.state === "conflict") ? "disabled" : "";
+    const count = members.reduce((n,m) => n + m.components.filter(c => c.kind === "server").length, 0);
+    const msg = msgs['g-' + p.group] ? `<p class="workspace-note" role="status">${esc(msgs['g-' + p.group])}</p>` : "";
+    return `<section class="workspace" id="g-${p.group}" aria-label="${esc(p.group_name || p.group)}">
+      <div class="workspace-head"><h2>${esc(p.group_name || p.group)}</h2><div class="acts">
+      <button ${disabled} onclick="groupAct('${p.group}','start')">启动全部</button>
+      <button ${disabled} onclick="groupAct('${p.group}','restart')">${busy ? "工作区操作中…" : `重启全部（${count} 个服务）`}</button>
+      <button ${disabled} onclick="if(confirm('停止工作区中的图鉴、Explore 前端和 API？'))groupAct('${p.group}','stop')">停止全部</button>
+      </div></div>
+      <p class="workspace-note">图鉴 5175 · Explore 前端 5178 · API 8787。重启全部包含 API；单项重启见各自组件操作。</p>
+      ${msg}${members.map(projectHtml).join("")}</section>`;
   }).join("");
 }
 
@@ -152,7 +206,7 @@ async function refresh() {
     const c = document.getElementById("conn");
     c.textContent = "更新于 " + new Date(snap.generated_at * 1000).toLocaleTimeString("zh-CN", {hour12:false});
     c.className = "";
-    if (location.hash && !open[location.hash.slice(3)]) open[location.hash.slice(3)] = true;
+    if (location.hash.startsWith("#p-") && !open[location.hash.slice(3)]) open[location.hash.slice(3)] = true;
   } catch (e) {
     const c = document.getElementById("conn");
     c.textContent = "无法连接控制服务（状态未知，不代表项目已停止）";

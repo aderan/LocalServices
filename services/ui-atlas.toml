@@ -1,12 +1,16 @@
 id = "ui-atlas"
-name = "UI-Atlas"
+name = "UI-Atlas 图鉴"
 description = "Vite 热更新 + 注册表自动重建"
 source = "~/Sources/Products/UI-Atlas"
 open = "http://127.0.0.1:5175/"
 
+group = "ui-atlas"
+group_name = "UI-Atlas 工作区"
+group_order = 1
+
 [[components]]
 id = "web"
-name = "Vite dev"
+name = "图鉴前端 · 5175"
 cmd = ["node_modules/.bin/vite", "--host", "127.0.0.1", "--port", "5175", "--strictPort"]
 port = 5175
 ready = { http = "http://127.0.0.1:5175/" }

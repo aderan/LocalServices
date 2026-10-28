@@ -8,6 +8,8 @@ let tokenPath = (NSHomeDirectory() as NSString).appendingPathComponent("Library/
 struct Project {
     let id: String, name: String, state: String, label: String, codeState: String, codeLabel: String
     let observeOnly: Bool, canOpen: Bool, op: String?
+    let group: String?, groupName: String?, groupOrder: Int
+    let components: [[String: Any]]
 }
 
 final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -64,7 +66,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                    state: d["state"] as? String ?? "unknown", label: d["label"] as? String ?? "未知",
                                    codeState: code["state"] as? String ?? "", codeLabel: code["label"] as? String ?? "",
                                    observeOnly: d["observe_only"] as? Bool ?? false,
-                                   canOpen: d["can_open"] as? Bool ?? false, op: d["op"] as? String)
+                                   canOpen: d["can_open"] as? Bool ?? false, op: d["op"] as? String,
+                                   group: d["group"] as? String, groupName: d["group_name"] as? String,
+                                   groupOrder: d["group_order"] as? Int ?? 0, components: d["components"] as? [[String: Any]] ?? [])
                 }
             } else {
                 self.connected = false
@@ -106,24 +110,97 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(m)
             }
             if !warnings.isEmpty { menu.addItem(.separator()) }
+            var rendered = Set<String>()
             for p in projects {
-                var title = "\(p.name) — \(p.label)"
-                if p.codeState == "pending" { title += " · 待更新" }
-                if p.codeState == "failed" { title += " · 更新失败" }
-                let m = NSMenuItem(title: title, action: #selector(clickProject(_:)), keyEquivalent: "")
-                m.target = self
-                m.representedObject = p.id
-                if p.op != nil || p.state == "starting" || p.state == "stopping" { m.isEnabled = false }
-                if p.state == "failed" || p.state == "conflict" {
-                    m.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "故障")
+                guard let group = p.group else {
+                    menu.addItem(projectItem(p))
+                    continue
                 }
-                menu.addItem(m)
+                if rendered.contains(group) { continue }
+                rendered.insert(group)
+                let members = projects.filter { $0.group == group }.sorted { $0.groupOrder > $1.groupOrder }
+                let busy = members.contains { $0.op != nil }
+                let groupState = busy ? "操作中" : members.allSatisfy({ $0.state == "available" }) ? "可用" : members.allSatisfy({ $0.state == "stopped" }) ? "已停止" : "需检查"
+                let groupItem = NSMenuItem(title: (p.groupName ?? group) + " — " + groupState, action: nil, keyEquivalent: "")
+                let sub = NSMenu()
+                for member in members { sub.addItem(projectItem(member)) }
+                sub.addItem(.separator())
+                for (title, action) in [("启动全部", "start"), ("重启全部（图鉴＋Explore 前端＋API）", "restart"), ("停止全部", "stop")] {
+                    let item = operationItem(title, ["group": group, "action": action])
+                    item.isEnabled = !busy && !members.contains { ["unknown", "external", "conflict"].contains($0.state) }
+                    sub.addItem(item)
+                }
+                sub.addItem(.separator())
+                for member in members {
+                    let item = operationItem("重启 \(member.name)（全部组件）", ["project": member.id, "action": "restart"])
+                    item.isEnabled = !busy && ["available", "partial"].contains(member.state)
+                    sub.addItem(item)
+                    if member.components.filter({ $0["kind"] as? String == "server" }).count > 1 {
+                        for c in member.components where c["kind"] as? String == "server" {
+                            guard let cid = c["id"] as? String else { continue }
+                            let title = "仅重启 " + (c["name"] as? String ?? cid)
+                            let single = operationItem(title, ["project": member.id, "component": cid, "action": "restart"])
+                            single.isEnabled = item.isEnabled
+                            sub.addItem(single)
+                        }
+                    }
+                }
+                groupItem.submenu = sub
+                menu.addItem(groupItem)
             }
         }
         menu.addItem(.separator())
         add("打开 Dashboard", #selector(openDashboard), "d")
         add("刷新状态", #selector(refreshNow), "r")
         add("退出菜单栏（后台服务继续运行）", #selector(quit), "q")
+    }
+
+    func projectItem(_ p: Project) -> NSMenuItem {
+        var title = "\(p.name) — \(p.label)"
+        if p.codeState == "pending" { title += " · 待更新" }
+        if p.codeState == "failed" { title += " · 更新失败" }
+        let m = NSMenuItem(title: title, action: #selector(clickProject(_:)), keyEquivalent: "")
+        m.target = self
+        m.representedObject = p.id
+        if ["failed", "conflict"].contains(p.state) {
+            m.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "故障")
+        }
+        m.isEnabled = p.op == nil && !["starting", "stopping"].contains(p.state)
+        return m
+    }
+
+    func operationItem(_ title: String, _ operation: [String: String]) -> NSMenuItem {
+        let m = NSMenuItem(title: title, action: #selector(operate(_:)), keyEquivalent: "")
+        m.target = self
+        m.representedObject = operation
+        return m
+    }
+
+    @objc func operate(_ sender: NSMenuItem) {
+        guard let op = sender.representedObject as? [String: String], let action = op["action"] else { return }
+        if action == "stop" {
+            let alert = NSAlert()
+            alert.messageText = "停止工作区中的所有服务？"
+            alert.addButton(withTitle: "停止")
+            alert.addButton(withTitle: "取消")
+            if alert.runModal() != .alertFirstButtonReturn { return }
+        }
+        let route: String
+        var body: [String: Any] = [:]
+        if let group = op["group"] { route = "api/groups/\(group)/\(action)" }
+        else if let project = op["project"] {
+            route = "api/projects/\(project)/\(action)"
+            if let component = op["component"] { body["components"] = [component] }
+        } else { return }
+        request("POST", route, body: body) { [weak self] code, response in
+            if code != 200 {
+                let alert = NSAlert()
+                alert.messageText = "操作未执行"
+                alert.informativeText = response?["error"] as? String ?? "无法连接控制服务"
+                alert.runModal()
+            }
+            self?.refresh()
+        }
     }
 
     func add(_ t: String, _ s: Selector, _ k: String) {

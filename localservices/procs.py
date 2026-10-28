@@ -95,12 +95,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
 
 
-def http_get(url: str, timeout: float = 2.0, headers: dict | None = None) -> tuple[int, bytes, str]:
+def http_get(url: str, timeout: float = 2.0, headers: dict | None = None,
+             *, max_bytes: int = 256 * 1024) -> tuple[int, bytes, str]:
     """Returns (status, body, error). status 0 = unreachable. Never follows redirects."""
     req = urllib.request.Request(url, headers=headers or {})
     try:
         with _opener.open(req, timeout=timeout) as r:
-            return r.status, r.read(256 * 1024), ""
+            body = r.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                return r.status, b"", f"HTTP response exceeds {max_bytes} bytes"
+            return r.status, body, ""
     except urllib.error.HTTPError as e:
         try:
             body = e.read(64 * 1024)

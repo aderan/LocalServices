@@ -94,6 +94,9 @@ class Project:
     adapter: str | None = None
     observe_only: bool = False
     description: str = ""
+    group: str | None = None
+    group_name: str | None = None
+    group_order: int = 0
     components: list[Component] = field(default_factory=list)
     dependencies: list[Dependency] = field(default_factory=list)
     file: Path | None = None
