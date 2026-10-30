@@ -12,13 +12,19 @@ from localservices.agents import invoke
 
 
 def _service(sid="demo-web", cmd=None, cwd=".", port=None, source_dir="."):
-    comp = {"id": "main", "kind": "server", "cmd": cmd or ["make", "dev"], "cwd": cwd}
-    if port:
-        comp["port"] = port
+    comp = {"id": "main", "kind": "server", "cmd": cmd or ["make", "dev"], "cwd": cwd,
+            # strict 模式 schema：组件层可选字段同样必须出现（nullable）
+            "name": None, "shell_script": None, "port": port, "ready": None,
+            "required": True, "start_timeout": None, "after": [], "hot": False,
+            "watch": [], "restart_on": [], "install": [], "build": [],
+            "install_when": [], "install_marker": None, "auto_update": True,
+            "external_cmd": None}
     return {
         "id": sid, "name": sid,
-        "source_dir": source_dir, "components": [comp],
+        "description": None, "open": None, "source_dir": source_dir,
+        "components": [comp], "dependencies": [], "resource_refs": [],
         "evidence": {"summary": "from Makefile", "files": ["Makefile:3 dev"]},
+        "unresolved": [],
     }
 
 
