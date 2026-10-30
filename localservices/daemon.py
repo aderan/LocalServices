@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__, paths
+from . import agent_api, register_api, resources
 from .controller import Controller
 
 WEB = Path(__file__).resolve().parent / "web"
@@ -107,6 +108,22 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/status":
                 self._send(200, self.ctl.snapshot())
                 return
+            if u.path == "/api/registry":
+                self._send(*register_api.handle_registry_get(self.ctl))
+                return
+            if u.path == "/api/agents":
+                self._send(*agent_api.handle_agents_get())
+                return
+            if u.path == "/api/resources":
+                self._send(*resources.inventory())
+                return
+            if u.path == "/api/drafts":
+                self._send(*register_api.handle_drafts())
+                return
+            m = re.fullmatch(r"/api/jobs/([\w-]+)", u.path)
+            if m:
+                self._send(*agent_api.handle_job_get(m.group(1)))
+                return
             m = re.fullmatch(r"/api/projects/([\w-]+)/logs", u.path)
             if m:
                 q = parse_qs(u.query)
@@ -119,6 +136,12 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._send(500, {"ok": False, "error": str(e)})
 
+    def _registry_changed(self, res: dict) -> None:
+        """A register/remove landed: make the new manifests visible immediately."""
+        if res.get("ok") and res.get("action") != "draft":
+            self.ctl.reload()
+            threading.Thread(target=self.ctl.refresh_snapshot, daemon=True).start()
+
     def do_POST(self):
         u = urlparse(self.path)
         try:
@@ -128,6 +151,37 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}") if length else {}
             if u.path == "/api/refresh":
                 self._send(200, self.ctl.refresh_snapshot(wait=6))
+                return
+            if u.path == "/api/register":
+                res = register_api.handle_register(body, self.ctl)
+                self._registry_changed(res[1])
+                self._send(*res)
+                return
+            if u.path == "/api/projects":
+                self._send(*register_api.handle_project_upsert(body))
+                return
+            m = re.fullmatch(r"/api/projects/([\w-]+)/directories", u.path)
+            if m:
+                self._send(*register_api.handle_directory_add(m.group(1), body))
+                return
+            m = re.fullmatch(r"/api/projects/([\w-]+)/favorite", u.path)
+            if m:
+                self._send(*register_api.handle_favorite(m.group(1), body))
+                return
+            m = re.fullmatch(r"/api/drafts/([\w-]+)/register", u.path)
+            if m:
+                res = register_api.handle_draft_register(m.group(1), body, self.ctl)
+                self._registry_changed(res[1])
+                self._send(*res)
+                return
+            if u.path == "/api/agents/scan":
+                self._send(*agent_api.handle_agents_scan(body))
+                return
+            if u.path == "/api/agents/verify":
+                self._send(*agent_api.handle_agents_verify(body))
+                return
+            if u.path == "/api/analyze":
+                self._send(*agent_api.handle_analyze(body))
                 return
             workspace = re.fullmatch(r"/api/groups/([\w-]+)/(start|stop|restart)", u.path)
             if workspace:
@@ -160,6 +214,31 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._send(500, {"ok": False, "error": str(e)})
 
+    def do_DELETE(self):
+        u = urlparse(self.path)
+        try:
+            if not self._guard(mutating=True):
+                return
+            m = re.fullmatch(r"/api/projects/([\w-]+)/directories/([\w-]+)", u.path)
+            if m:
+                self._send(*register_api.handle_directory_remove(*m.groups()))
+                return
+            m = re.fullmatch(r"/api/drafts/([\w-]+)", u.path)
+            if m:
+                self._send(*register_api.handle_draft_delete(m.group(1)))
+                return
+            m = re.fullmatch(r"/api/services/([\w-]+)", u.path)
+            if m:
+                q = parse_qs(u.query)
+                res = register_api.handle_service_remove(m.group(1), q.get("disposition", ["keep-external"])[0], self.ctl)
+                self._registry_changed(res[1])
+                self._send(*res)
+                return
+            self._send(404, {"ok": False, "error": "not found"})
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            self._send(500, {"ok": False, "error": str(e)})
+
 
 def loop(fn, interval: float, name: str):
     def run():
@@ -176,6 +255,7 @@ def loop(fn, interval: float, name: str):
 
 def main() -> int:
     paths.ensure()
+    agent_api.mark_stale_jobs_failed()
     ctl = Controller()
     port = paths.daemon_port()
     Handler.ctl, Handler.token, Handler.port = ctl, load_token(), port

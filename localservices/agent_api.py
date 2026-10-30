@@ -73,6 +73,27 @@ def _cleanup_old_jobs() -> None:
                     pass
 
 
+def mark_stale_jobs_failed() -> None:
+    """Daemon startup: jobs left queued/running by a previous process cannot finish."""
+    try:
+        files = list(paths.jobs_dir().glob("*.json"))
+    except OSError:
+        return
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("state") in ("queued", "running"):
+            data["state"] = "failed"
+            data["error"] = "控制服务重启，任务中断；请重新发起"
+            data["finished_at"] = time.time()
+            try:
+                _write_job(data)
+            except OSError:
+                pass
+
+
 def _agents_payload(conns: dict, default: str) -> dict:
     return {"ok": True, "default": default,
             "connections": {k: c.to_dict() for k, c in conns.items()}}

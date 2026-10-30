@@ -15,7 +15,7 @@ from . import paths
 def call(method: str, path: str, body: dict | None = None, timeout: float = 10) -> tuple[int, dict]:
     token = paths.token_file().read_text().strip()
     url = f"http://127.0.0.1:{paths.daemon_port()}{path}"
-    data = json.dumps(body or {}).encode() if method == "POST" else None
+    data = json.dumps(body or {}).encode() if method in ("POST", "DELETE") else None
     req = urllib.request.Request(url, data=data, method=method,
                                  headers={"X-LocalServices-Token": token, "Content-Type": "application/json"})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -32,6 +32,23 @@ def fmt_status(snap: dict) -> str:
         code = p.get("code", {}).get("label", "")
         lines.append(f"{p['id']:<16} {p.get('label',''):<8} {code:<14} {p.get('reason','')[:140]}")
     return "\n".join(lines)
+
+
+def _emit(res: dict, json_out: bool, human: str | None = None) -> int:
+    if json_out:
+        print(json.dumps(res, ensure_ascii=False, indent=1))
+    elif human is not None:
+        print(human)
+    else:
+        print(res.get("message") or res.get("error") or res)
+    return 0 if res.get("ok") else 1
+
+
+def _read_payload(args) -> dict:
+    if getattr(args, "stdin", False):
+        return json.loads(sys.stdin.read())
+    with open(args.file) as f:
+        return json.load(f)
 
 
 def main(argv=None) -> int:
@@ -51,12 +68,191 @@ def main(argv=None) -> int:
             sp.add_argument("--component", action="append", help="restart only this registered component")
     for name in ("start-group", "stop-group", "restart-group"):
         sub.add_parser(name).add_argument("group")
+
+    # ---- workspace / registry (machine-readable; same backend as GUI and Skill) ----
+    sp = sub.add_parser("register", help="register a service definition (JSON payload, CONTRACTS §2)")
+    grp = sp.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--file")
+    grp.add_argument("--stdin", action="store_true")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("projects", help="list workspace projects")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("project-new")
+    sp.add_argument("--name", required=True)
+    sp.add_argument("--dir", action="append", dest="dirs", help="associated directory (repeatable)")
+    sp.add_argument("--id")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("project-rename")
+    sp.add_argument("project")
+    sp.add_argument("--name", required=True)
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("dir-add")
+    sp.add_argument("project")
+    sp.add_argument("--path", required=True)
+    sp.add_argument("--role", default="source")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("dir-remove")
+    sp.add_argument("project")
+    sp.add_argument("dir_id")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("agents", help="agent connections (codex / claude)")
+    sp.add_argument("--json", action="store_true")
+    sp = sub.add_parser("agent-scan")
+    sp.add_argument("--path", action="append", dest="paths", help="extra lookup path (repeatable)")
+    sp.add_argument("--json", action="store_true")
+    sp = sub.add_parser("agent-verify")
+    sp.add_argument("kind", choices=["codex", "claude"])
+    sp.add_argument("--timeout", type=float, default=60)
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("analyze", help="run agent recognition over a directory")
+    sp.add_argument("directory")
+    sp.add_argument("--agent", required=True, choices=["codex", "claude"])
+    sp.add_argument("--focus", help="e.g. 只识别 Admin 管理端")
+    sp.add_argument("--wait", type=float, default=0, help="seconds to wait for the job")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("jobs")
+    sp.add_argument("job_id")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("service-remove")
+    sp.add_argument("service")
+    sp.add_argument("--stop", dest="disposition", action="store_const", const="stop")
+    sp.add_argument("--keep-external", dest="disposition", action="store_const", const="keep-external",
+                    help="deregister only; the running process becomes an external instance (default)")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("resources", help="shared docker/compose resource inventory")
+    sp.add_argument("--json", action="store_true")
+
     a = ap.parse_args(argv)
     try:
         if a.cmd == "status":
             code, snap = call("POST", "/api/refresh")
             print(json.dumps(snap, ensure_ascii=False, indent=1) if a.json else fmt_status(snap))
             return 0
+        if a.cmd == "register":
+            try:
+                payload = _read_payload(a)
+            except (OSError, ValueError) as e:
+                print(json.dumps({"ok": False, "error": f"payload 不可读：{e}"}, ensure_ascii=False)
+                      if a.json else f"payload 不可读：{e}")
+                return 4
+            code, res = call("POST", "/api/register", payload, timeout=30)
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+            else:
+                act = res.get("action")
+                print(f"{res.get('project_id','?')}/{res.get('service_id','?')}：{act}"
+                      + (f"（{res['validation']['warnings']}）" if res.get("validation", {}).get("warnings") else "")
+                      if res.get("ok") else res.get("error", res))
+            if res.get("ok"):
+                return 0
+            return 5 if code == 409 else (4 if code == 400 else 1)
+        if a.cmd == "projects":
+            code, res = call("GET", "/api/registry", timeout=15)
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+                return 0 if res.get("ok") else 1
+            for p in res.get("registry", {}).get("projects", []):
+                dirs = ", ".join(d["path"] for d in p.get("directories", []))
+                print(f"{p['id']:<20} {p.get('name',''):<24} services={','.join(p.get('services', []))}"
+                      + (f"  dirs=[{dirs}]" if dirs else "") + ("  ★" if p.get("favorite") else ""))
+            return 0
+        if a.cmd == "project-new":
+            body = {"name": a.name, "directories": [{"path": d} for d in (a.dirs or [])]}
+            if a.id:
+                body["id"] = a.id
+            code, res = call("POST", "/api/projects", body)
+            return _emit(res, a.json, f"Project {res.get('id', a.name)} 就绪")
+        if a.cmd == "project-rename":
+            code, res = call("POST", "/api/projects", {"id": a.project, "name": a.name})
+            return _emit(res, a.json, f"已重命名为 {a.name}")
+        if a.cmd == "dir-add":
+            code, res = call("POST", f"/api/projects/{a.project}/directories", {"path": a.path, "role": a.role})
+            return _emit(res, a.json, f"已关联 {a.path}")
+        if a.cmd == "dir-remove":
+            code, res = call("DELETE", f"/api/projects/{a.project}/directories/{a.dir_id}")
+            return _emit(res, a.json, "已解除关联（文件未动）")
+        if a.cmd == "agents":
+            code, res = call("GET", "/api/agents", timeout=30)
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+                return 0 if res.get("ok") else 1
+            conns = res.get("connections") or {}
+            conns = conns.values() if isinstance(conns, dict) else conns
+            for c in conns:
+                mark = "★默认" if c.get("is_default") else ""
+                print(f"{c['kind']:<8} {c.get('status',''):<14} {c.get('version',''):<10} {c.get('path','')} {mark}"
+                      + (f"  — {c.get('detail','')}" if c.get("detail") else ""))
+            return 0
+        if a.cmd == "agent-scan":
+            body = {"paths": a.paths} if a.paths else {}
+            code, res = call("POST", "/api/agents/scan", body, timeout=30)
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+                return 0 if res.get("ok") else 1
+            conns = res.get("connections") or {}
+            conns = conns.values() if isinstance(conns, dict) else conns
+            for c in conns:
+                print(f"{c['kind']:<8} {c.get('status',''):<14} {c.get('path','')}")
+            return 0
+        if a.cmd == "agent-verify":
+            code, res = call("POST", "/api/agents/verify",
+                             {"kind": a.kind, "timeout": a.timeout}, timeout=a.timeout + 15)
+            return _emit(res, a.json)
+        if a.cmd == "analyze":
+            body = {"directory": a.directory, "agent": a.agent}
+            if a.focus:
+                body["focus"] = a.focus
+            code, res = call("POST", "/api/analyze", body, timeout=30)
+            if not res.get("ok"):
+                print(json.dumps(res, ensure_ascii=False, indent=1) if a.json else res.get("error", res))
+                return 1
+            job_id = res["job_id"]
+            if not a.wait and not a.json:
+                print(job_id)
+                return 0
+            if a.json and not a.wait:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+                return 0
+            end = time.time() + a.wait
+            while time.time() < end:
+                time.sleep(min(3, max(0.5, a.wait / 10)))
+                _, job = call("GET", f"/api/jobs/{job_id}", timeout=15)
+                if job.get("state") in ("done", "failed"):
+                    if a.json:
+                        print(json.dumps(job, ensure_ascii=False, indent=1))
+                    else:
+                        r = job.get("result") or {}
+                        for s in r.get("services", []):
+                            print(f"候选 {s['id']}: {s['name']}  组件 {','.join(c['id'] for c in s.get('components', []))}")
+                        for u in r.get("unresolved", []):
+                            print(f"未解决: {u}")
+                    return 0 if job.get("state") == "done" else 2
+            print("等待超时（任务仍在跑）：" + job_id)
+            return 2
+        if a.cmd == "jobs":
+            code, res = call("GET", f"/api/jobs/{a.job_id}", timeout=15)
+            print(json.dumps(res, ensure_ascii=False, indent=1) if a.json else res)
+            return 0 if res.get("ok") and res.get("state") == "done" else 1
+        if a.cmd == "service-remove":
+            code, res = call("DELETE", f"/api/services/{a.service}?disposition={a.disposition or 'keep-external'}",
+                             timeout=90)
+            return _emit(res, a.json)
+        if a.cmd == "resources":
+            code, res = call("GET", "/api/resources", timeout=20)
+            print(json.dumps(res, ensure_ascii=False, indent=1) if a.json else
+                  "\n".join(f"{r['id']:<40} {r.get('state',''):<10} {r.get('compose_project') or '-'}"
+                            for r in res.get("resources", [])) or "（无）")
+            return 0 if res.get("ok") else 1
         if a.cmd == "logs":
             q = f"?lines={a.n}" + (f"&component={a.component}" if a.component else "")
             code, res = call("GET", f"/api/projects/{a.project}/logs{q}")

@@ -3,16 +3,40 @@
 #   - control daemon: LaunchAgent com.mybrain.localservices.daemon (KeepAlive, runs from this repo)
 #   - menu bar app:   ~/Applications/MyBrain Services.app + login LaunchAgent (no KeepAlive, so "退出" sticks)
 #   - CLI:            ~/.local/bin/lsctl
+# Python is resolved generically (no personal absolute path dependency):
+#   LOCALSERVICES_PYTHON wins; otherwise the first python3 on PATH (then common fallbacks)
+#   that is >= 3.11 (tomllib) and has no missing stdlib deps we need.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-PY="${LOCALSERVICES_PYTHON:-/Users/flb/.pyenv/versions/3.12.9/bin/python3}"
 UID_="$(id -u)"
 LA="$HOME/Library/LaunchAgents"
 LOGS="$HOME/Library/Logs/LocalServices"
 APP="$HOME/Applications/MyBrain Services.app"
 mkdir -p "$LA" "$LOGS" "$HOME/Applications" "$HOME/.local/bin"
 
-"$PY" -c 'import sys; assert sys.version_info >= (3, 11), sys.version' >/dev/null
+resolve_python() {
+  if [ -n "${LOCALSERVICES_PYTHON:-}" ]; then
+    command -v "$LOCALSERVICES_PYTHON" 2>/dev/null || { echo "LOCALSERVICES_PYTHON 不可用: $LOCALSERVICES_PYTHON"; return 1; }
+    return 0
+  fi
+  local cands
+  cands="$(command -v python3 2>/dev/null || true)
+$HOME/.pyenv/shims/python3
+/opt/homebrew/bin/python3
+/usr/local/bin/python3
+/usr/bin/python3"
+  local c
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    if [ -x "$c" ] && "$c" -c 'import sys, tomllib; assert sys.version_info >= (3, 11)' >/dev/null 2>&1; then
+      command -v "$c"
+      return 0
+    fi
+  done <<<"$cands"
+  echo "未找到 Python ≥3.11（含 tomllib）。请安装或用 LOCALSERVICES_PYTHON 指定解释器。" >&2
+  return 1
+}
+PY="$(resolve_python)"
 
 "$REPO/menubar/build.sh" >/dev/null
 launchctl bootout "gui/$UID_/com.mybrain.localservices.menubar" 2>/dev/null || true
