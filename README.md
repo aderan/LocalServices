@@ -1,24 +1,56 @@
 # LocalServices
 
-本机子项目的统一启停与状态：菜单栏 App + 本地 Dashboard + `lsctl` CLI。
+本机子项目的统一启停与状态：菜单栏 + 主窗口 App + 本地 Dashboard + `lsctl` CLI + Codex Skill。
 每个子项目从**当前源码目录**启动（不打包副本），源码变化按策略自动生效。
+工作台以 **Project**（多目录、多服务）组织，可用本机 Codex / Claude Code 识别项目启动方式并注册服务。
 
 ## 安装 / 更新 / 卸载
 
 ```sh
-scripts/install.sh            # 幂等：构建菜单栏 App、安装控制服务与 lsctl
-scripts/uninstall.sh          # 停止并移除本工具的全部 LaunchAgent、App、CLI
+scripts/install.sh            # 幂等：构建 App、安装控制服务、lsctl 与 Codex skill；受管服务不中断
+scripts/uninstall.sh          # 停止并移除本工具的全部 LaunchAgent、App、CLI、skill
 scripts/uninstall.sh --purge  # 另删本工具状态与日志；子项目数据始终不动
 ```
 
 安装后：
 
 - 控制服务 `com.mybrain.localservices.daemon`（launchd KeepAlive），仅监听 `127.0.0.1:47800`；
-- 菜单栏 `~/Applications/MyBrain Services.app`（登录自启，退出后不自动拉起，后台服务继续运行）；
-- Dashboard：菜单栏「打开 Dashboard」，或 `lsctl open`；
-- CLI：`~/.local/bin/lsctl status|start|stop|restart|open|logs <project> [--json] [--open]`。
+- 菜单栏 + 主窗口 `~/Applications/MyBrain Services.app`（登录自启；关窗不退出、退出 UI 不停服务）；
+- Dashboard：主窗口内容同页，浏览器可开 `http://127.0.0.1:47800/`（辅助入口）；
+- CLI：`~/.local/bin/lsctl`（见下）；Python 经 `LOCALSERVICES_PYTHON` 覆盖或通用解析，无个人绝对路径依赖；
+- Codex Skill：`~/.codex/skills/localservices`（安装/更新经 sha256 记录，绝不覆盖用户改动，自动备份第三方同名技能）。
 
-## 模型
+## 工作台（Project / Directory / Service / Resource / Agent）
+
+- **Project** 是用户工作上下文：多个关联目录、多个服务；旧清单已自动迁移（group → Project，无组各自成 Project），旧 CLI/组命令全部兼容。
+- 添加项目流程：选目录 → 扫描工程线索 → 调用本机 Codex/Claude 识别 → 校验登记 → 启动并打开。识别只是分析（只读沙箱、有界调用、超时杀进程组），不改工程、不起服务。
+- **注册**（GUI / CLI / Skill 共用 `POST /api/register`）：同身份幂等（unchanged/duplicate），修订号冲突 409；缺信息存草稿不可启动；无效提交不破坏原配置。契约见 `docs/CONTRACTS.md`。
+- **Agent 连接**：codex/claude 检出路径/版本/配置根；六态状态（未安装/仅配置/不可执行/需登录/调用失败/可用），"可用"只能由真实最小调用确认；连接页展示已知工具的项目候选（claude 读本机配置 projects 键、与已登记去重；codex 无受支持列表则明确声明），导入只建项目不启动。
+- **共享资源**：只读盘点既有 Docker/Compose 容器（context/compose 标签/健康/端口/卷）；恢复、停服保留共享依赖等语义不变。
+- 可分享定义导出：`lsctl export <service>`（secret 类 env 脱敏、env 文件只留引用）；导入 = 改绑路径后 `lsctl register --file`。
+
+## CLI
+
+```sh
+lsctl status|start|stop|restart|open|logs|takeover <service> [--json] [--open] [--wait N]
+lsctl start-group|stop-group|restart-group <group>          # 旧组命令兼容
+lsctl projects [--json]                                      # 工作台结构
+lsctl project-new --name N [--dir P]... ；lsctl project-rename <id> --name N
+lsctl dir-add <pid> --path P ；lsctl dir-remove <pid> <dir-id>
+lsctl register [--file F|--stdin] [--json]                   # 注册（机器可读；409→退出码 5）
+lsctl analyze <dir> --agent codex|claude [--focus ...] [--wait S] [--json]
+lsctl agents|agent-scan|agent-verify <kind>|jobs <id>|resources [--json]
+lsctl service-remove <id> [--stop|--keep-external] ；lsctl export <service> [--file F]
+```
+
+## Codex Skill（聊天内注册）
+
+在 Codex 聊天输入 `$localservices 将当前项目的 Admin 注册到 <项目>，并启动打开。`：
+技能读取工程真实入口（Makefile/package.json 等）组装注册 payload，经 `lsctl register` 注册（与 GUI 同一后台记录），
+按需 `lsctl start --open` 完成真实验证；不递归调用另一个模型 CLI、不直接写状态文件。
+受限沙箱（禁本地回环）中会如实报告无法连接而不写入任何状态。
+
+## 模型（服务生命周期，沿用 V0）
 
 - `services/<id>.toml` 是项目清单：组件（server / worker / generator）、命令、端口、就绪探针、
   依赖、热更新与监视范围。端口固定写在清单里，用户不需要管理地址。
@@ -53,11 +85,12 @@ scripts/uninstall.sh --purge  # 另删本工具状态与日志；子项目数据
 ## 测试
 
 ```sh
-python3 -m unittest discover -s tests -v   # 生命周期测试：临时目录 + 合成服务，隔离 label 前缀
+python3 -m unittest discover -s tests -v   # 173 项：生命周期/工作台/注册幂等并发/迁移回退/Agent 检测调用/扫描器/Skill 安装/WebUI/更新策略
 python3 tests/verify_next_clone.py         # Next.js 热更新：在 Buildbase 的 APFS 克隆上验证
 ```
 
-测试不触碰真实项目实例与数据。
+生命周期类测试使用真实 launchd 但隔离 label 前缀与临时目录，不触碰真实项目实例与数据。
+MB-LOCAL-SERVICES-PROJECTS-V1 的逐 AC 验收证据在 `artifacts/acceptance-MB-LOCAL-SERVICES-PROJECTS-V1/`。
 
 ### ShiCha 开发启动契约
 
