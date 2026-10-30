@@ -151,6 +151,7 @@ const open = {};      // service id -> details open
 const logs = {};      // service id -> log text
 let snap = null;      // /api/status
 let registry = null;  // /api/registry
+let agentCandidates = null;  // /api/agents/candidates（连接页候选，按需加载）
 let agentsData = null, resourcesData = null, draftsData = null;
 let view = "all";     // all | project:<id> | attention | resources | agents | drafts | new-project
 let connOk = null;
@@ -427,6 +428,7 @@ function viewProject(pid) {
       <button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${esc(pj.id)}')" aria-label="收藏">${pj.favorite ? "★" : "☆"}</button>
       <h3>${esc(pj.name)}</h3>
       <span class="note">id ${esc(pj.id)} · 修订 ${pj.revision ?? 0}</span>
+      <div class="acts"><button onclick="renameProject('${esc(pj.id)}', '${esc(pj.name).replace(/'/g, "&#39;")}')">重命名</button></div>
     </div>
     <p class="note">默认 Agent：${pj.agent ? esc(pj.agent) : "未设置"} · 自动启动：${pj.autostart ? "是" : "否"} · 创建于 ${t(Date.parse(pj.created_at || "") / 1000) || "—"}</p>
     <div class="card-head"><h3 style="font-size:14px">关联目录</h3></div>
@@ -480,12 +482,45 @@ function viewAgents() {
       </table></section>`;
   }).join("");
   const manual = busy("scan");
-  return cards + `<section class="card">
+  return cards + candidatesCard() + `<section class="card">
     <div class="card-head"><h3>手动指定路径</h3></div>
     <div class="field"><input id="agentPathInput" placeholder="/path/to/codex 或包含它的目录" aria-label="手动 agent 路径">
       <button onclick="agentsScan(document.getElementById('agentPathInput').value)" ${manual ? "disabled" : ""}>${manual ? "扫描中…" : "按此路径扫描"}</button>
       <span class="inline-note">验证为真实最小调用，最长 120 秒；超时请重试</span></div>
   </section>`;
+}
+
+// 已知工具能以受支持方式提供的项目候选（或明确不支持）；导入只建项目，不注册服务、不启动
+function candidatesCard() {
+  const c = agentCandidates?.candidates || {};
+  let html = `<section class="card"><div class="card-head"><h3>已知工具的项目候选</h3></div>`;
+  for (const kind of ["claude", "codex"]) {
+    const e = c[kind];
+    if (!e) { html += `<p class="note">${kind}：未知</p>`; continue; }
+    if (!e.supported) { html += `<p class="note">${kind}：${esc(e.reason || "不支持")}</p>`; continue; }
+    const registered = new Set((registry?.projects || []).flatMap(p => (p.directories || []).map(d => d.path)));
+    const list = (e.candidates || []).map(p => ({p, known: registered.has(p)}));
+    const fresh = list.filter(x => !x.known);
+    html += `<p class="note">${kind}：${fresh.length} 个未登记目录（已登记 ${list.length - fresh.length} 个已去重隐藏）</p>`;
+    html += `<div class="table-scroll"><table>` + fresh.slice(0, 12).map(x =>
+      `<tr><td>${esc(x.p)}</td><td><button onclick="importCandidate('${esc(x.p).replace(/'/g, "&#39;")}')">导入为项目</button></td></tr>`).join("") + `</table></div>`;
+  }
+  html += `<p class="inline-note">导入只创建项目并关联目录，不注册服务、不启动任何进程。</p></section>`;
+  return html;
+}
+
+async function loadCandidates() {
+  try { const [c, d] = await api("GET", "/api/agents/candidates"); if (c === 200) agentCandidates = d; } catch (e) { /* 辅助信息，失败不阻塞 */ }
+}
+
+async function importCandidate(path) {
+  const name = path.split("/").filter(Boolean).pop() || path;
+  try {
+    const [code, res] = await api("POST", "/api/projects", {name, directories: [{path}]});
+    if (code !== 200) { alert(res?.error || "导入失败"); return; }
+    await refresh();
+    setView("project:" + (res.project?.id || res.id || ""));
+  } catch (e) { setConn(false); }
 }
 
 function viewResources() {
@@ -745,6 +780,16 @@ async function toggleFav(pid) {
   const g = projectGroups().find(x => x.pj.id === pid);
   const value = !(g?.pj.favorite);
   try { await api("POST", `/api/projects/${pid}/favorite`, {value}); } catch (e) { setConn(false); }
+  await refresh();
+}
+
+async function renameProject(pid, current) {
+  const name = prompt("项目新名称（id 保持不变）：", current);
+  if (!name || !name.trim() || name.trim() === current) return;
+  try {
+    const [code, res] = await api("POST", "/api/projects", {id: pid, name: name.trim()});
+    if (code !== 200) alert(res?.error || "重命名失败");
+  } catch (e) { setConn(false); }
   await refresh();
 }
 
@@ -1122,6 +1167,7 @@ async function refresh(manual) {
     snap = snapNew;
     const [rc, reg] = await api("GET", "/api/registry");
     if (rc === 200 && reg?.ok) registry = reg;
+    if (!agentCandidates) loadCandidates().then(render);
     setConn(true);
     if (draftsData) loadDrafts();
   } catch (e) {

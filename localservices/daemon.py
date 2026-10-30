@@ -114,6 +114,9 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/agents":
                 self._send(*agent_api.handle_agents_get())
                 return
+            if u.path == "/api/agents/candidates":
+                self._send(*agent_api.handle_agents_candidates())
+                return
             if u.path == "/api/resources":
                 self._send(200, resources.inventory())
                 return

@@ -163,6 +163,35 @@ def handle_agents_default(body: dict) -> tuple[int, dict]:
         return 500, {"ok": False, "error": str(e)}
 
 
+def handle_agents_candidates() -> tuple[int, dict]:
+    """GET /api/agents/candidates：已知工具能以受支持方式提供的项目目录线索。
+
+    只读本机配置的结构化字段（目录键名），不解析会话/聊天原文；无受支持机制的工具
+    明确返回 supported=false 与原因，不假设必有统一项目列表。"""
+    out: dict = {"ok": True, "candidates": {}}
+    # Claude Code：~/.claude.json 顶层 projects 键即已知项目目录（本机配置，受支持字段）
+    try:
+        home = os.path.expanduser("~")
+        cfg = os.environ.get("CLAUDE_CONFIG_DIR", home)
+        path = os.path.join(cfg, ".claude.json") if cfg != home else os.path.join(home, ".claude.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        projects = data.get("projects") if isinstance(data, dict) else None
+        if isinstance(projects, dict):
+            paths = sorted({str(k) for k in projects.keys() if isinstance(k, str) and k.startswith("/")})
+            out["candidates"]["claude"] = {"supported": True, "candidates": paths}
+        else:
+            out["candidates"]["claude"] = {"supported": False, "reason": "本机配置中无 projects 记录"}
+    except (OSError, ValueError) as e:
+        out["candidates"]["claude"] = {"supported": False, "reason": f"读取配置失败：{e}"}
+    # Codex：没有受支持的统一项目列表机制；解析 sessions 原文违反边界，明确声明不支持
+    out["candidates"]["codex"] = {
+        "supported": False,
+        "reason": "Codex 无受支持的统一项目列表；不解析会话原文。如需添加，请用「添加项目」选择目录。",
+    }
+    return 200, out
+
+
 def handle_analyze(body: dict) -> tuple[int, dict]:
     """启动后台分析任务 → (202, {"ok": true, "job_id": ...})。"""
     try:
