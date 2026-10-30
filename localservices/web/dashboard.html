@@ -498,7 +498,7 @@ function candidatesCard() {
     const e = c[kind];
     if (!e) { html += `<p class="note">${kind}：未知</p>`; continue; }
     if (!e.supported) { html += `<p class="note">${kind}：${esc(e.reason || "不支持")}</p>`; continue; }
-    const registered = new Set((registry?.projects || []).flatMap(p => (p.directories || []).map(d => d.path)));
+    const registered = new Set((registry?.registry?.projects || []).flatMap(p => (p.directories || []).map(d => d.path)));
     const list = (e.candidates || []).map(p => ({p, known: registered.has(p)}));
     const fresh = list.filter(x => !x.known);
     html += `<p class="note">${kind}：${fresh.length} 个未登记目录（已登记 ${list.length - fresh.length} 个已去重隐藏）</p>`;

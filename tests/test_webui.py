@@ -59,9 +59,23 @@ class DashboardStaticTest(unittest.TestCase):
 
     def test_api_anchors(self):
         for api in ("/api/analyze", "/api/register", "/api/jobs/", "/api/resources",
-                    "/api/drafts", "/api/services/"):
+                    "/api/drafts", "/api/services/", "/api/agents/candidates"):
             self.assertIn(api, self.html)
         self.assertIn("disposition=", self.html)  # DELETE /api/services/<id>?disposition=…
+
+    def test_project_rename_and_candidates(self):
+        # AC-01：项目详情视图的重命名控件；AC-23：连接页候选去重导入（不自动启动）
+        self.assertIn("renameProject", self.html)
+        self.assertIn("重命名", self.html)
+        self.assertIn("candidatesCard", self.html)
+        self.assertIn("已知工具的项目候选", self.html)
+        self.assertIn("importCandidate", self.html)
+        # 去重取值必须与 /api/registry 响应结构一致（registry.registry.projects）
+        self.assertIn("registry?.registry?.projects || []", self.html)
+        # 导入候选只建项目：importCandidate 内不出现 start/register 调用
+        ic = self.html[self.html.index("async function importCandidate"):self.html.index("async function importCandidate") + 700]
+        self.assertNotIn("/start", ic)
+        self.assertNotIn("/register", ic)
 
     def test_theme_and_a11y(self):
         self.assertIn("prefers-color-scheme", self.html)
