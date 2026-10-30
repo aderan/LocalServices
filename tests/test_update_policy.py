@@ -9,14 +9,11 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parent.parent
 TMP = Path(tempfile.mkdtemp(prefix="lsupd-"))
-os.environ.update({
-    "LOCALSERVICES_HOME": str(TMP / "home"),
-    "LOCALSERVICES_SERVICES": str(TMP / "services"),
-    "LOCALSERVICES_LABEL_PREFIX": "com.mybrain.lsupd",
-})
+# env 在 setUpClass 里 patch：导入期改 os.environ 会污染并行的生命周期测试
 sys.path.insert(0, str(REPO))
 
 from localservices import adapters, launchd  # noqa: E402
@@ -37,8 +34,14 @@ class FakeAdapter(adapters.Adapter):
 class UpdatePolicyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.env = patch.dict(os.environ, {
+            "LOCALSERVICES_HOME": str(TMP / "home"),
+            "LOCALSERVICES_SERVICES": str(TMP / "services"),
+            "LOCALSERVICES_LABEL_PREFIX": "com.mybrain.lsupd",
+        })
+        cls.env.start()
         src = TMP / "src"
-        src.mkdir(parents=True)
+        src.mkdir(parents=True, exist_ok=True)
         (src / "code.py").write_text("v1")
         (TMP / "services").mkdir(exist_ok=True)
         (TMP / "services" / "fxupd.toml").write_text(textwrap.dedent(f"""
@@ -60,10 +63,13 @@ class UpdatePolicyTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        p = cls.ctl.projects.get("fxupd")
-        if p:
-            for c in p.managed_components():
-                launchd.bootout(cls.ctl.label(p, c))
+        try:
+            p = cls.ctl.projects.get("fxupd")
+            if p:
+                for c in p.managed_components():
+                    launchd.bootout(cls.ctl.label(p, c))
+        finally:
+            cls.env.stop()
 
     def _comp(self):
         p = self.ctl.projects["fxupd"]
