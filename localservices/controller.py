@@ -150,12 +150,12 @@ class Controller:
 
     # ---------- manifests ----------
     def reload(self) -> None:
-        d = paths.services_dir()
-        sig = tuple((f.name, f.stat().st_mtime) for f in sorted(d.glob("*.toml")))
+        dirs = paths.service_search_path()
+        sig = tuple((str(d), f.name, f.stat().st_mtime) for d in dirs for f in sorted(d.glob("*.toml")))
         if sig == self.manifest_sig:
             return
         try:
-            projects = manifest.load_all(d)
+            projects = manifest.load_all()
             ads = {pid: adapters.load(p) for pid, p in projects.items()}
         except Exception as e:  # keep last good manifests
             self.manifest_error = f"清单错误：{e}"

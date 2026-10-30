@@ -97,6 +97,10 @@ class Project:
     group: str | None = None
     group_name: str | None = None
     group_order: int = 0
+    # workspace layer (registry): which user Project this service belongs to, and how it
+    # was registered. Old manifests have neither and get a project derived at migration.
+    project: str | None = None
+    registered: dict = field(default_factory=dict)
     components: list[Component] = field(default_factory=list)
     dependencies: list[Dependency] = field(default_factory=list)
     file: Path | None = None
@@ -146,13 +150,18 @@ def load_file(path: Path) -> Project:
 
 
 def load_all(directory: Path | None = None) -> dict[str, Project]:
-    directory = directory or paths.services_dir()
+    """Load built-in services plus user-registered ones. An explicit `directory` loads only
+    that directory (used by tests); otherwise the search path is services_dir() +
+    user_services_dir(). Duplicate ids and duplicate listen ports are rejected across all
+    loaded files so there is exactly one registration authority."""
+    dirs = [Path(directory)] if directory else paths.service_search_path()
     out: dict[str, Project] = {}
-    for f in sorted(directory.glob("*.toml")):
-        p = load_file(f)
-        if p.id in out:
-            raise ValueError(f"duplicate project id {p.id}")
-        out[p.id] = p
+    for d in dirs:
+        for f in sorted(d.glob("*.toml")):
+            p = load_file(f)
+            if p.id in out:
+                raise ValueError(f"duplicate project id {p.id}: {out[p.id].file} and {f}")
+            out[p.id] = p
     ports: dict[int, str] = {}
     for p in out.values():
         for c in p.managed_components():

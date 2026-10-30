@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LocalServices registration payload",
+  "type": "object",
+  "required": ["schemaVersion", "service"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "revision": {"type": "integer", "minimum": 0},
+    "project": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "name": {"type": "string", "minLength": 1},
+        "agent": {"type": "string", "enum": ["codex", "claude", "none"]}
+      }
+    },
+    "directories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "role": {"type": "string", "default": "source"}
+        }
+      }
+    },
+    "service": {"$ref": "#/$defs/service"},
+    "draft_id": {"type": ["string", "null"]}
+  },
+  "$defs": {
+    "service": {
+      "type": "object",
+      "required": ["name", "source", "components"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "source": {"type": "string", "minLength": 1},
+        "open": {"type": ["string", "null"]},
+        "autostart": {"type": "boolean"},
+        "adapter": {"type": ["string", "null"]},
+        "observe_only": {"type": "boolean"},
+        "draft": {"type": "boolean"},
+        "project_hint": {"type": ["string", "null"]},
+        "components": {"type": "array", "items": {"$ref": "#/$defs/component"}},
+        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/dependency"}},
+        "evidence": {
+          "type": "object",
+          "properties": {
+            "agent": {"type": ["string", "null"]},
+            "summary": {"type": "string"},
+            "files": {"type": "array", "items": {"type": "string"}},
+            "analyzed_at": {"type": ["string", "null"]},
+            "unresolved": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+        "kind": {"type": "string", "enum": ["server", "worker", "generator"]},
+        "name": {"type": "string"},
+        "cmd": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "shell_script": {"type": "string"},
+        "cwd": {"type": "string"},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}},
+        "env_files": {"type": "array", "items": {"type": "string"}},
+        "port": {"type": ["integer", "null"], "minimum": 1, "maximum": 65535},
+        "ready": {
+          "type": "object",
+          "properties": {
+            "http": {"type": "string"},
+            "tcp": {"type": "string"},
+            "json_ok": {"type": "string"},
+            "timeout": {"type": "number"},
+            "interval": {"type": "number"}
+          }
+        },
+        "required": {"type": "boolean"},
+        "start_timeout": {"type": "number"},
+        "after": {"type": "array", "items": {"type": "string"}},
+        "hot": {"type": "boolean"},
+        "watch": {"type": "array", "items": {"type": "string"}},
+        "restart_on": {"type": "array", "items": {"type": "string"}},
+        "ignore": {"type": "array", "items": {"type": "string"}},
+        "build": {"type": "array", "items": {"type": "string"}},
+        "install": {"type": "array", "items": {"type": "string"}},
+        "install_when": {"type": "array", "items": {"type": "string"}},
+        "install_marker": {"type": ["string", "null"]},
+        "auto_update": {"type": "boolean"},
+        "external_cmd": {"type": ["string", "null"]},
+        "external_cwd": {"type": ["string", "null"]},
+        "external_cwd_exact": {"type": "boolean"},
+        "debounce": {"type": "number"}
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "required": ["name", "probe"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "probe": {
+          "type": "object",
+          "properties": {
+            "http": {"type": "string"},
+            "tcp": {"type": "string"},
+            "json_ok": {"type": "string"},
+            "timeout": {"type": "number"}
+          }
+        },
+        "affects": {"type": "array", "items": {"type": "string"}},
+        "managed": {"type": "boolean"},
+        "note": {"type": "string"},
+        "required": {"type": "boolean"},
+        "container": {"type": ["string", "null"]},
+        "volume": {"type": ["string", "null"]},
+        "resource": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

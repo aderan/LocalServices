@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LocalServices agent analysis output",
+  "description": "What a Codex/Claude recognition call must return: candidate service definitions grounded in the analyzed directory, with evidence. Analysis only - no execution, no installation, no migration.",
+  "type": "object",
+  "required": ["services"],
+  "additionalProperties": false,
+  "properties": {
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "components", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 48},
+          "name": {"type": "string", "minLength": 1, "maxLength": 64},
+          "description": {"type": "string", "maxLength": 200},
+          "source_dir": {"type": "string", "maxLength": 200, "description": "Directory holding this service, relative to the analyzed directory. Use '.' for the analyzed directory itself."},
+          "open": {"type": "string", "maxLength": 300, "description": "Main entry URL to open in a browser, if the service has a web UI"},
+          "components": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "cmd"],
+              "additionalProperties": false,
+              "properties": {
+                "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 32},
+                "kind": {"type": "string", "enum": ["server", "worker", "generator"]},
+                "name": {"type": "string", "maxLength": 64},
+                "cwd": {"type": "string", "maxLength": 200, "description": "Working directory relative to source_dir"},
+                "cmd": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "argv array. Prefer real executables/scripts (make targets: ['make','<target>']). No shell strings."},
+                "shell_script": {"type": "string", "maxLength": 200, "description": "Only if the project's own script genuinely requires a shell: path of an existing script inside the directory"},
+                "env": {"type": "object", "additionalProperties": {"type": "string"}},
+                "env_files": {"type": "array", "items": {"type": "string"}},
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "ready": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "http": {"type": "string", "description": "GET URL that answers 2xx/3xx when the component is ready"},
+                    "tcp": {"type": "string", "description": "host:port that accepts connections when ready"},
+                    "json_ok": {"type": "string"},
+                    "timeout": {"type": "number"}
+                  }
+                },
+                "required": {"type": "boolean"},
+                "start_timeout": {"type": "number"},
+                "after": {"type": "array", "items": {"type": "string"}},
+                "hot": {"type": "boolean"},
+                "watch": {"type": "array", "items": {"type": "string"}},
+                "restart_on": {"type": "array", "items": {"type": "string"}},
+                "install": {"type": "array", "items": {"type": "string"}},
+                "build": {"type": "array", "items": {"type": "string"}},
+                "install_when": {"type": "array", "items": {"type": "string"}},
+                "install_marker": {"type": "string"},
+                "auto_update": {"type": "boolean"},
+                "external_cmd": {"type": "string", "description": "Regex matching this component's process command line, to recognise instances started outside LocalServices"}
+              }
+            }
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "probe"],
+              "additionalProperties": false,
+              "properties": {
+                "name": {"type": "string", "maxLength": 100},
+                "probe": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "tcp": {"type": "string"},
+                    "http": {"type": "string"},
+                    "json_ok": {"type": "string"},
+                    "timeout": {"type": "number"}
+                  }
+                },
+                "affects": {"type": "array", "items": {"type": "string"}},
+                "required": {"type": "boolean"},
+                "container": {"type": "string", "description": "Existing docker container name this dependency maps to, if any"},
+                "volume": {"type": "string"},
+                "note": {"type": "string", "maxLength": 200}
+              }
+            }
+          },
+          "resource_refs": {"type": "array", "items": {"type": "string"}, "description": "Existing docker/compose resources this service reuses, as 'container:<name>'"},
+          "evidence": {
+            "type": "object",
+            "required": ["summary", "files"],
+            "additionalProperties": false,
+            "properties": {
+              "summary": {"type": "string", "maxLength": 500, "description": "Why this definition starts the project: entry points, ports, readiness, data locations"},
+              "files": {"type": "array", "items": {"type": "string"}, "description": "Concrete files/lines the definition is grounded in, e.g. 'Makefile:179 sources-manager'"}
+            }
+          },
+          "unresolved": {"type": "array", "items": {"type": "string"}, "description": "Questions only the user can answer; each blocks a field you left out"}
+        }
+      }
+    }
+  }
+}

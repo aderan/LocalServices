@@ -27,6 +27,35 @@ def services_dir() -> Path:
     return Path(env) if env else REPO_ROOT / "services"
 
 
+def user_services_dir() -> Path:
+    """Registered (GUI/CLI/Skill) service definitions; same TOML schema as services_dir()."""
+    env = os.environ.get("LOCALSERVICES_USER_SERVICES")
+    return Path(env) if env else home() / "services"
+
+
+def service_search_path() -> list[Path]:
+    dirs = [services_dir(), user_services_dir()]
+    return [d for d in dirs if d.is_dir()]
+
+
+def drafts_dir() -> Path:
+    """Incomplete registrations (JSON drafts); never loaded by the manifest engine."""
+    return home() / "drafts"
+
+
+def registry_file() -> Path:
+    """Workspace registry: Projects, Directories, service membership, agent choice."""
+    return home() / "registry.json"
+
+
+def agent_connections_file() -> Path:
+    return home() / "agent-connections.json"
+
+
+def jobs_dir() -> Path:
+    return home() / "jobs"
+
+
 def label_prefix() -> str:
     return os.environ.get("LOCALSERVICES_LABEL_PREFIX", "com.mybrain.ls")
 
@@ -56,5 +85,6 @@ def daemon_port() -> int:
 
 
 def ensure() -> None:
-    for d in (home(), logs_dir(), agents_dir(), run_dir(), build_dir()):
+    for d in (home(), logs_dir(), agents_dir(), run_dir(), build_dir(),
+              user_services_dir(), drafts_dir(), jobs_dir()):
         d.mkdir(parents=True, exist_ok=True)
