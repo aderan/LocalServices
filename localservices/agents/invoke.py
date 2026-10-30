@@ -256,6 +256,25 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
         try:
             data = adapter.parse_output(stdout, last_message)
         except ValueError:
+            # codex prints startup banners to stdout; the actual failure reason is an
+            # "ERROR: {...}" line on stderr (e.g. API schema rejection, auth, quota).
+            # Diagnose that first instead of dumping the banner as "bad json".
+            api_err = ""
+            for m in re.finditer(r"ERROR:\s*(\{.*\})", stderr):
+                try:
+                    api_err = json.loads(m.group(1)).get("error", {}).get("message", "")
+                except ValueError:
+                    api_err = m.group(1)[:300]
+                if api_err:
+                    break
+            if proc.returncode != 0:
+                reason = api_err or _snip((stderr or stdout)[:600])
+                low = reason.lower()
+                if "unauthorized" in low or "login" in low or "api key" in low:
+                    return {"ok": False, "error": "needs_login", "detail": reason,
+                            "agent": kind, "duration": round(time.monotonic() - started, 2)}
+                return {"ok": False, "error": "call_failed", "detail": reason,
+                        "agent": kind, "duration": round(time.monotonic() - started, 2)}
             raw = stdout or stderr
             try:
                 raw += "\n--- last-message ---\n" + Path(last_message).read_text(encoding="utf-8", errors="replace")

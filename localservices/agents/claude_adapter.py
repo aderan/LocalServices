@@ -29,6 +29,15 @@ class ClaudeAdapter:
         last_message_path 仅为接口对齐保留（claude 直接用 stdout 的 JSON envelope）。"""
         prompt = read_text_safe(prompt_file, limit=200_000)
         schema_text = read_text_safe(schema_path, limit=200_000)
+        if schema_text:
+            # claude 的校验器只认 draft-07 方言；剥掉 2020-12 的 $schema 声明，
+            # 其余关键字（type/required/enum/pattern/min/max/items）两方言语义一致。
+            try:
+                schema = json.loads(schema_text)
+                schema.pop("$schema", None)
+                schema_text = json.dumps(schema, ensure_ascii=False)
+            except ValueError:
+                pass
         argv = [
             self.bin, "-p",
             "--output-format", "json",
