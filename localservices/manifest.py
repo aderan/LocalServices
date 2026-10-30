@@ -11,6 +11,7 @@ from . import paths
 
 DEFAULT_PATH = ":".join(
     [
+        str(Path.home() / ".pyenv" / "shims"),  # generic per-user python env, first so python3 resolves there
         "/opt/homebrew/bin",
         "/opt/homebrew/sbin",
         "/usr/local/bin",

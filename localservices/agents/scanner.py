@@ -14,8 +14,10 @@ IGNORED_DIRS = {"node_modules", ".git", "dist", "build", ".venv", "venv",
 MAX_FILE_BYTES = 1_000_000  # >1MB 不读内容
 MAX_DETAIL = 400
 
-# Makefile 里值得单独摘出的“运行入口”行
-MAKE_INTERESTING = ("sources-manager", "serve", "run", "dev")
+# Makefile 里值得单独摘出的“运行入口”行（行级：端口/绑定/服务特征，避免 dev/run 子串误匹配 DEVICE 等）
+MAKE_INTERESTING = ("sources-manager", "--port", "127.0.0.1", "0.0.0.0", "localhost", "--bind", "serve")
+# 运行入口类目标名：目标列表超限时优先保留（如 sources-manager、api-dev）
+RUN_TARGET = re.compile(r"(manager|admin|serve|api|web|ui|dev|run|start|dash)", re.IGNORECASE)
 # README 代码块里认可的命令前缀
 README_CMD = re.compile(r"^\s*(make|npm|npx|yarn|pnpm|python3?|uv|pip3?)\b")
 COMPOSE_NAMES = re.compile(r"^(docker-)?compose", re.IGNORECASE)
@@ -30,21 +32,35 @@ def _makefile_detail(text: str) -> str:
     targets: list[str] = []
     interesting: list[str] = []
     for line in text.splitlines():
-        if line.startswith("\t") or line.startswith("#"):
+        if line.startswith("#"):
             continue
-        m = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.%-]*)\s*:", line.split("#")[0].rstrip())
+        body = line.split("#")[0].rstrip()
+        m = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.%-]*)\s*:", body)
         if m and m.group(1) not in (".PHONY", ".DEFAULT", ".SUFFIXES") and m.group(1) not in targets:
             targets.append(m.group(1))
         low = line.lower()
-        if any(k in low for k in MAKE_INTERESTING) and line.strip() and not line.startswith("#"):
-            if line.strip() not in interesting:
-                interesting.append(line.strip())
+        if any(k in low for k in MAKE_INTERESTING) and line.strip() and not line.startswith("#") \
+                and not body.lstrip().startswith(".PHONY"):
+            # recipe 行（TAB 开头）携带真实命令与端口，同样值得摘出
+            candidate = line.strip()
+            if len(candidate) > 140:
+                candidate = candidate[:139] + "…"
+            if candidate not in interesting:
+                interesting.append(candidate)
+    # 真正带端口的行优先（如 --port 8797），纯关键词行其后
+    portish = re.compile(r"port\D*\d{2,5}|:\d{4,5}", re.I)
+    interesting = [s for _, _, s in sorted(
+        ((0 if portish.search(s) else 1, i, s) for i, s in enumerate(interesting)))]
+    # 目标太多时先保运行入口类，再保其余（真实服务常在大型 Makefile 深处）
+    run = [t for t in targets if RUN_TARGET.search(t)]
+    others = [t for t in targets if not RUN_TARGET.search(t)]
+    ordered = run + others
     parts = []
-    if targets:
-        parts.append("targets: " + ", ".join(targets[:20]))
+    if ordered:
+        parts.append(_clip("targets: " + ", ".join(ordered[:24]), 210))
     if interesting:
-        parts.append("lines: " + " | ".join(interesting[:8]))
-    return _clip("; ".join(parts))
+        parts.append(_clip("lines: " + " | ".join(interesting[:8]), 170))
+    return " ".join(s for s in parts if s)
 
 
 def _package_detail(path: Path) -> str:
