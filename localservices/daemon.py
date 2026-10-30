@@ -115,7 +115,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(*agent_api.handle_agents_get())
                 return
             if u.path == "/api/resources":
-                self._send(*resources.inventory())
+                self._send(200, resources.inventory())
                 return
             if u.path == "/api/drafts":
                 self._send(*register_api.handle_drafts())
@@ -179,6 +179,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if u.path == "/api/agents/verify":
                 self._send(*agent_api.handle_agents_verify(body))
+                return
+            if u.path == "/api/agents/default":
+                self._send(*agent_api.handle_agents_default(body))
                 return
             if u.path == "/api/analyze":
                 self._send(*agent_api.handle_analyze(body))

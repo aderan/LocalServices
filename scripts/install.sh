@@ -83,6 +83,9 @@ cd "$REPO" && exec "$PY" -m localservices.cli "\$@"
 SH
 chmod +x "$HOME/.local/bin/lsctl"
 
+# Codex skill (localservices): safe installer — never overwrites user-modified skills
+bash "$REPO/scripts/install-skill.sh" || echo "WARN: skill 安装未完成（不影响其余组件）"
+
 for job in daemon menubar; do
   launchctl bootout "gui/$UID_/com.mybrain.localservices.$job" 2>/dev/null || true
   for _ in $(seq 1 40); do  # bootout returns before the job is fully gone

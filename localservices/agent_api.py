@@ -145,6 +145,23 @@ def handle_agents_verify(body: dict) -> tuple[int, dict]:
         return 500, {"ok": False, "error": str(e)}
 
 
+def handle_agents_default(body: dict) -> tuple[int, dict]:
+    """POST /api/agents/default {"kind": "codex"|"claude"}：切换默认连接。"""
+    try:
+        kind = (body or {}).get("kind")
+        if kind not in base.KINDS:
+            return 400, {"ok": False, "error": "kind 必须是 codex 或 claude"}
+        conns, _ = base.load_connections()
+        if not conns:
+            conns = detect.scan()
+        if kind not in conns:
+            return 404, {"ok": False, "error": f"未发现 {kind}，请先扫描或指定路径"}
+        default = base.save_connections(conns, kind)
+        return 200, _agents_payload(conns, default)
+    except Exception as e:  # noqa: BLE001
+        return 500, {"ok": False, "error": str(e)}
+
+
 def handle_analyze(body: dict) -> tuple[int, dict]:
     """启动后台分析任务 → (202, {"ok": true, "job_id": ...})。"""
     try:

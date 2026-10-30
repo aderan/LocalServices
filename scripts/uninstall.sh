@@ -15,6 +15,9 @@ done
 rm -f "$LA/com.mybrain.localservices.daemon.plist" "$LA/com.mybrain.localservices.menubar.plist"
 rm -rf "$HOME/Applications/MyBrain Services.app"
 rm -f "$HOME/.local/bin/lsctl"
+# Remove only skill files this tool installed and the user did not modify (§6 契约)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+bash "$SCRIPT_DIR/uninstall-skill.sh" 2>/dev/null || true
 if [ "${1:-}" = "--purge" ]; then
   rm -rf "$HOME/Library/Application Support/LocalServices" "$HOME/Library/Logs/LocalServices"
 fi

@@ -84,7 +84,8 @@ Docker 不可达时 `{"ok": false, "error": "..."}`，不阻塞其余 API。服�
 - `POST /api/projects/<pid>/favorite` `{value: bool}`。
 - `DELETE /api/services/<sid>?disposition=stop|keep-external`：移除登记；受管运行中时 `stop` 先停再删，
   `keep-external` 只删登记（进程随后按外部实例识别）。业务数据/文件永不删除。
-- `POST /api/drafts/<id>/register`：草稿补全后转正式注册（同 §2 校验）。
+- `POST /api/drafts/<id>/register`：草稿补全后转正式注册（同 §2 校验；该端点忽略并翻转
+  payload 中的 `draft` 标志——转正请求永远是注册）。
 - `GET /api/drafts`、`DELETE /api/drafts/<id>`。
 
 ## 3. 分析（Agent 识别）协议
@@ -93,7 +94,8 @@ Docker 不可达时 `{"ok": false, "error": "..."}`，不阻塞其余 API。服�
   → `202 {"ok": true, "job_id": "..."}`。
 - `GET /api/jobs/<id>` → `{"id", "kind": "analyze", "state": "queued|running|done|failed",
   "agent", "directory", "started_at", "finished_at", "result"?, "error"?}`；
-  `result` = `{"candidates": [服务定义（§2 service 结构）], "evidence": {...}, "unresolved": [...]}`。
+  `result` = `{"services": [服务定义（§2 service 结构）], "evidence": {...}, "unresolved": [...]}`。
+- `POST /api/agents/default` `{"kind"}` 切换默认连接（404 = 未发现该 Agent）。
 - Wrapper 一次有界调用（默认 240s，上限 600s）：只读沙箱（codex `--sandbox read-only`；claude 只允许
   Read/Glob/Grep 类工具），超时杀整个子进程组，绝无残留。输出过 `schemas/agent-analysis.schema.json`
   校验后再做本地校验（cwd 在范围内、cmd 可解析、端口不冲突——同 §2 规则），违规候选进 `unresolved`

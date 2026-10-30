@@ -5,149 +5,341 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MyBrain Services</title>
 <style>
-  :root { color-scheme: light dark; --fg:#1d1d1f; --mute:#6e6e73; --line:#e5e5ea; --bg:#fff; --soft:#f5f5f7;
+  :root { color-scheme: light dark;
+          --fg:#1d1d1f; --mute:#6e6e73; --line:#e5e5ea; --bg:#fff; --soft:#f5f5f7; --page:#f5f5f7; --card:#fff;
           --ok:#1f7a3a; --warn:#9a6700; --bad:#b42318; --btn:#0b57d0; }
-  @media (prefers-color-scheme: dark) { :root { --fg:#f5f5f7; --mute:#a1a1a6; --line:#38383a; --bg:#1c1c1e; --soft:#2c2c2e;
+  @media (prefers-color-scheme: dark) { :root {
+          --fg:#f5f5f7; --mute:#a1a1a6; --line:#38383a; --bg:#1c1c1e; --soft:#2c2c2e; --page:#111113; --card:#1c1c1e;
           --ok:#5bd17a; --warn:#f2c14e; --bad:#ff6b5e; --btn:#7aa7ff; } }
-  body { font: 14px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
-  header { display:flex; align-items:baseline; gap:12px; padding: 20px 28px 8px; }
-  h1 { font-size: 18px; margin: 0; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; margin: 0;
+         background: var(--page); color: var(--fg); }
+  .banner { background: var(--soft); border-bottom: 1px solid var(--line); color: var(--bad);
+            font-weight: 600; padding: 8px 20px; text-align: center; }
+  .shell { display: grid; grid-template-columns: 236px minmax(0, 1fr); min-height: 100vh; }
+  nav { background: var(--bg); border-right: 1px solid var(--line); padding: 14px 10px;
+        display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; align-self: start;
+        max-height: 100vh; overflow-y: auto; }
+  .brand { padding: 2px 10px 10px; }
+  .brand h1 { font-size: 15px; margin: 0 0 2px; }
   #conn { color: var(--mute); font-size: 12px; }
   #conn.bad { color: var(--bad); font-weight: 600; }
-  main { padding: 0 28px 40px; max-width: 1080px; }
-  .row { border-bottom: 1px solid var(--line); padding: 12px 0; }
-  .line { display:grid; grid-template-columns: 180px 150px 1fr auto; gap: 12px; align-items:center; }
-  .name { font-weight: 600; }
-  .name small { display:block; font-weight: 400; color: var(--mute); font-size: 12px; }
-  .state { font-weight: 600; }
-  .state::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background: var(--mute); vertical-align: 1px; }
+  .navitem { display: block; width: 100%; text-align: left; font: inherit; font-size: 13px;
+             padding: 6px 10px; border-radius: 7px; border: 0; background: none; color: var(--fg);
+             cursor: pointer; }
+  .navitem:hover { background: var(--soft); }
+  .navitem.active { background: var(--soft); color: var(--btn); font-weight: 600; }
+  .navitem.add { color: var(--btn); }
+  .navlabel { color: var(--mute); font-size: 11px; padding: 10px 10px 2px; text-transform: uppercase; letter-spacing: .04em; }
+  .navspacer { flex: 1; }
+  .badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; font-size: 11px;
+           background: var(--bad); color: #fff; text-align: center; margin-left: 4px; }
+  .badge.mut { background: var(--mute); }
+  .content { display: flex; flex-direction: column; min-width: 0; }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 16px 24px 8px; flex-wrap: wrap; }
+  .topbar h2 { font-size: 17px; margin: 0 auto 0 0; }
+  #globalSearch { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 7px;
+                  border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 230px; }
+  main { padding: 6px 24px 48px; max-width: 1120px; width: 100%; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 14px 16px 8px; margin: 0 0 14px; }
+  .card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+  .card-head h3 { font-size: 15px; margin: 0 auto 0 0; }
+  .card-head .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .star { border: 0; background: none; cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px;
+          color: var(--mute); }
+  .star.on { color: var(--warn); }
+  .note { color: var(--mute); font-size: 12px; margin: 2px 0 8px; }
+  .row { border-top: 1px solid var(--line); padding: 10px 0 8px; }
+  .card > .row:first-of-type { border-top: 0; }
+  .line { display: grid; grid-template-columns: minmax(0, 1.3fr) 130px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+  .name { font-weight: 600; overflow-wrap: anywhere; }
+  .name small { display: block; font-weight: 400; color: var(--mute); font-size: 12px; }
+  .state { font-weight: 600; font-size: 13px; }
+  .state::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                   margin-right: 6px; background: var(--mute); vertical-align: 1px; }
   .s-available::before { background: var(--ok); } .s-partial::before { background: var(--warn); }
   .s-failed::before, .s-conflict::before { background: var(--bad); }
   .s-starting::before, .s-stopping::before, .s-preparing::before { background: var(--btn); }
-  .s-external::before { background: var(--ok); box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--ok); }
-  .code { color: var(--mute); font-size: 13px; }
-  .code.pending, .code.failed { color: var(--warn); font-weight: 600; }
-  .code.failed { color: var(--bad); }
-  .acts { display:flex; gap:6px; flex-wrap: wrap; justify-content:flex-end; }
-  button { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--soft); color: var(--fg); cursor: pointer; }
-  button.primary { background: var(--btn); border-color: var(--btn); color: #fff; }
+  .s-external::before { background: var(--ok); box-shadow: 0 0 0 2px var(--card), 0 0 0 3px var(--ok); }
+  .code { color: var(--mute); font-size: 12px; }
+  .code.pending, .code.failed { font-weight: 600; }
+  .code.pending { color: var(--warn); } .code.failed { color: var(--bad); }
+  .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  button, .btn { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px;
+                 border: 1px solid var(--line); background: var(--soft); color: var(--fg); cursor: pointer; }
+  button.primary, .btn.primary { background: var(--btn); border-color: var(--btn); color: #fff; }
+  button.danger { color: var(--bad); }
   button:disabled { opacity: .55; cursor: default; }
-  main > p.reason { margin: 8px 0; }
-  .reason { margin: 6px 0 0 192px; color: var(--bad); font-size: 13px; white-space: pre-wrap; }
+  button:focus-visible, summary:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid var(--btn); outline-offset: 2px; }
+  .reason { margin: 6px 0 0; color: var(--bad); font-size: 13px; white-space: pre-wrap; }
   .reason.warn { color: var(--warn); }
   .reason.info { color: var(--mute); }
-  details { margin: 6px 0 0 192px; font-size: 13px; }
+  details { margin: 6px 0 0; font-size: 13px; }
   summary { cursor: pointer; color: var(--mute); }
   table { border-collapse: collapse; margin: 6px 0; }
   td { padding: 2px 14px 2px 0; vertical-align: top; }
-  td.k { color: var(--mute); }
-  pre { background: var(--soft); padding: 8px; border-radius: 6px; max-height: 320px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
-  .workspace { margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 2px; }
-  .workspace-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: space-between; }
-  .workspace h2 { font-size: 16px; margin: 0; }
-  .workspace-note { color: var(--mute); margin: 4px 0 10px; font-size: 13px; }
-  .workspace .row:last-child { border-bottom: 0; }
+  td.k { color: var(--mute); white-space: nowrap; }
+  pre { background: var(--soft); padding: 8px; border-radius: 6px; max-height: 320px; overflow: auto;
+        font-size: 12px; white-space: pre-wrap; }
   .table-scroll { overflow-x: auto; }
-  button:focus-visible, summary:focus-visible { outline: 2px solid var(--btn); outline-offset: 3px; }
-  @media (max-width: 800px) {
-    header { padding: 16px 16px 8px; flex-wrap: wrap; }
-    main { padding: 0 16px 24px; }
+  .msg { color: var(--mute); font-size: 12px; margin: 4px 0 0; }
+  .msg.bad { color: var(--bad); }
+  .field { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+  .field label { min-width: 110px; color: var(--mute); font-size: 13px; }
+  .field input, .field select { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 6px;
+        border: 1px solid var(--line); background: var(--bg); color: var(--fg); min-width: 220px; flex: 1; }
+  .inline-note { color: var(--mute); font-size: 12px; }
+  .cand { border-top: 1px solid var(--line); padding: 10px 0; }
+  .cand:first-child { border-top: 0; }
+  .cand-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .cand-head .name { flex: 1; }
+  .comp-edit { background: var(--soft); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+  .result-box { border-radius: 8px; padding: 8px 12px; margin: 8px 0; background: var(--soft); }
+  .result-box.ok { color: var(--ok); } .result-box.bad { color: var(--bad); }
+  .warnlist { color: var(--warn); font-size: 12px; white-space: pre-wrap; }
+  .dot-sep { color: var(--line); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+  .muted { color: var(--mute); }
+  .empty { color: var(--mute); padding: 22px 4px; text-align: center; }
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; }
+    nav { position: static; max-height: none; flex-direction: row; flex-wrap: wrap; border-right: 0;
+          border-bottom: 1px solid var(--line); }
+    .navlabel, .navspacer { display: none; }
+    .navitem { width: auto; }
+    main, .topbar { padding-left: 14px; padding-right: 14px; }
     .line { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
     .code, .acts { grid-column: 1 / -1; }
     .acts { justify-content: flex-start; }
-    .reason, details, .msg { margin-left: 0; overflow-wrap: anywhere; }
-    .workspace { padding: 12px 10px 0; }
-    button { min-height: 40px; }
+    button { min-height: 36px; }
   }
-  .msg { color: var(--mute); font-size: 12px; margin-left: 192px; }
 </style>
 </head>
 <body>
-<header><h1>MyBrain Services</h1><span id="conn">连接中…</span></header>
-<main id="list"></main>
+<div id="banner" class="banner" hidden>控制层不可用，服务状态未知——不代表项目已停止。恢复后自动消失。</div>
+<div class="shell">
+<nav aria-label="工作台导航">
+  <div class="brand"><h1>MyBrain Services</h1><div id="conn" role="status">连接中…</div></div>
+  <button class="navitem" id="nav-all" onclick="setView('all')">全部服务</button>
+  <div class="navlabel" id="navProjectsLabel">项目</div>
+  <div id="navProjects"></div>
+  <button class="navitem" id="nav-attention" onclick="setView('attention')">需要处理<span id="attentionBadge" class="badge" hidden></span></button>
+  <button class="navitem" id="nav-resources" onclick="setView('resources')">共享资源</button>
+  <button class="navitem" id="nav-agents" onclick="setView('agents')">Agent 连接</button>
+  <button class="navitem" id="nav-drafts" onclick="setView('drafts')">设置 / 草稿<span id="draftBadge" class="badge mut" hidden></span></button>
+  <div class="navspacer"></div>
+  <button class="navitem add" id="nav-new-project" onclick="setView('new-project')">＋ 添加项目…</button>
+</nav>
+<section class="content">
+  <header class="topbar">
+    <h2 id="viewTitle">全部服务</h2>
+    <input id="globalSearch" type="search" placeholder="搜索项目 / 服务（跨视图）" aria-label="全局搜索">
+    <button id="refreshBtn" onclick="refresh(true)">刷新</button>
+  </header>
+  <main id="main" aria-live="polite"></main>
+</section>
+</div>
 <script>
+"use strict";
 const TOKEN = "__TOKEN__";
 const H = {"X-LocalServices-Token": TOKEN, "Content-Type": "application/json"};
-const pending = {};   // project -> label while a click is in flight
-const open = {};      // project -> details open
-const logs = {};      // project -> log text
+const pending = {};   // key -> in-flight action label（防重复点击）
 const msgs = {};
-let last = null;
+const open = {};      // service id -> details open
+const logs = {};      // service id -> log text
+let snap = null;      // /api/status
+let registry = null;  // /api/registry
+let agentsData = null, resourcesData = null, draftsData = null;
+let view = "all";     // all | project:<id> | attention | resources | agents | drafts | new-project
+let connOk = null;
+let confirmRemove = null;   // service id -> 等待处置选择
+let draftEdit = {};         // draft id -> 编辑中的 service 字段
+let wiz = newWizard();
+
+function newWizard() {
+  return {step: "dir", dir: "", name: "", agent: "", project: null,
+          jobId: null, job: null, pollTimer: null, error: "",
+          candidates: [], unresolved: [], results: {}, registering: false, manual: false};
+}
+
+// ------------------------------------------------------------ 基础设施
 
 async function api(method, path, body) {
   const r = await fetch(path, {method, headers: H, body: body ? JSON.stringify(body) : undefined});
-  return [r.status, await r.json()];
+  let data = null;
+  try { data = await r.json(); } catch (e) { /* 非 JSON 响应 */ }
+  return [r.status, data];
 }
 
-function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function t(ts) { return ts ? new Date(ts*1000).toLocaleString("zh-CN", {hour12:false}) : "—"; }
+function busy(key) { return !!pending[key]; }
 
-async function act(id, action, body) {
-  if (pending[id] || pending['g-' + last?.projects.find(p => p.id === id)?.group]) return;
-  msgs[id] = "";
-  pending[id] = action;
-  render();
-  try {
-    const [code, res] = await api("POST", `/api/projects/${id}/${action}`, body);
-    msgs[id] = res.message || res.error || "";
-    if (code !== 200 && res.error) msgs[id] = res.error;
-  } catch (e) { msgs[id] = "无法连接控制服务"; }
-  pending[id] = null;
-  await refresh();
+function setConn(ok) {
+  if (connOk === ok) return;
+  connOk = ok;
+  document.getElementById("banner").hidden = ok !== false;
+  const c = document.getElementById("conn");
+  if (ok === false) { c.textContent = "控制层不可用"; c.className = "bad"; }
 }
 
-async function groupAct(id, action) {
-  const members = last.projects.filter(p => p.group === id);
-  if (members.some(p => pending[p.id] || p.op) || pending['g-' + id]) return;
-  for (const member of members) delete msgs[member.id];
-  msgs['g-' + id] = '';
-  pending['g-' + id] = action;
-  render();
-  try {
-    const [, res] = await api("POST", `/api/groups/${id}/${action}`);
-    msgs['g-' + id] = res.message || res.error || "";
-  } catch (e) { msgs['g-' + id] = "无法连接控制服务"; }
-  pending['g-' + id] = null;
-  await refresh();
+function nativeBridge() {
+  try { return (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.lsbridge) || null; }
+  catch (e) { return null; }
+}
+// 原生目录选择回调（WKWebView 注入；浏览器环境走 chooseDirectory 的输入框退化）
+window.lsPickDirectory = function(path) {
+  const cb = window.__lsPickCb;
+  window.__lsPickCb = null;
+  if (cb) cb(typeof path === "string" ? path : null);
+};
+
+// ------------------------------------------------------------ 数据视图
+
+function servicesById() {
+  const m = {};
+  for (const p of (snap?.projects || [])) m[p.id] = p;
+  return m;
 }
 
-async function loadLogs(id) {
-  const [, res] = await api("GET", `/api/projects/${id}/logs?lines=120`);
-  logs[id] = Object.entries(res.logs || {}).map(([c, txt]) => `===== ${c}\n${txt || "(无日志)"}`).join("\n\n");
-  open[id] = true; render();
+function projectGroups() {
+  const byId = servicesById();
+  const out = [];
+  const claimed = new Set();
+  const projects = (registry?.registry?.projects || []).slice()
+    .sort((a, b) => (b.favorite - a.favorite) || a.name.localeCompare(b.name, "zh-CN"));
+  for (const pj of projects) {
+    const members = (pj.services || []).map(s => byId[s]).filter(Boolean);
+    if (!members.length) { out.push({pj, members: []}); continue; }
+    members.forEach(m => claimed.add(m.id));
+    out.push({pj, members});
+  }
+  const orphans = (snap?.projects || []).filter(p => !claimed.has(p.id));
+  if (orphans.length) out.push({pj: {id: "", name: "未分组服务", favorite: false, agent: "none",
+                                     directories: [], services: orphans.map(o => o.id), revision: 0},
+                                members: orphans, orphan: true});
+  return out;
 }
+
+function matchesSearch(s) {
+  const q = document.getElementById("globalSearch").value.trim().toLowerCase();
+  if (!q) return true;
+  return (s.name || "").toLowerCase().includes(q) || (s.id || "").toLowerCase().includes(q)
+      || ((s.description || "") + "").toLowerCase().includes(q);
+}
+function projectMatchesSearch(pj, members) {
+  const q = document.getElementById("globalSearch").value.trim().toLowerCase();
+  if (!q) return true;
+  return (pj.name || "").toLowerCase().includes(q) || (pj.id || "").toLowerCase().includes(q)
+      || members.some(matchesSearch);
+}
+
+function attentionServices() {
+  return (snap?.projects || []).filter(p => ["failed", "conflict", "partial"].includes(p.state));
+}
+
+// ------------------------------------------------------------ 渲染
+
+const VIEW_TITLES = {all: "全部服务", attention: "需要处理", resources: "共享资源",
+                     agents: "Agent 连接", drafts: "设置 / 草稿", "new-project": "添加项目"};
+
+function render() {
+  renderNav();
+  const main = document.getElementById("main");
+  // 用户正在输入时不整刷内容区（导航/徽标照常更新），避免打断
+  const a = document.activeElement;
+  if (a && main.contains(a) && ["INPUT", "SELECT", "TEXTAREA"].includes(a.tagName)) return;
+  document.getElementById("viewTitle").textContent =
+      view.startsWith("project:") ? (projectGroups().find(g => g.pj.id === view.slice(8))?.pj.name || "项目")
+                                  : (VIEW_TITLES[view] || "全部服务");
+  let html = "";
+  if (view === "all") html = viewAll();
+  else if (view.startsWith("project:")) html = viewProject(view.slice(8));
+  else if (view === "attention") html = viewAttention();
+  else if (view === "resources") html = viewResources();
+  else if (view === "agents") html = viewAgents();
+  else if (view === "drafts") html = viewDrafts();
+  else if (view === "new-project") html = viewNewProject();
+  main.innerHTML = html;
+  if (location.hash.startsWith("#p-")) {
+    const el = document.getElementById(location.hash.slice(1));
+    if (el) el.scrollIntoView({block: "center"});
+  }
+}
+
+function renderNav() {
+  document.querySelectorAll("nav .navitem").forEach(b => b.classList.remove("active"));
+  const map = {"all": "nav-all", "attention": "nav-attention", "resources": "nav-resources",
+               "agents": "nav-agents", "drafts": "nav-drafts", "new-project": "nav-new-project"};
+  (map[view] ? [map[view]] : []).forEach(id => document.getElementById(id)?.classList.add("active"));
+  const projNav = document.getElementById("navProjects");
+  const groups = projectGroups().filter(g => !g.orphan && projectMatchesSearch(g.pj, g.members));
+  projNav.innerHTML = groups.map(g =>
+    `<button class="navitem${view === "project:" + g.pj.id ? " active" : ""}" onclick="setView('project:${esc(g.pj.id)}')">${g.pj.favorite ? "★ " : ""}${esc(g.pj.name)}${g.members.length ? `<span class="badge mut" style="margin-left:6px">${g.members.length}</span>` : ""}</button>`).join("")
+    || `<div class="note" style="padding:2px 10px">（暂无项目）</div>`;
+  const n = attentionServices().length;
+  const badge = document.getElementById("attentionBadge");
+  badge.hidden = !n; badge.textContent = n || "";
+  const d = draftsData?.drafts?.length || 0;
+  const db = document.getElementById("draftBadge");
+  db.hidden = !d; db.textContent = d || "";
+  const c = document.getElementById("conn");
+  if (connOk !== false) {
+    c.className = "";
+    c.textContent = snap ? "更新于 " + new Date(snap.generated_at * 1000).toLocaleTimeString("zh-CN", {hour12:false}) : "连接中…";
+  }
+}
+
+// ------------------------------------------------------------ 服务行（沿用原列表能力）
 
 function primary(p) {
   if (p.observe_only) return "";
-  if (p.state === "unknown") return `<button class="primary" disabled>状态未知</button>`;
-  const busy = pending[p.id] || pending['g-' + p.group] || p.op || p.state === "starting" || p.state === "stopping";
-  if (busy) return `<button class="primary" disabled>${p.state === "preparing" ? "准备环境…" : p.state === "stopping" || pending[p.id] === "stop" ? "停止中…" : "启动中…"}</button>`;
-  if (p.state === "available" || p.state === "partial" || p.state === "external")
+  if (connOk === false || p.state === "unknown") return `<button class="primary" disabled>状态未知</button>`;
+  const isBusy = busy(p.id) || busy("g-" + p.group) || p.op || ["starting", "stopping", "preparing"].includes(p.state);
+  if (isBusy) return `<button class="primary" disabled>${p.state === "preparing" ? "准备环境…" : p.state === "stopping" || pending[p.id] === "stop" ? "停止中…" : "启动中…"}</button>`;
+  if (["available", "partial", "external"].includes(p.state))
     return p.can_open ? `<button class="primary" onclick="act('${p.id}','open')">打开</button>` : "";
-  if (p.state === "failed" || p.state === "conflict")
+  if (["failed", "conflict"].includes(p.state))
     return `<button class="primary" onclick="open['${p.id}']=true;render()">查看原因</button>`;
   return `<button class="primary" onclick="act('${p.id}','start',{open:true})">启动并打开</button>`;
 }
 
 function secondary(p) {
   const b = [];
+  const dis = (busy(p.id) || busy("g-" + p.group) || p.op) ? "disabled" : "";
   if (p.observe_only) {
-    for (const a of (p.actions || [])) b.push(`<button onclick="act('${p.id}','action',{name:'${a.id}'})">${esc(a.label)}</button>`);
+    for (const a of (p.actions || []))
+      b.push(`<button ${dis} onclick="act('${p.id}','action',{name:'${esc(a.id)}'})">${esc(a.label)}</button>`);
   } else {
-    const dis = (pending[p.id] || pending['g-' + p.group] || p.op) ? "disabled" : "";
-    if (p.can_takeover) b.push(`<button ${dis} onclick="if(confirm('接管会停止这个外部启动的 ${esc(p.name)} 实例，并由本工具从最新源码启动。有活动任务时会等空闲再接管。继续？'))act('${p.id}','takeover')">接管</button>`);
-    if ((p.state === "failed" || p.state === "conflict") && !p.can_takeover) b.push(`<button ${dis} onclick="act('${p.id}','start',{open:true})">重试</button>`);
-    if (p.state !== "external" && (p.intent === "running" || p.state !== "stopped")) b.push(`<button ${dis} onclick="act('${p.id}','stop')">停止</button>`);
-    if (p.intent === "running" && p.state !== "external") b.push(`<button ${dis} onclick="act('${p.id}','restart')">${p.group ? (p.components.some(c => c.id === "api") ? "重启 Explore（前端＋API）" : "重启图鉴") : "重启"}</button>`);
+    if (p.can_takeover) b.push(`<button ${dis} onclick="if(confirm('接管会停止这个外部启动的实例，并由本工具从最新源码启动。有活动任务时会等空闲再接管。继续？'))act('${p.id}','takeover')">接管</button>`);
+    if (["failed", "conflict"].includes(p.state) && !p.can_takeover)
+      b.push(`<button ${dis} onclick="act('${p.id}','start',{open:true})">重试</button>`);
+    if (p.state !== "external" && (p.intent === "running" || p.state !== "stopped"))
+      b.push(`<button ${dis} onclick="act('${p.id}','stop')">停止</button>`);
+    if (p.intent === "running" && p.state !== "external")
+      b.push(`<button ${dis} onclick="act('${p.id}','restart')">重启</button>`);
     b.push(`<button onclick="loadLogs('${p.id}')">日志</button>`);
   }
-  b.push(`<button onclick="act('${p.id}','open-source')">源码</button>`);
+  b.push(`<button onclick="act('${p.id}','open-source')">源码目录</button>`);
   return b.join("");
+}
+
+function removeBlock(p) {
+  if (confirmRemove !== p.id) return "";
+  const running = p.intent === "running" && p.state !== "external" && !p.observe_only;
+  if (!running) return "";
+  return `<div class="field" role="group" aria-label="移除时的处置">
+    <span class="inline-note">该服务运行中，移除登记前请选择处置：</span>
+    <button class="danger" onclick="doRemove('${p.id}','stop')">停止并移除</button>
+    <button onclick="doRemove('${p.id}','keep-external')">保留为外部实例并移除</button>
+    <button onclick="confirmRemove=null;render()">取消</button></div>`;
 }
 
 function detailsHtml(p) {
   const componentAction = c => p.group && c.kind === "server" && c.running && p.state !== "external"
-    ? `<button ${p.op || pending[p.id] || pending['g-' + p.group] ? "disabled" : ""} onclick="act('${p.id}','restart',{components:['${c.id}']})">仅重启${c.id === "api" ? " API" : c.id === "web" ? "前端" : " " + esc(c.name)}</button>` : "";
+    ? `<button ${p.op || busy(p.id) || busy("g-" + p.group) ? "disabled" : ""} onclick="act('${p.id}','restart',{components:['${c.id}']})">仅重启${c.id === "api" ? " API" : c.id === "web" ? "前端" : " " + esc(c.name)}</button>` : "";
   const rows = (p.components || []).map(c =>
     `<tr><td class="k">${esc(c.name)}</td><td>${esc(c.label)}${c.detail ? "：" + esc(c.detail) : ""}</td>
      <td class="k">${c.kind === "generator" ? (c.last_run ? "最近 " + t(c.last_run) : "") : (c.pid ? "pid " + c.pid + " · 启动于 " + t(c.started_at) : "")}</td>
@@ -156,67 +348,792 @@ function detailsHtml(p) {
     `<tr><td class="k">依赖 ${esc(d.name)}</td><td>${d.ok ? "可用" : "不可用"}${d.detail ? "：" + esc(d.detail) : ""}</td><td class="k">${d.managed ? "" : "外部管理"}</td><td class="k">${esc(d.note || "")}</td></tr>`).join("");
   const extra = p.observe_only ? `<tr><td class="k">状态</td><td colspan="3">${esc(p.detail || "")}</td></tr>` : "";
   const src = `<tr><td class="k">源码</td><td colspan="3">${esc(p.source)}${p.code && p.code.process_started ? " · 进程启动于 " + t(p.code.process_started) : ""}${p.code && p.code.newest_change ? " · 最近源码修改 " + t(p.code.newest_change) : ""}</td></tr>`;
-  const lg = logs[p.id] ? `<pre>${esc(logs[p.id])}</pre>` : "";
-  return `<details ${open[p.id] ? "open" : ""} ontoggle="if(this.isConnected)open['${p.id}']=this.open"><summary>${p.group ? "组件操作与详情" : "组件与详情"}</summary><div class="table-scroll"><table>${extra}${rows}${deps}${src}</table></div>${lg}</details>`;
+  const reasonRow = p.reason ? `<tr><td class="k">诊断</td><td colspan="3" class="${["failed","conflict"].includes(p.state) ? "" : "muted"}" style="white-space:pre-wrap">${esc(p.reason)}</td></tr>` : "";
+  const lg = logs[p.id] !== undefined ? `<pre id="logs-${p.id}">${esc(logs[p.id] || "(无日志)")}</pre>` : "";
+  const canRemove = !p.observe_only;
+  return `<details ${open[p.id] ? "open" : ""} ontoggle="if(this.isConnected)open['${p.id}']=this.open">
+    <summary>命令 / 端口 / 组件明细与移除</summary>
+    <div class="table-scroll"><table>${extra}${rows}${deps}${src}${reasonRow}</table></div>
+    ${canRemove ? `<div class="acts" style="justify-content:flex-start">${confirmRemove === p.id ? "" : `<button class="danger" onclick="askRemove('${p.id}')">移除登记…</button>`}</div>${removeBlock(p)}` : ""}
+    ${lg}</details>`;
 }
 
-function render() {
-  const el = document.getElementById("list");
-  if (!last) return;
-  if (last.manifest_error) el.dataset.err = last.manifest_error;
-  const sys = (last.system_warnings || []).map(w => `<p class="reason warn">⚠︎ ${esc(w)}</p>`).join("");
-  const projectHtml = p => {
-    const code = p.code || {};
-    const reason = p.reason ? `<div class="reason ${p.state === "partial" ? "warn" : p.state === "external" ? "info" : ""}">${esc(p.reason)}</div>` : "";
-    const msg = msgs[p.id] ? `<div class="msg">${esc(msgs[p.id])}</div>` : "";
-    return `<section class="row" id="p-${p.id}">
-      <div class="line">
-        <div class="name">${esc(p.name)}<small>${esc(p.description || "")}</small></div>
-        <div class="state s-${p.state}">${esc(p.label)}</div>
-        <div class="code ${code.state}">${esc(code.label || "")}${code.state === "pending" || code.state === "failed" ? "：" + esc((code.detail || "").split("\n")[0]) : ""}</div>
-        <div class="acts">${primary(p)}${secondary(p)}</div>
-      </div>${reason}${msg}${detailsHtml(p)}</section>`;
-  };
-  const rendered = new Set();
-  el.innerHTML = sys + (last.manifest_error ? `<p class="reason">${esc(last.manifest_error)}</p>` : "") + last.projects.map(p => {
-    if (!p.group) return projectHtml(p);
-    if (rendered.has(p.group)) return "";
-    rendered.add(p.group);
-    const members = last.projects.filter(m => m.group === p.group).sort((a,b) => b.group_order - a.group_order);
-    const busy = pending['g-' + p.group] || members.some(m => m.op || pending[m.id]);
-    const disabled = busy || members.some(m => m.state === "unknown" || m.state === "external" || m.state === "conflict") ? "disabled" : "";
-    const count = members.reduce((n,m) => n + m.components.filter(c => c.kind === "server").length, 0);
-    const msg = msgs['g-' + p.group] ? `<p class="workspace-note" role="status">${esc(msgs['g-' + p.group])}</p>` : "";
-    return `<section class="workspace" id="g-${p.group}" aria-label="${esc(p.group_name || p.group)}">
-      <div class="workspace-head"><h2>${esc(p.group_name || p.group)}</h2><div class="acts">
-      <button ${disabled} onclick="groupAct('${p.group}','start')">启动全部</button>
-      <button ${disabled} onclick="groupAct('${p.group}','restart')">${busy ? "工作区操作中…" : `重启全部（${count} 个服务）`}</button>
-      <button ${disabled} onclick="if(confirm('停止工作区中的图鉴、Explore 前端和 API？'))groupAct('${p.group}','stop')">停止全部</button>
-      </div></div>
-      <p class="workspace-note">图鉴 5175 · Explore 前端 5178 · API 8787。重启全部包含 API；单项重启见各自组件操作。</p>
-      ${msg}${members.map(projectHtml).join("")}</section>`;
+function serviceRow(p, showProject) {
+  const code = p.code || {};
+  const reason = p.reason && ["failed", "conflict", "partial"].includes(p.state)
+      ? `<div class="reason ${p.state === "partial" ? "warn" : p.state === "external" ? "info" : ""}">${esc(p.reason)}</div>` : "";
+  const msg = msgs[p.id] ? `<div class="msg">${esc(msgs[p.id])}</div>` : "";
+  const pjName = showProject && registry?.services ? (registry.services.find(s => s.id === p.id)?.project) : null;
+  return `<section class="row" id="p-${p.id}">
+    <div class="line">
+      <div class="name">${pjName ? `<small>项目：${esc(projectName(pjName))}</small>` : ""}${esc(p.name)}<small>${esc(p.id)} · ${esc(p.description || "")}</small></div>
+      <div class="state s-${p.state}">${esc(p.label)}</div>
+      <div class="code ${code.state}">${esc(code.label || "")}${["pending", "failed"].includes(code.state) ? "：" + esc((code.detail || "").split("\n")[0]) : ""}</div>
+      <div class="acts">${primary(p)}${secondary(p)}</div>
+    </div>${reason}${msg}${detailsHtml(p)}</section>`;
+}
+
+function projectName(pid) { return registry?.registry?.projects?.find(p => p.id === pid)?.name || pid; }
+
+// ------------------------------------------------------------ 视图：全部服务 / 项目
+
+function groupToolbar(gid, members) {
+  const busyG = busy("g-" + gid) || members.some(m => m.op || busy(m.id));
+  const disabled = busyG || members.some(m => ["unknown", "external", "conflict"].includes(m.state)) ? "disabled" : "";
+  const count = members.reduce((n, m) => n + m.components.filter(c => c.kind === "server").length, 0);
+  const msg = msgs["g-" + gid] ? `<p class="note" role="status">${esc(msgs["g-" + gid])}</p>` : "";
+  return `<div class="card-head" aria-label="${esc(gid)} 工作区">
+    <h3>${esc(members[0]?.group_name || gid)}</h3><div class="acts">
+    <button ${disabled} onclick="groupAct('${gid}','start')">启动全部</button>
+    <button ${disabled} onclick="groupAct('${gid}','restart')">${busyG ? "工作区操作中…" : `重启全部（${count} 个服务）`}</button>
+    <button ${disabled} onclick="if(confirm('停止工作区中的全部服务？'))groupAct('${gid}','stop')">停止全部</button>
+    </div></div>${msg}`;
+}
+
+function viewAll() {
+  if (!snap) return connOk === false
+      ? `<div class="empty">控制层不可用，服务状态未知——不代表项目已停止。</div>`
+      : `<div class="empty">加载中…</div>`;
+  const sys = (snap.system_warnings || []).map(w => `<p class="reason warn">⚠︎ ${esc(w)}</p>`).join("");
+  const head = sys + (snap.manifest_error ? `<p class="reason">${esc(snap.manifest_error)}</p>` : "");
+  const groups = projectGroups().filter(g => projectMatchesSearch(g.pj, g.members));
+  const body = groups.map(({pj, members, orphan}) => {
+    const shown = members.filter(matchesSearch);
+    if (!shown.length && members.length) return "";
+    const groupIds = [...new Set(shown.filter(m => m.group).map(m => m.group))];
+    return `<section class="card" aria-label="项目 ${esc(pj.name)}">
+      <div class="card-head">
+        ${orphan ? "" : `<button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${pj.id}')" aria-label="收藏">${pj.favorite ? "★" : "☆"}</button>`}
+        <h3>${esc(pj.name)}</h3>
+        <span class="note">${members.length} 个服务${pj.agent && pj.agent !== "none" ? " · Agent " + esc(pj.agent) : ""}</span>
+        ${orphan ? "" : `<div class="acts"><button onclick="setView('project:${esc(pj.id)}')">项目详情</button></div>`}
+      </div>
+      ${groupIds.map(gid => groupToolbar(gid, shown.filter(m => m.group === gid))).join("")}
+      ${shown.map(p => serviceRow(p, false)).join("") || `<div class="empty">无匹配服务</div>`}
+    </section>`;
+  }).join("");
+  return head + (body || `<div class="empty">没有匹配的项目或服务。${connOk === false ? "（控制层不可用）" : ""}</div>`);
+}
+
+function viewProject(pid) {
+  const g = projectGroups().find(x => x.pj.id === pid);
+  if (!g) return `<div class="empty">未找到项目。<button onclick="setView('all')">返回全部服务</button></div>`;
+  const pj = g.pj;
+  const dirs = (pj.directories || []).map(d =>
+    `<tr><td class="k">${esc(d.role || "source")}</td><td>${esc(d.path)}</td><td><button class="danger" onclick="removeDir('${esc(pj.id)}','${esc(d.id)}')">解除关联</button></td></tr>`).join("");
+  const members = g.members.filter(matchesSearch);
+  return `<section class="card">
+    <div class="card-head">
+      <button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${esc(pj.id)}')" aria-label="收藏">${pj.favorite ? "★" : "☆"}</button>
+      <h3>${esc(pj.name)}</h3>
+      <span class="note">id ${esc(pj.id)} · 修订 ${pj.revision ?? 0}</span>
+    </div>
+    <p class="note">默认 Agent：${pj.agent ? esc(pj.agent) : "未设置"} · 自动启动：${pj.autostart ? "是" : "否"} · 创建于 ${t(Date.parse(pj.created_at || "") / 1000) || "—"}</p>
+    <div class="card-head"><h3 style="font-size:14px">关联目录</h3></div>
+    <div class="table-scroll"><table>${dirs || `<tr><td class="muted">（无）</td></tr>`}</table></div>
+    <div class="field"><input id="projDirInput" placeholder="/绝对/路径（回车添加）" aria-label="新增关联目录">
+      <button onclick="addDir('${esc(pj.id)}')">关联目录</button>
+      <button onclick="addViaPicker('${esc(pj.id)}')">选择…</button>
+      <span class="inline-note">解除关联不删除文件</span></div>
+    <p class="note">运行意图：${members.map(m => `${esc(m.name)}=${m.intent === "running" ? "运行" : "停止"}`).join(" · ") || "（无服务）"}</p>
+    ${members.map(p => serviceRow(p, false)).join("") || `<div class="empty">此项目暂无已登记服务</div>`}
+  </section>
+  <button onclick="setView('all')">← 返回全部服务</button>`;
+}
+
+// ------------------------------------------------------------ 视图：需要处理 / 资源 / Agent / 草稿
+
+function viewAttention() {
+  if (!snap) return connOk === false
+      ? `<div class="empty">控制层不可用，服务状态未知——不代表项目已停止。</div>`
+      : `<div class="empty">加载中…</div>`;
+  const sys = (snap.system_warnings || []).map(w =>
+    `<div class="card"><div class="card-head"><h3>系统警告</h3></div><p class="reason warn" style="margin:0 0 6px">${esc(w)}</p></div>`).join("");
+  const rows = attentionServices().filter(matchesSearch).map(p => serviceRow(p, true)).join("");
+  return sys + (rows || `<div class="empty">没有需要处理的服务。</div>`);
+}
+
+const AGENT_STATUS = {
+  not_installed: "未安装", config_only: "已安装，未登录", not_executable: "存在但不可执行",
+  needs_login: "需要登录", call_failed: "调用失败", available: "可用（已验证）"};
+
+function viewAgents() {
+  if (!agentsData) return `<div class="empty">加载中…</div>`;
+  const conns = agentsData.connections || {};
+  const cards = ["codex", "claude"].map(kind => {
+    const c = conns[kind];
+    if (!c) return `<section class="card"><div class="card-head"><h3>${kind}</h3></div><p class="note">未扫描到</p></section>`;
+    const verifying = busy("verify-" + kind);
+    return `<section class="card">
+      <div class="card-head"><h3>${kind}${c.is_default ? '<span class="badge mut">默认</span>' : ""}</h3>
+        <div class="acts">
+          <button onclick="agentsVerify('${kind}')" ${verifying ? "disabled" : ""}>${verifying ? "验证中…（最长 60 秒）" : "最小调用验证"}</button>
+          <button onclick="agentsScan()" ${busy("scan") ? "disabled" : ""}>重新扫描</button>
+          <button onclick="agentsDefault('${kind}')" ${c.is_default || busy("default-" + kind) ? "disabled" : ""}>${c.is_default ? "已是默认" : "设为默认"}</button>
+        </div></div>
+      <table>
+        <tr><td class="k">状态</td><td class="${c.status === "available" ? "" : c.status === "not_installed" ? "muted" : ""}" style="font-weight:600">${AGENT_STATUS[c.status] || c.status}${c.status === "available" && c.verified_at ? "（" + t(c.verified_at) + " 验证）" : ""}</td></tr>
+        <tr><td class="k">路径</td><td>${esc(c.path || "—")}</td></tr>
+        <tr><td class="k">版本</td><td>${esc(c.version || "—")}</td></tr>
+        <tr><td class="k">配置根</td><td>${esc(c.config_root || "—")}</td></tr>
+        ${c.detail ? `<tr><td class="k">说明</td><td>${esc(c.detail)}</td></tr>` : ""}
+      </table></section>`;
+  }).join("");
+  const manual = busy("scan");
+  return cards + `<section class="card">
+    <div class="card-head"><h3>手动指定路径</h3></div>
+    <div class="field"><input id="agentPathInput" placeholder="/path/to/codex 或包含它的目录" aria-label="手动 agent 路径">
+      <button onclick="agentsScan(document.getElementById('agentPathInput').value)" ${manual ? "disabled" : ""}>${manual ? "扫描中…" : "按此路径扫描"}</button>
+      <span class="inline-note">验证为真实最小调用，最长 60 秒；超时请重试</span></div>
+  </section>`;
+}
+
+function viewResources() {
+  if (!resourcesData) return `<div class="empty">加载中…</div>`;
+  if (!resourcesData.ok) return `<section class="card"><div class="card-head"><h3>Docker 不可达</h3></div>
+    <p class="reason warn" style="margin:0 0 6px">${esc(resourcesData.error || "未知原因")}</p>
+    <p class="note">共享资源仅做只读盘点，不影响其他功能。</p></section>`;
+  const q = document.getElementById("globalSearch").value.trim().toLowerCase();
+  const rows = (resourcesData.resources || []).filter(r => !q ||
+      r.name.toLowerCase().includes(q) || (r.image || "").toLowerCase().includes(q)).map(r => {
+    const ports = Object.entries(r.ports || {}).map(([k, v]) =>
+      esc(k) + " → " + v.map(b => b.host_port).join("/")).join("<br>") || "—";
+    return `<tr><td style="font-weight:600">${esc(r.name)}</td><td>${esc(r.image || "—")}</td>
+      <td>${esc(r.state)}</td><td>${esc(r.health || "none")}</td>
+      <td>${esc(r.compose_project || "—")}${r.compose_service ? " / " + esc(r.compose_service) : ""}</td>
+      <td>${ports}</td><td>${esc((r.volumes || []).join(", ") || "—")}</td></tr>`;
+  }).join("");
+  return `<section class="card">
+    <div class="card-head"><h3>共享资源</h3><span class="note">docker context：${esc(resourcesData.docker_context || "default")} · 只读盘点</span></div>
+    <div class="table-scroll"><table>
+      <tr><td class="k">名称</td><td class="k">镜像</td><td class="k">状态</td><td class="k">健康</td><td class="k">compose 项目</td><td class="k">端口映射</td><td class="k">卷</td></tr>
+      ${rows || `<tr><td class="muted">（无运行中的容器）</td></tr>`}
+    </table></div></section>`;
+}
+
+function draftSummary(payload) {
+  const s = payload?.service || {};
+  return `服务 ${s.id || "(无 id)"} · ${s.name || "(未命名)"} · 源码 ${s.source || "?"} · 组件 ${(s.components || []).map(c => c.id).join(", ") || "无"}`;
+}
+
+function viewDrafts() {
+  if (!draftsData) return `<div class="empty">加载中…</div>`;
+  const q = document.getElementById("globalSearch").value.trim().toLowerCase();
+  const list = (draftsData.drafts || []).filter(d =>
+      !q || d.id.toLowerCase().includes(q) || draftSummary(d.payload).toLowerCase().includes(q));
+  if (!list.length) return `<div class="empty">没有草稿。注册缺必要字段时会自动存为草稿。</div>`;
+  return list.map(d => {
+    const e = draftEdit[d.id] || {};
+    const comps = e.components || d.payload?.service?.components || [];
+    return `<section class="card" id="draft-${esc(d.id)}">
+      <div class="card-head"><h3>${esc(d.id)}</h3><span class="note">保存于 ${esc(d.saved_at)}</span>
+        <div class="acts"><button class="danger" onclick="draftDelete('${esc(d.id)}')">删除草稿</button></div></div>
+      <p class="note">${esc(draftSummary(d.payload))}</p>
+      <p class="note">补全以下字段后转正式注册（草稿缺 cmd / 组件 id 等）：</p>
+      <div class="field"><label>服务 id</label><input value="${esc(e.id ?? d.payload?.service?.id ?? "")}" oninput="draftField('${esc(d.id)}','id',this.value)"></div>
+      <div class="field"><label>名称</label><input value="${esc(e.name ?? d.payload?.service?.name ?? "")}" oninput="draftField('${esc(d.id)}','name',this.value)"></div>
+      <div class="field"><label>源码目录</label><input value="${esc(e.source ?? d.payload?.service?.source ?? "")}" oninput="draftField('${esc(d.id)}','source',this.value)"></div>
+      ${comps.map((c, i) => `<div class="comp-edit">
+        <div class="field"><label>组件 ${esc(c.id || i)}</label>
+          <input placeholder="命令（空格分隔 argv）" value="${esc((c.cmd || []).join(" "))}" oninput="draftComp('${esc(d.id)}',${i},'cmd',this.value)">
+          <input style="min-width:90px;max-width:110px" placeholder="端口" value="${c.port ?? ""}" oninput="draftComp('${esc(d.id)}',${i},'port',this.value)">
+          <input placeholder="探针 URL" value="${esc(c.ready?.http || "")}" oninput="draftComp('${esc(d.id)}',${i},'ready',this.value)"></div>
+      </div>`).join("")}
+      <div class="acts" style="justify-content:flex-start">
+        <button class="primary" onclick="draftRegister('${esc(d.id)}')" ${busy("draft-" + d.id) ? "disabled" : ""}>${busy("draft-" + d.id) ? "注册中…" : "补全并注册"}</button>
+      </div>${msgs["draft-" + d.id] ? `<div class="msg ${msgs["draft-" + d.id].bad ? "bad" : ""}">${esc(msgs["draft-" + d.id].text)}</div>` : ""}
+    </section>`;
   }).join("");
 }
 
-async function refresh() {
+// ------------------------------------------------------------ 视图：添加项目（真实 API 流程）
+
+function viewNewProject() {
+  const w = wiz;
+  const bridge = nativeBridge();
+  const dirStep = `
+    <section class="card">
+      <div class="card-head"><h3>1 · 目录与项目</h3></div>
+      <div class="field"><label>项目目录</label>
+        <input id="wizDir" value="${esc(w.dir)}" placeholder="/绝对/路径" oninput="wizField('dir',this.value)" aria-label="项目目录">
+        <button onclick="chooseDirectory()">${bridge ? "选择目录…" : "手动输入路径"}</button>
+        ${bridge ? "" : `<span class="inline-note">浏览器环境：直接输入路径（原生窗口中可用系统目录选择器）</span>`}
+      </div>
+      <div class="field"><label>项目名称</label><input id="wizName" value="${esc(w.name)}" placeholder="默认取目录名" oninput="wizField('name',this.value)"></div>
+      <div class="field"><label>识别 Agent</label>
+        <select oninput="wizField('agent',this.value)" aria-label="识别 Agent">
+          ${["codex", "claude"].map(a => `<option value="${a}" ${w.agent === a ? "selected" : ""}>${a}</option>`).join("")}
+        </select>
+        <span class="inline-note">当前默认：${esc(agentsData?.default || "codex")}</span></div>
+      <div class="acts" style="justify-content:flex-start">
+        <button class="primary" onclick="wizCreateProject()" ${busy("wiz-create") ? "disabled" : ""}>${busy("wiz-create") ? "创建中…" : "创建项目"}</button>
+        <button onclick="wizStartManual()">跳过识别，手动添加服务</button>
+      </div>
+      ${w.error ? `<div class="msg bad">${esc(w.error)}</div>` : ""}
+    </section>`;
+
+  if (w.step === "dir") return dirStep;
+
+  const projNote = `<p class="note">项目 ${esc(w.project?.name || "")}（id ${esc(w.project?.id || "")}，修订 ${w.project?.revision ?? 0}） · 目录 ${esc(w.dir)}</p>`;
+
+  if (w.step === "job") {
+    const job = w.job || {};
+    const running = ["queued", "running"].includes(job.state);
+    let errBox = "";
+    if (job.state === "failed") {
+      const e = job.error || "";
+      const hint = e.startsWith("agent_not_available")
+        ? "Agent 不可用：到 Agent 连接页做一次验证调用，或换一个 agent 重试。"
+        : e.startsWith("timeout") ? "调用超时（进程组已终止，无残留）：可重试。" : "";
+      errBox = `<div class="result-box bad">${esc(e)}${hint ? `<br>${esc(hint)}` : ""}</div>
+        <div class="acts" style="justify-content:flex-start">
+          <button onclick="wizStartAnalyze()">重试</button>
+          <button onclick="wizRetryOther()">换一个 agent 重试</button>
+          <button onclick="setView('agents')">去 Agent 连接</button>
+          <button onclick="wizStartManual()">改为手动添加服务</button>
+        </div>`;
+    }
+    return dirStep.replace('1 · 目录与项目', '1 · 目录与项目 ✓') + `
+      <section class="card"><div class="card-head"><h3>2 · 识别（${esc(w.agent)}，任务 ${esc(w.jobId || "")}）</h3></div>
+      ${projNote}
+      <p class="note">${running ? "进行中…（只读分析，默认最长 240 秒；本页每 2 秒轮询）" : job.state === "done" ? "完成" : "未完成"}</p>
+      ${errBox}${w.unresolved.length ? `<p class="reason warn">未解决项：${w.unresolved.map(esc).join("；")}</p>` : ""}
+      </section>`;
+  }
+
+  // step === review
+  const candCards = w.candidates.map((c, i) => {
+    const r = w.results[i];
+    const res = r
+      ? (r.code === 200
+          ? `<div class="result-box ok">已注册（${esc(r.res.action)}，服务 ${esc(r.res.service_id)}）${(r.res.validation?.warnings || []).length ? `<div class="warnlist">警告：${r.res.validation.warnings.map(esc).join("；")}</div>` : ""}
+             <button class="primary" onclick="wizStartService('${esc(r.res.service_id)}')" ${busy("wiz-start-" + r.res.service_id) ? "disabled" : ""}>${busy("wiz-start-" + r.res.service_id) ? "启动中…" : "启动并打开"}</button></div>`
+          : `<div class="result-box bad">注册失败：${esc(r.res?.error || r.code)}${(r.res?.details || []).length ? `<div class="warnlist">${r.res.details.map(esc).join("；")}</div>` : ""}
+             ${r.code === 409 ? "<br>版本冲突：已刷新修订号，可重试注册。" : ""}<button onclick="wizRegister()">重试注册</button></div>`)
+      : "";
+    return `<div class="cand">
+      <div class="cand-head">
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" ${c._sel !== false ? "checked" : ""} onchange="wizToggleCand(${i})"> 启用</label>
+        <div class="name">${esc(c.name || c.id)}<small>${esc(c.description || "")}</small></div>
+      </div>
+      <div class="field"><label>服务 id</label><input value="${esc(c.id)}" oninput="wizCandField(${i},'id',this.value)"></div>
+      <div class="field"><label>名称</label><input value="${esc(c.name)}" oninput="wizCandField(${i},'name',this.value)"></div>
+      <div class="field"><label>入口 URL</label><input value="${esc(c.open || "")}" placeholder="http://127.0.0.1:<端口>/" oninput="wizCandField(${i},'open',this.value)"></div>
+      ${(c.components || []).map((k, ci) => `<div class="comp-edit">
+        <div class="field"><label>组件 ${esc(k.id)}</label>
+          <input placeholder="命令（空格分隔 argv）" value="${esc((k.cmd || []).join(" "))}" oninput="wizCompField(${i},${ci},'cmd',this.value)">
+          <input style="min-width:80px;max-width:110px" placeholder="端口" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)">
+          <input placeholder="探针 URL" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)"></div>
+      </div>`).join("")}
+      ${c.unresolved?.length ? `<p class="reason warn">需人工确认：${c.unresolved.map(esc).join("；")}</p>` : ""}
+      ${res}
+    </div>`;
+  }).join("");
+
+  const manualForm = w.manual ? `
+    <section class="card"><div class="card-head"><h3>手动添加服务</h3></div>
+      <p class="note">不经过 agent 识别，直接登记。命令为 argv（空格分隔）；目录必须真实存在。</p>
+      ${compEditorHtml("man", w.manualService)}
+      <div class="acts" style="justify-content:flex-start">
+        <button onclick="wizManualAddComp()">＋ 添加组件</button>
+        <button class="primary" onclick="wizManualRegister()" ${busy("wiz-manual") ? "disabled" : ""}>${busy("wiz-manual") ? "注册中…" : "注册服务"}</button>
+      </div>
+      ${msgs["wiz-manual"] ? `<div class="msg ${msgs["wiz-manual"].bad ? "bad" : ""}">${esc(msgs["wiz-manual"].text)}</div>` : ""}
+      ${w.manualResult ? (w.manualResult.code === 200
+        ? `<div class="result-box ok">已注册（${esc(w.manualResult.res.action)}，服务 ${esc(w.manualResult.res.service_id)}）
+           <button class="primary" onclick="wizStartService('${esc(w.manualResult.res.service_id)}')">启动并打开</button></div>`
+        : `<div class="result-box bad">注册失败：${esc(w.manualResult.res?.error || w.manualResult.code)}${(w.manualResult.res?.details || []).length ? `<div class="warnlist">${w.manualResult.res.details.map(esc).join("；")}</div>` : ""}</div>`) : ""}
+    </section>` : "";
+
+  return `
+    <section class="card"><div class="card-head"><h3>1 · 目录与项目 ✓</h3>
+      <div class="acts"><button onclick="wizReset()">重新开始</button></div></div>
+      ${projNote}
+      <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()">重新识别</button></div>
+    </section>
+    ${w.candidates.length ? `<section class="card"><div class="card-head"><h3>3 · 候选服务（${w.candidates.length}）</h3>
+      <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || busy("wiz-reg") ? "disabled" : ""}>${w.registering || busy("wiz-reg") ? "注册中…" : "注册所选"}</button></div></div>
+      ${w.unresolved.length ? `<p class="reason warn">未解决项（不会静默丢弃）：${w.unresolved.map(esc).join("；")}</p>` : ""}
+      ${candCards}
+    </section>` : `<section class="card"><p class="note">识别完成，但没有可用的候选。可重试、换 agent，或手动添加。</p>
+      <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()">重试识别</button>
+      <button onclick="wizStartManual()">手动添加服务</button></div>
+      ${w.unresolved.length ? `<p class="reason warn">未解决项：${w.unresolved.map(esc).join("；")}</p>` : ""}</section>`}
+    ${manualForm}`;
+}
+
+function compEditorHtml(prefix, svc) {
+  return `
+    <div class="field"><label>服务 id</label><input value="${esc(svc.id)}" oninput="wizManualField('id',this.value)"></div>
+    <div class="field"><label>名称</label><input value="${esc(svc.name)}" oninput="wizManualField('name',this.value)"></div>
+    <div class="field"><label>源码目录</label><input value="${esc(svc.source)}" oninput="wizManualField('source',this.value)"></div>
+    <div class="field"><label>入口 URL</label><input value="${esc(svc.open || "")}" placeholder="http://127.0.0.1:<端口>/" oninput="wizManualField('open',this.value)"></div>
+    ${(svc.components || []).map((k, i) => `<div class="comp-edit">
+      <div class="field"><label>组件 ${esc(k.id)}</label>
+        <input placeholder="命令（空格分隔 argv）" value="${esc((k.cmd || []).join(" "))}" oninput="wizManualComp(${i},'cmd',this.value)">
+        <input style="min-width:80px;max-width:110px" placeholder="端口" value="${k.port ?? ""}" oninput="wizManualComp(${i},'port',this.value)">
+        <input placeholder="探针 URL" value="${esc(k.ready?.http || "")}" oninput="wizManualComp(${i},'ready',this.value)"></div>
+    </div>`).join("")}`;
+}
+
+// ------------------------------------------------------------ 动作：服务操作
+
+async function act(id, action, body) {
+  const g = snap?.projects.find(p => p.id === id)?.group;
+  if (busy(id) || (g && busy("g-" + g))) return;
+  msgs[id] = "";
+  pending[id] = action;
+  render();
   try {
-    const [code, snap] = await api("GET", "/api/status");
-    if (code !== 200) throw new Error(snap.error);
-    last = snap;
-    const c = document.getElementById("conn");
-    c.textContent = "更新于 " + new Date(snap.generated_at * 1000).toLocaleTimeString("zh-CN", {hour12:false});
-    c.className = "";
-    if (location.hash.startsWith("#p-") && !open[location.hash.slice(3)]) open[location.hash.slice(3)] = true;
-  } catch (e) {
-    const c = document.getElementById("conn");
-    c.textContent = "无法连接控制服务（状态未知，不代表项目已停止）";
-    c.className = "bad";
-    if (last) for (const p of last.projects) { p.state = "unknown"; p.label = "未知"; p.op = null; p.can_open = false; p.reason = ""; }
+    const [code, res] = await api("POST", `/api/projects/${id}/${action}`, body);
+    msgs[id] = res?.message || res?.error || "";
+    if (code !== 200 && res?.error) msgs[id] = res.error;
+  } catch (e) { msgs[id] = "无法连接控制服务"; setConn(false); }
+  pending[id] = null;
+  await refresh();
+}
+
+async function groupAct(gid, action) {
+  const members = (snap?.projects || []).filter(p => p.group === gid);
+  if (members.some(p => busy(p.id) || p.op) || busy("g-" + gid)) return;
+  members.forEach(p => delete msgs[p.id]);
+  msgs["g-" + gid] = "";
+  pending["g-" + gid] = action;
+  render();
+  try {
+    const [, res] = await api("POST", `/api/groups/${gid}/${action}`);
+    msgs["g-" + gid] = res?.message || res?.error || "";
+  } catch (e) { msgs["g-" + gid] = "无法连接控制服务"; setConn(false); }
+  pending["g-" + gid] = null;
+  await refresh();
+}
+
+async function loadLogs(id) {
+  try {
+    const [, res] = await api("GET", `/api/projects/${id}/logs?lines=200`);
+    logs[id] = Object.entries(res.logs || {}).map(([c, txt]) => `===== ${c}\n${txt || "(无日志)"}`).join("\n\n");
+    open[id] = true;
+  } catch (e) { logs[id] = "无法连接控制服务"; setConn(false); }
+  render();
+  requestAnimationFrame(() => document.getElementById(`logs-${id}`)?.scrollIntoView({block: "nearest"}));
+}
+
+function askRemove(id) {
+  const p = servicesById()[id];
+  if (!p) return;
+  const running = p.intent === "running" && p.state !== "external" && !p.observe_only;
+  if (running) { confirmRemove = id; render(); return; }
+  if (confirm(`移除 ${p.name} 的登记？只解除登记，不删除任何文件。`)) doRemove(id, "keep-external");
+}
+
+async function doRemove(id, disposition) {
+  confirmRemove = null;
+  pending["rm-" + id] = true;
+  render();
+  try {
+    const [code, res] = await api("DELETE", `/api/services/${id}?disposition=${disposition}`);
+    msgs[id] = code === 200 ? "已移除登记（文件未动）" : (res?.error || "移除失败");
+    if (code !== 200) msgs[id] += "";
+  } catch (e) { msgs[id] = "无法连接控制服务"; setConn(false); }
+  pending["rm-" + id] = null;
+  await refresh();
+}
+
+// ------------------------------------------------------------ 动作：项目 / 目录
+
+async function toggleFav(pid) {
+  const g = projectGroups().find(x => x.pj.id === pid);
+  const value = !(g?.pj.favorite);
+  try { await api("POST", `/api/projects/${pid}/favorite`, {value}); } catch (e) { setConn(false); }
+  await refresh();
+}
+
+async function addDir(pid) {
+  const input = document.getElementById("projDirInput");
+  const path = (input?.value || "").trim();
+  if (!path) { input?.focus(); return; }
+  try {
+    const [code, res] = await api("POST", `/api/projects/${pid}/directories`, {path});
+    if (code !== 200) alert(res?.error || "添加失败");
+  } catch (e) { setConn(false); }
+  await refresh();
+}
+
+async function removeDir(pid, dirId) {
+  if (!confirm("解除目录关联？只解除关联，不删除文件。")) return;
+  try { await api("DELETE", `/api/projects/${pid}/directories/${dirId}`); } catch (e) { setConn(false); }
+  await refresh();
+}
+
+function addViaPicker() {
+  const b = nativeBridge();
+  if (b) {
+    window.__lsPickCb = path => { if (path != null) addDirIntoActiveProject(path); };
+    b.postMessage({action: "pickDirectory"});
+  } else {
+    document.getElementById("projDirInput")?.focus();
+  }
+}
+
+// ------------------------------------------------------------ 动作：Agent / 资源 / 草稿
+
+async function loadAgents() {
+  try { const [c, d] = await api("GET", "/api/agents"); if (c === 200) agentsData = d; setConn(true); }
+  catch (e) { setConn(false); }
+  render();
+}
+
+async function agentsScan(path) {
+  pending["scan"] = true; render();
+  try {
+    const body = path && path.trim() ? {paths: [path.trim()]} : {};
+    const [code, res] = await api("POST", "/api/agents/scan", body);
+    if (code === 200) agentsData = res;
+  } catch (e) { setConn(false); }
+  pending["scan"] = null; render();
+}
+
+async function agentsVerify(kind) {
+  pending["verify-" + kind] = true; render();
+  try {
+    const [code, res] = await api("POST", "/api/agents/verify", {kind, timeout: 60});
+    if (code === 200) agentsData = {...agentsData, connections: {...(agentsData?.connections || {}), [kind]: res.connection}};
+    setConn(true);
+  } catch (e) { setConn(false); }
+  pending["verify-" + kind] = null; render();
+}
+
+async function agentsDefault(kind) {
+  pending["default-" + kind] = true; render();
+  try {
+    const [code, res] = await api("POST", "/api/agents/default", {kind});
+    if (code === 200) agentsData = res;
+    setConn(true);
+  } catch (e) { setConn(false); }
+  pending["default-" + kind] = null; render();
+}
+
+async function loadResources() {
+  try { const [c, d] = await api("GET", "/api/resources"); resourcesData = d ?? {ok: false, error: "无响应"}; setConn(true); }
+  catch (e) { resourcesData = {ok: false, error: "无法连接控制服务"}; setConn(false); }
+  render();
+}
+
+async function loadDrafts() {
+  try { const [c, d] = await api("GET", "/api/drafts"); if (c === 200) draftsData = d; setConn(true); }
+  catch (e) { setConn(false); }
+  render();
+}
+
+function draftField(id, key, value) {
+  draftEdit[id] = draftEdit[id] || {};
+  draftEdit[id][key] = value;
+}
+function draftComp(id, i, key, value) {
+  const e = draftEdit[id] = draftEdit[id] || {};
+  e.components = e.components || (draftsData?.drafts?.find(d => d.id === id)?.payload?.service?.components || []).map(c => ({...c}));
+  const c = e.components[i] = {...e.components[i]};
+  if (key === "cmd") c.cmd = value.split(/\s+/).filter(Boolean);
+  if (key === "port") c.port = value ? parseInt(value, 10) || null : null;
+  if (key === "ready") c.ready = value ? {http: value} : null;
+}
+
+async function draftRegister(id) {
+  const d = draftsData?.drafts?.find(x => x.id === id);
+  if (!d) return;
+  pending["draft-" + id] = true; render();
+  const e = draftEdit[id] || {};
+  const comps = (e.components || d.payload?.service?.components || []).map(c => {
+    const out = {id: c.id, kind: c.kind || "server", name: c.name || c.id, cmd: c.cmd || [], cwd: c.cwd || "."};
+    if (c.port) { out.port = c.port; out.ready = c.ready?.http ? {http: c.ready.http} : {http: `http://127.0.0.1:${c.port}/`}; }
+    return out;
+  });
+  const service = {draft: false};  // 草稿里遗留的 draft:true 必须显式翻转，否则仍按草稿处理
+  for (const k of ["id", "name", "source"]) if (e[k]) service[k] = e[k];
+  service.components = comps;
+  try {
+    const [code, res] = await api("POST", `/api/drafts/${id}/register`, {service});
+    msgs["draft-" + id] = code === 200 ? {text: `已注册（${res.action}，服务 ${res.service_id}）`} : {text: res?.error || "注册失败", bad: true};
+    if (code === 200) await loadDrafts();
+  } catch (e2) { msgs["draft-" + id] = {text: "无法连接控制服务", bad: true}; setConn(false); }
+  pending["draft-" + id] = null;
+  await refresh(); render();
+}
+
+async function draftDelete(id) {
+  if (!confirm(`删除草稿 ${id}？`)) return;
+  try { await api("DELETE", `/api/drafts/${id}`); } catch (e) { setConn(false); }
+  await loadDrafts(); render();
+}
+
+// ------------------------------------------------------------ 添加项目流程
+
+function wizField(key, value) { wiz[key] = value; }
+function wizReset() {
+  if (wiz.pollTimer) clearInterval(wiz.pollTimer);
+  wiz = newWizard();
+  render();
+}
+
+function chooseDirectory() {
+  const b = nativeBridge();
+  const input = document.getElementById("wizDir");
+  if (b) {
+    window.__lsPickCb = path => {
+      if (path == null) return;
+      if (input) { input.value = path; input.dispatchEvent(new Event("input")); }
+    };
+    b.postMessage({action: "pickDirectory"});
+  } else {
+    input?.focus();  // 浏览器辅助入口：退化为文本输入
+  }
+}
+function addDirIntoActiveProject(path) {
+  const pid = view.startsWith("project:") ? view.slice(8) : null;
+  if (pid) api("POST", `/api/projects/${pid}/directories`, {path}).then(() => refresh());
+}
+
+async function wizCreateProject() {
+  const dir = (wiz.dir || "").trim();
+  if (!dir) { wiz.error = "请先填写项目目录（绝对路径）"; render(); return; }
+  const name = (wiz.name || dir.split("/").filter(Boolean).pop() || "").trim();
+  if (!name) { wiz.error = "项目名称不能为空"; render(); return; }
+  pending["wiz-create"] = true; wiz.error = ""; render();
+  try {
+    const [code, res] = await api("POST", "/api/projects",
+        {name, directories: [{path: dir, role: "source"}], agent: wiz.agent || "codex"});
+    if (code === 200 && res.ok) {
+      wiz.project = res.project;
+      wiz.error = "";
+      pending["wiz-create"] = null;
+      await wizStartAnalyze();
+      return;
+    }
+    wiz.error = res?.error || `创建失败（${code}）`;
+  } catch (e) { wiz.error = "无法连接控制服务"; setConn(false); }
+  pending["wiz-create"] = null; render();
+}
+
+async function wizStartAnalyze(agentOverride) {
+  if (agentOverride) wiz.agent = agentOverride;
+  const dir = (wiz.dir || "").trim();
+  if (!dir) { wiz.step = "dir"; render(); return; }
+  wiz.step = "job"; wiz.job = null; wiz.error = ""; wiz.candidates = []; wiz.results = {};
+  render();
+  try {
+    const [code, res] = await api("POST", "/api/analyze",
+        {directory: dir, agent: wiz.agent || "codex", project_id: wiz.project?.id});
+    if (code === 202 && res?.job_id) {
+      wiz.jobId = res.job_id;
+      if (wiz.pollTimer) clearInterval(wiz.pollTimer);
+      wiz.pollTimer = setInterval(wizPoll, 2000);
+      wizPoll();
+    } else {
+      wiz.job = {state: "failed", error: res?.error || `提交分析失败（${code}）`};
+      render();
+    }
+  } catch (e) { wiz.job = {state: "failed", error: "无法连接控制服务"}; setConn(false); render(); }
+}
+
+function wizRetryOther() {
+  wiz.agent = wiz.agent === "codex" ? "claude" : "codex";
+  wizStartAnalyze();
+}
+
+async function wizPoll() {
+  if (!wiz.jobId) return;
+  try {
+    const [code, job] = await api("GET", `/api/jobs/${wiz.jobId}`);
+    if (code !== 200) return;
+    wiz.job = job;
+    setConn(true);
+    if (job.state === "done") {
+      if (wiz.pollTimer) clearInterval(wiz.pollTimer);
+      const r = job.result || {};
+      wiz.candidates = (r.services || r.candidates || []).map(c => ({...c}));
+      wiz.unresolved = r.unresolved || [];
+      wiz.step = "review";
+      await refresh();  // 刷新 registry 拿到最新 revision
+      const g = registry?.registry?.projects?.find(p => p.id === wiz.project?.id);
+      if (g) wiz.project = g;
+      render();
+    } else if (job.state === "failed") {
+      if (wiz.pollTimer) clearInterval(wiz.pollTimer);
+      render();
+    } else {
+      const stale = document.activeElement?.tagName;
+      if (stale !== "INPUT") render();
+    }
+  } catch (e) { setConn(false); }
+}
+
+function wizToggleCand(i) { wiz.candidates[i]._sel = wiz.candidates[i]._sel === false; }
+function wizCandField(i, key, value) { wiz.candidates[i][key] = value; }
+function wizCompField(i, ci, key, value) {
+  const c = wiz.candidates[i].components[ci] = {...wiz.candidates[i].components[ci]};
+  if (key === "cmd") c.cmd = value.split(/\s+/).filter(Boolean);
+  if (key === "port") c.port = value ? parseInt(value, 10) || null : null;
+  if (key === "ready") c.ready = value ? {http: value} : null;
+}
+
+function urlPort(u) { try { return new URL(u).port ? parseInt(new URL(u).port, 10) : null; } catch (e) { return null; } }
+function joinDir(root, sub) { return sub && sub !== "." ? root.replace(/\/+$/, "") + "/" + sub : root; }
+
+function candPayload(c, proj) {
+  const root = wiz.dir;
+  const source = joinDir(root, c.source_dir || ".");
+  const comps = (c.components || []).map(k => {
+    const port = k.port || null;
+    let ready = null;
+    const http = k.ready?.http || "";
+    if (http && (!port || urlPort(http) === port)) ready = {http};
+    else if (port) ready = {http: `http://127.0.0.1:${port}/`};
+    const out = {id: k.id, kind: k.kind || "server", name: k.name || k.id,
+                 cmd: k.cmd || [], cwd: k.cwd || "."};
+    if (port) out.port = port;
+    if (ready) out.ready = ready;
+    return out;
+  });
+  return {schemaVersion: 1, revision: wiz.project?.revision || 0,
+          project: {id: proj.id, name: proj.name, agent: wiz.agent || proj.agent || "none"},
+          directories: [{path: root, role: "source"}],
+          by: "gui",
+          service: {id: c.id, name: c.name, description: c.description || "", source,
+                    open: c.open || null,
+                    evidence: {agent: wiz.agent, summary: (c.evidence?.summary) || "agent 识别候选"},
+                    components: comps}};
+}
+
+async function wizRegister() {
+  if (!wiz.project) return;
+  pending["wiz-reg"] = true; wiz.registering = true; render();
+  for (let i = 0; i < wiz.candidates.length; i++) {
+    const c = wiz.candidates[i];
+    if (c._sel === false) continue;
+    try {
+      const [code, res] = await api("POST", "/api/register", candPayload(c, wiz.project));
+      wiz.results[i] = {code, res};
+      if (code === 409 && res?.current_revision != null) {
+        await refresh();
+        const g = registry?.registry?.projects?.find(p => p.id === wiz.project.id);
+        if (g) wiz.project = g;
+      }
+    } catch (e) { wiz.results[i] = {code: 0, res: {error: "无法连接控制服务"}}; setConn(false); }
+  }
+  wiz.registering = false; pending["wiz-reg"] = null;
+  await refresh(); render();
+}
+
+async function wizStartService(sid) {
+  pending["wiz-start-" + sid] = true; render();
+  try { await api("POST", `/api/projects/${sid}/start`, {open: true}); setConn(true); }
+  catch (e) { setConn(false); }
+  pending["wiz-start-" + sid] = null;
+  await refresh(); render();
+}
+
+function wizStartManual() {
+  wiz.manual = true;
+  if (wiz.step === "dir") wiz.step = "review";
+  if (!wiz.manualService) {
+    const name = (wiz.name || wiz.dir.split("/").filter(Boolean).pop() || "service").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "service";
+    wiz.manualService = {id: name, name: wiz.name || name, source: wiz.dir, open: "",
+                         components: [{id: "main", kind: "server", name: "main", cmd: [], cwd: ".", port: null, ready: null}]};
   }
   render();
 }
+function wizManualField(key, value) { wiz.manualService[key] = value; }
+function wizManualComp(i, key, value) {
+  const c = wiz.manualService.components[i] = {...wiz.manualService.components[i]};
+  if (key === "cmd") c.cmd = value.split(/\s+/).filter(Boolean);
+  if (key === "port") c.port = value ? parseInt(value, 10) || null : null;
+  if (key === "ready") c.ready = value ? {http: value} : null;
+}
+function wizManualAddComp() {
+  const n = wiz.manualService.components.length + 1;
+  wiz.manualService.components.push({id: "comp" + n, kind: "server", name: "comp" + n, cmd: [], cwd: ".", port: null, ready: null});
+  render();
+}
+
+async function ensureWizProject() {
+  if (wiz.project) return wiz.project;
+  const dir = (wiz.dir || "").trim();
+  const name = (wiz.name || dir.split("/").filter(Boolean).pop() || "").trim();
+  if (!dir || !name) { msgs["wiz-manual"] = {text: "请先填写项目目录与名称", bad: true}; render(); return null; }
+  const [code, res] = await api("POST", "/api/projects", {name, directories: [{path: dir, role: "source"}], agent: wiz.agent || "none"});
+  if (code === 200 && res.ok) { wiz.project = res.project; return res.project; }
+  msgs["wiz-manual"] = {text: res?.error || "创建项目失败", bad: true};
+  return null;
+}
+
+async function wizManualRegister() {
+  const proj = await ensureWizProject();
+  if (!proj) { render(); return; }
+  const m = wiz.manualService;
+  if (!m.id || !m.name || !m.source || !m.components.length) {
+    msgs["wiz-manual"] = {text: "id / 名称 / 源码目录 / 至少一个组件为必填", bad: true}; render(); return;
+  }
+  const comps = m.components.map(k => {
+    const out = {id: k.id, kind: k.kind || "server", name: k.name || k.id, cmd: k.cmd || [], cwd: k.cwd || "."};
+    if (k.port) { out.port = k.port; out.ready = k.ready?.http && urlPort(k.ready.http) === k.port ? {http: k.ready.http} : {http: `http://127.0.0.1:${k.port}/`}; }
+    return out;
+  });
+  const payload = {schemaVersion: 1, revision: proj.revision || 0,
+                   project: {id: proj.id, name: proj.name, agent: wiz.agent || "none"},
+                   directories: [{path: wiz.dir, role: "source"}], by: "gui",
+                   service: {id: m.id, name: m.name, description: "", source: m.source, open: m.open || null,
+                             evidence: {agent: "none", summary: "手动登记"}, components: comps}};
+  pending["wiz-manual"] = true; msgs["wiz-manual"] = null; render();
+  try {
+    const [code, res] = await api("POST", "/api/register", payload);
+    wiz.manualResult = {code, res};
+    msgs["wiz-manual"] = code === 200 ? {text: `已注册（${res.action}）`} : null;
+    if (code === 409 && res?.current_revision != null && wiz.project) wiz.project.revision = res.current_revision;
+  } catch (e) { wiz.manualResult = {code: 0, res: {error: "无法连接控制服务"}}; setConn(false); }
+  pending["wiz-manual"] = null;
+  await refresh(); render();
+}
+
+// ------------------------------------------------------------ 原生入口（macOS 主窗口菜单调用）
+
+window.lsOpenView = function(v) { setView(v); };
+window.lsShowLogs = function(id) { setView("all"); loadLogs(id); };
+window.lsFocusService = function(id) {
+  view = "all"; open[id] = true; render();
+  requestAnimationFrame(() => document.getElementById("p-" + id)?.scrollIntoView({block: "center"}));
+};
+
+// ------------------------------------------------------------ 刷新循环
+
+function setView(v) {
+  view = v;
+  if (v === "resources") loadResources();
+  if (v === "agents") loadAgents();
+  if (v === "drafts") loadDrafts();
+  if (v === "new-project" && !agentsData) loadAgents();
+  render();
+}
+
+async function refresh(manual) {
+  try {
+    if (manual) { const [, r] = await api("POST", "/api/refresh"); }
+    const [code, snapNew] = await api("GET", "/api/status");
+    if (code !== 200 || !snapNew) throw new Error(snapNew?.error || "status failed");
+    snap = snapNew;
+    const [rc, reg] = await api("GET", "/api/registry");
+    if (rc === 200 && reg?.ok) registry = reg;
+    setConn(true);
+    if (draftsData) loadDrafts();
+  } catch (e) {
+    setConn(false);
+    if (snap) for (const p of snap.projects) { p.state = "unknown"; p.label = "未知"; p.op = null; p.can_open = false; p.reason = ""; }
+  }
+  render();
+}
+
+document.getElementById("globalSearch").addEventListener("input", render);
 refresh();
-setInterval(() => { if (!document.querySelector("details[open] pre:hover")) refresh(); }, 2000);
+setInterval(() => { if (!document.querySelector("details[open] pre:hover")) refresh(); }, 3000);
 </script>
 </body>
 </html>

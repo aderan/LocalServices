@@ -147,6 +147,9 @@ def handle_draft_register(draft_id: str, body: dict, ctl) -> tuple[int, dict]:
         if draft is None:
             return 404, {"ok": False, "error": f"未知草稿 {draft_id}"}
         merged = _deep_merge(draft.get("payload") or {}, body if isinstance(body, dict) else {})
+        # 转正即注册：draft 标志在此端点无意义，防止携带 draft:true 的草稿再次落草稿
+        if isinstance(merged.get("service"), dict):
+            merged["service"]["draft"] = False
         res = _registry.register_service(merged)
         if res.get("ok") and res.get("action") != "draft":
             _registry.delete_draft(draft_id)
