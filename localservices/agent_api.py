@@ -23,7 +23,7 @@ from . import paths
 from .agents import base, detect, invoke
 from .agents.base import KINDS
 
-MAX_VERIFY_TIMEOUT = 70.0
+MAX_VERIFY_TIMEOUT = 180.0
 MAX_ANALYZE_TIMEOUT = 600.0
 JOB_TTL = 24 * 3600.0  # >24h 的已结束任务在新任务提交时顺带删除
 
@@ -130,11 +130,12 @@ def handle_agents_scan(body: dict) -> tuple[int, dict]:
 
 
 def handle_agents_verify(body: dict) -> tuple[int, dict]:
-    """对 {kind} 做一次真实最小调用（≤70s）并更新缓存。"""
+    """对 {kind} 做一次真实最小调用并更新缓存。默认 120s：实测 codex 最小调用在
+    提供方繁忙时也要 60s+，60s 会把可用连接误判为 call_failed。"""
     try:
         if not isinstance(body, dict) or body.get("kind") not in KINDS:
             return 400, {"ok": False, "error": f"kind 必须是 {list(KINDS)}"}
-        timeout = 60.0
+        timeout = 120.0
         if body.get("timeout") is not None:
             if not isinstance(body["timeout"], (int, float)) or isinstance(body["timeout"], bool):
                 return 400, {"ok": False, "error": "timeout 必须是数字"}

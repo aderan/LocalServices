@@ -5,3 +5,4 @@ source = "~/Sources/Tools/orx-analytics"
 observe_only = true
 adapter = "orx_analytics"
 options = { data_dir = "~/.orx-analytics", app = "/Applications/ORX Analytics (Internal Preview).app" }
+project = "orx-analytics"

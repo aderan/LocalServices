@@ -7,6 +7,7 @@ open = "http://127.0.0.1:5175/"
 group = "ui-atlas"
 group_name = "UI-Atlas 工作区"
 group_order = 1
+project = "ui-atlas"
 
 [[components]]
 id = "web"

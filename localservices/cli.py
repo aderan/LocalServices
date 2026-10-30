@@ -8,6 +8,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from . import paths
 
@@ -132,6 +133,11 @@ def main(argv=None) -> int:
     sp = sub.add_parser("resources", help="shared docker/compose resource inventory")
     sp.add_argument("--json", action="store_true")
 
+    sp = sub.add_parser("export", help="export a shareable service definition (no credentials, no local state)")
+    sp.add_argument("service")
+    sp.add_argument("--file", help="write to file instead of stdout")
+    sp.add_argument("--json", action="store_true")
+
     a = ap.parse_args(argv)
     try:
         if a.cmd == "status":
@@ -253,6 +259,66 @@ def main(argv=None) -> int:
                   "\n".join(f"{r['id']:<40} {r.get('state',''):<10} {r.get('compose_project') or '-'}"
                             for r in res.get("resources", [])) or "（无）")
             return 0 if res.get("ok") else 1
+        if a.cmd == "export":
+            from . import manifest
+            from .controller import redact, SECRET_RE
+            projects = manifest.load_all()
+            p = projects.get(a.service)
+            if not p:
+                print(f"未知服务 {a.service}", file=sys.stderr)
+                return 1
+            def clean_env(env: dict) -> dict:
+                out = {}
+                for k, v in env.items():
+                    if SECRET_RE.search(f"{k}={v}"):
+                        out[k] = "***REDACTED***"
+                    else:
+                        out[k] = v
+                return out
+            svc = {
+                "schemaVersion": 1,
+                "kind": "localservices-shareable-service",
+                "service": {
+                    "id": p.id, "name": p.name, "description": p.description,
+                    "source": str(p.source), "open": p.open,
+                    "components": [{
+                        "id": c.id, "kind": c.kind, "name": c.name, "cwd": c.cwd,
+                        "cmd": c.cmd, "env": clean_env(c.env), "env_files": c.env_files,
+                        "env_files_note": "引用本机 .env 文件；凭据不入导出" if c.env_files else None,
+                        "port": c.port, "ready": c.ready and {
+                            "http": c.ready.http, "tcp": c.ready.tcp, "json_ok": c.ready.json_ok,
+                            "timeout": c.ready.timeout, "interval": c.ready.interval},
+                        "required": c.required, "start_timeout": c.start_timeout,
+                        "after": c.after, "hot": c.hot, "watch": c.watch,
+                        "restart_on": c.restart_on, "install": c.install,
+                        "install_when": c.install_when, "install_marker": c.install_marker,
+                        "auto_update": c.auto_update,
+                        "external_cmd": c.external_cmd, "external_cwd": c.external_cwd,
+                        "external_cwd_exact": c.external_cwd_exact,
+                    } for c in p.components],
+                    "dependencies": [{
+                        "name": d.name, "probe": {"http": d.probe.http, "tcp": d.probe.tcp,
+                                                  "json_ok": d.probe.json_ok, "timeout": d.probe.timeout},
+                        "affects": d.affects, "required": d.required,
+                        "container": d.container, "volume": d.volume, "note": d.note,
+                    } for d in p.dependencies],
+                },
+                "note": "可分享定义：不含凭据（secret 类 env 值已脱敏、env 文件只留引用）。"
+                        "导入 = 在目标机器把 source/cwd 改绑本机路径后执行 lsctl register --file；"
+                        "register 会校验路径、命令与端口并显示修改结果，显式导入才授予命令执行能力。",
+            }
+            svc["service"]["components"] = [{k: v for k, v in c.items() if v is not None}
+                                            for c in svc["service"]["components"]]
+            text = json.dumps(svc, ensure_ascii=False, indent=1)
+            # 双保险：即便结构外混入令牌样式字符串也再脱敏一遍
+            text = redact(text)
+            if a.file:
+                Path(a.file).write_text(text, encoding="utf-8")
+                print(f"已导出 {a.file}（凭据已脱敏）" if not a.json else
+                      json.dumps({"ok": True, "file": a.file, "redacted": True}, ensure_ascii=False))
+            else:
+                print(text)
+            return 0
         if a.cmd == "logs":
             q = f"?lines={a.n}" + (f"&component={a.component}" if a.component else "")
             code, res = call("GET", f"/api/projects/{a.project}/logs{q}")

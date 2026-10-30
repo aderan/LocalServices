@@ -53,7 +53,10 @@ cat > "$LA/com.mybrain.localservices.daemon.plist" <<PLIST
   <key>Label</key><string>com.mybrain.localservices.daemon</string>
   <key>ProgramArguments</key><array><string>$PY</string><string>-m</string><string>localservices.daemon</string></array>
   <key>WorkingDirectory</key><string>$REPO</string>
-  <key>EnvironmentVariables</key><dict><key>PYTHONDONTWRITEBYTECODE</key><string>1</string></dict>
+  <key>EnvironmentVariables</key><dict>
+    <key>PYTHONDONTWRITEBYTECODE</key><string>1</string>
+    <key>PATH</key><string>$(dirname "$PY"):$HOME/.pyenv/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>

@@ -9,6 +9,7 @@ open = "http://127.0.0.1:5178/explore/#/capture?mode=agent"
 group = "ui-atlas"
 group_name = "UI-Atlas 工作区"
 group_order = 0
+project = "ui-atlas"
 
 [[components]]
 id = "api"

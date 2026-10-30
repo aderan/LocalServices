@@ -3,6 +3,7 @@ name = "Folklio"
 description = "Vite 热更新 + preview 内容索引自动重建"
 source = "~/Sources/Products/Ideas/DailyLifeAtlas"
 open = "http://127.0.0.1:5174/"
+project = "folklio"
 
 [[components]]
 id = "web"

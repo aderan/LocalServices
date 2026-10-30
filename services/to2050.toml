@@ -5,6 +5,7 @@ source = "~/Sources/Products/To2050"
 open = "http://127.0.0.1:5173/research"
 adapter = "to2050"
 options = { api = "http://127.0.0.1:8002", artifact_root = "artifacts" }
+project = "to2050"
 
 [[components]]
 id = "api"

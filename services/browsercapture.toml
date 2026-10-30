@@ -5,6 +5,7 @@ source = "~/Sources/Products/BrowserCapture"
 autostart = true
 adapter = "browsercapture"
 options = { port = 47615, data_dir = "~/Library/Application Support/BrowserCapture" }
+project = "browsercapture"
 
 [[components]]
 id = "service"

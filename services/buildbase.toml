@@ -3,6 +3,7 @@ name = "Buildbase"
 description = "Next.js 开发模式（热更新）"
 source = "~/Sources/Products/Buildbase"
 open = "http://localhost:3000/zh"
+project = "buildbase"
 
 [[components]]
 id = "web"

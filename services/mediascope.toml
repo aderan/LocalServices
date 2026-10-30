@@ -5,6 +5,7 @@ source = "~/Sources/Products/MediaScope"
 open = "http://127.0.0.1:8790/"
 autostart = true
 adapter = "mediascope"
+project = "mediascope"
 
 [[components]]
 id = "dashboard"

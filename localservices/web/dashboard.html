@@ -467,7 +467,7 @@ function viewAgents() {
     return `<section class="card">
       <div class="card-head"><h3>${kind}${c.is_default ? '<span class="badge mut">默认</span>' : ""}</h3>
         <div class="acts">
-          <button onclick="agentsVerify('${kind}')" ${verifying ? "disabled" : ""}>${verifying ? "验证中…（最长 60 秒）" : "最小调用验证"}</button>
+          <button onclick="agentsVerify('${kind}')" ${verifying ? "disabled" : ""}>${verifying ? "验证中…（最长 120 秒）" : "最小调用验证"}</button>
           <button onclick="agentsScan()" ${busy("scan") ? "disabled" : ""}>重新扫描</button>
           <button onclick="agentsDefault('${kind}')" ${c.is_default || busy("default-" + kind) ? "disabled" : ""}>${c.is_default ? "已是默认" : "设为默认"}</button>
         </div></div>
@@ -484,7 +484,7 @@ function viewAgents() {
     <div class="card-head"><h3>手动指定路径</h3></div>
     <div class="field"><input id="agentPathInput" placeholder="/path/to/codex 或包含它的目录" aria-label="手动 agent 路径">
       <button onclick="agentsScan(document.getElementById('agentPathInput').value)" ${manual ? "disabled" : ""}>${manual ? "扫描中…" : "按此路径扫描"}</button>
-      <span class="inline-note">验证为真实最小调用，最长 60 秒；超时请重试</span></div>
+      <span class="inline-note">验证为真实最小调用，最长 120 秒；超时请重试</span></div>
   </section>`;
 }
 
@@ -796,7 +796,7 @@ async function agentsScan(path) {
 async function agentsVerify(kind) {
   pending["verify-" + kind] = true; render();
   try {
-    const [code, res] = await api("POST", "/api/agents/verify", {kind, timeout: 60});
+    const [code, res] = await api("POST", "/api/agents/verify", {kind, timeout: 120});
     if (code === 200) agentsData = {...agentsData, connections: {...(agentsData?.connections || {}), [kind]: res.connection}};
     setConn(true);
   } catch (e) { setConn(false); }

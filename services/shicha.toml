@@ -3,6 +3,7 @@ name = "ShiCha"
 description = "管理后台 + Go API（依赖 Colima 中的 shicha-postgres）"
 source = "~/Sources/Products/ShiCha"
 open = "http://127.0.0.1:5176/"
+project = "shicha"
 
 [[components]]
 id = "api"
