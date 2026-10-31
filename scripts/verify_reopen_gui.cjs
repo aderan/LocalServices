@@ -90,11 +90,15 @@ try {
   check("diff 含 auto_update", fields.some(f => f.endsWith("auto_update")));
 } catch (e) { check("candPayload/dry_run", false, e.message); }
 
-// —— 3) 批量注册 revision 传递 ——
+// —— 3) 批量注册 revision 传递与项目管理入口（页面源码断言） ——
 try {
-  const src = page.viewNewProject.toString();
-  check("项目视图含添加服务/重新识别/自动启动", src.includes("添加服务…") === false ? true : true);
-} catch (e) { check("revision 语义", false, e.message); }
+  const src = html;
+  check("页面含 wizRegisterOnce 409 重试", src.includes("wizRegisterOnce") && src.includes("current_revision"));
+  check("页面含成功后 revision 更新", src.includes("wiz.project.revision = res.revision"));
+  check("项目视图含添加服务/重新识别/自动启动", src.includes("添加服务…") && src.includes("重新识别") && src.includes("toggleAutostart"));
+  check("无端口组件探针转发", /out\.ready = rd;\s*\/\/ 无端口组件/.test(src));
+  check("依赖缺探针不静默丢弃", src.includes("缺少 http/tcp 探针，未随注册提交"));
+} catch (e) { check("页面源码断言", false, e.message); }
 
 console.log(out.join("\n"));
 if (alerts.length) console.log("alerts:", JSON.stringify(alerts));

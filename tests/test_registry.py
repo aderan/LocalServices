@@ -376,12 +376,17 @@ class FakeCtl:
         self.snapshot_data = {"projects": [{"id": "demo-web", "state": state, "label": label}]}
         self.ops: dict = {}
         self.stopped = None
+        # 移除前的停止确认（registry._stop_via_controller）会查 projects/label
+        self.projects = {}
 
     def snapshot(self):
         return self.snapshot_data
 
     def reload(self):
         pass
+
+    def label(self, p, c):
+        return f"label.{p.id}.{c.id}"
 
     def stop(self, sid):
         self.stopped = sid

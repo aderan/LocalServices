@@ -337,8 +337,9 @@ class Registry:
             try:
                 os.replace(src, backup)
                 print(f"[registry] registry.json 损坏，已备份到 {backup}", file=sys.stderr)
-            except OSError:
-                pass
+            except OSError as e:
+                # 备份失败绝不能继续当空库（否则下次写入覆盖原始记录）
+                raise RegistryError(f"registry.json 损坏且备份失败（{e}），请先人工处理 {src}") from e
             data = {}
         except OSError:
             data = {}
@@ -753,8 +754,9 @@ class Registry:
         try:
             ctl.reload()
             p = ctl.projects.get(sid)
-        except Exception:
-            p = None
+        except Exception as e:
+            # 确认停止状态失败时宁可拒绝移除（fail-closed），不做未确认的删除
+            raise RegistryError(f"无法确认停止状态（{e}），登记未移除；可重试", status=409) from e
         if p is not None:
             still = [c.id for c in p.managed_components()
                      if (ji := _launchd.info(ctl.label(p, c))) and (ji.running or ji.loaded)]

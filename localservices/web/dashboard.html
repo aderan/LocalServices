@@ -1114,24 +1114,32 @@ function candPayload(c, proj) {
   const comps = (c.components || []).map(k => {
     const out = {id: k.id, kind: k.kind || "server", name: k.name || k.id,
                  cmd: k.cmd || [], cwd: k.cwd || "."};
-    if (k.port) { out.port = k.port; const rd = fwdReady(k, k.port); if (rd) out.ready = rd; }
+    if (k.port) out.port = k.port;
+    const rd = fwdReady(k, k.port || null);
+    if (rd) out.ready = rd;   // 无端口组件的探针（如固定外部端口）同样转发
     for (const f of COMP_FWD_KEYS) {
       const v = k[f];
       if (v !== null && v !== undefined && !(Array.isArray(v) && !v.length)) out[f] = v;
     }
     return out;
   });
+  const depNotes = [];
   const deps = (c.dependencies || []).map(d => {
     const out = {name: d.name};
     if (d.probe && (d.probe.http || d.probe.tcp)) {
       out.probe = {};
       for (const f of ["http", "tcp", "json_ok", "timeout"])
         if (d.probe[f]) out.probe[f] = d.probe[f];
-    } else return null;
+    } else {
+      // 注册校验要求依赖探针含 http/tcp：不静默丢弃，转为待人工确认
+      depNotes.push(`依赖 ${d.name} 缺少 http/tcp 探针，未随注册提交`);
+      return null;
+    }
     for (const f of ["affects", "required", "container", "volume", "note"])
       if (d[f] !== null && d[f] !== undefined && d[f] !== "") out[f] = d[f];
     return out;
   }).filter(Boolean);
+  if (depNotes.length && c.unresolved) c.unresolved = c.unresolved.concat(depNotes);
   const svc = {id: c.id, name: c.name, description: c.description || "", source,
                open: c.open || null,
                evidence: {agent: wiz.agent, summary: (c.evidence?.summary) || "agent 识别候选",
