@@ -260,62 +260,71 @@ def main(argv=None) -> int:
                             for r in res.get("resources", [])) or "（无）")
             return 0 if res.get("ok") else 1
         if a.cmd == "export":
+            # 产出严格 register payload（schemas/register.schema.json）：目标机改绑 source/cwd
+            # 后 `lsctl register --file` 即可导入。凭据：secret 类 env 值脱敏；env 文件只留引用。
             from . import manifest
-            from .controller import redact, SECRET_RE
+            from .controller import SECRET_RE, redact
             projects = manifest.load_all()
             p = projects.get(a.service)
             if not p:
                 print(f"未知服务 {a.service}", file=sys.stderr)
                 return 1
             def clean_env(env: dict) -> dict:
+                return {k: ("***REDACTED***" if SECRET_RE.search(f"{k}={v}") else v)
+                        for k, v in env.items()}
+            def clean_probe(pr) -> dict | None:
+                if pr is None:
+                    return None
                 out = {}
-                for k, v in env.items():
-                    if SECRET_RE.search(f"{k}={v}"):
-                        out[k] = "***REDACTED***"
-                    else:
+                for k in ("http", "tcp", "json_ok", "timeout", "interval"):
+                    v = getattr(pr, k, None)
+                    if v is not None and v != "":
+                        out[k] = v
+                return out or None
+            def clean_comp(c) -> dict:
+                out = {"id": c.id, "kind": c.kind, "name": c.name or c.id, "cwd": c.cwd,
+                       "cmd": c.cmd, "env": clean_env(c.env), "env_files": c.env_files}
+                for k in ("port", "required", "start_timeout", "after", "hot", "watch",
+                          "restart_on", "ignore", "build", "install", "install_when",
+                          "install_marker", "auto_update", "external_cmd", "external_cwd",
+                          "external_cwd_exact", "debounce", "shell_script"):
+                    v = getattr(c, k, None)
+                    if v not in (None, [], ""):
+                        out[k] = v
+                pr = clean_probe(c.ready)
+                if pr:
+                    out["ready"] = pr
+                return {k: v for k, v in out.items() if v not in (None, [], "")}
+            def clean_dep(d) -> dict:
+                out = {"name": d.name}
+                pr = clean_probe(d.probe)
+                if pr:
+                    out["probe"] = pr
+                for k in ("affects", "required", "container", "volume", "note"):
+                    v = getattr(d, k, None)
+                    if v not in (None, [], ""):
                         out[k] = v
                 return out
-            svc = {
+            payload = {
                 "schemaVersion": 1,
-                "kind": "localservices-shareable-service",
+                "project": {"id": p.project or p.id, "name": p.name},
                 "service": {
                     "id": p.id, "name": p.name, "description": p.description,
                     "source": str(p.source), "open": p.open,
-                    "components": [{
-                        "id": c.id, "kind": c.kind, "name": c.name, "cwd": c.cwd,
-                        "cmd": c.cmd, "env": clean_env(c.env), "env_files": c.env_files,
-                        "env_files_note": "引用本机 .env 文件；凭据不入导出" if c.env_files else None,
-                        "port": c.port, "ready": c.ready and {
-                            "http": c.ready.http, "tcp": c.ready.tcp, "json_ok": c.ready.json_ok,
-                            "timeout": c.ready.timeout, "interval": c.ready.interval},
-                        "required": c.required, "start_timeout": c.start_timeout,
-                        "after": c.after, "hot": c.hot, "watch": c.watch,
-                        "restart_on": c.restart_on, "install": c.install,
-                        "install_when": c.install_when, "install_marker": c.install_marker,
-                        "auto_update": c.auto_update,
-                        "external_cmd": c.external_cmd, "external_cwd": c.external_cwd,
-                        "external_cwd_exact": c.external_cwd_exact,
-                    } for c in p.components],
-                    "dependencies": [{
-                        "name": d.name, "probe": {"http": d.probe.http, "tcp": d.probe.tcp,
-                                                  "json_ok": d.probe.json_ok, "timeout": d.probe.timeout},
-                        "affects": d.affects, "required": d.required,
-                        "container": d.container, "volume": d.volume, "note": d.note,
-                    } for d in p.dependencies],
+                    "autostart": bool(p.autostart), "adapter": p.adapter or None,
+                    "observe_only": bool(p.observe_only),
+                    "options": dict(p.options) if p.options else None,
+                    "components": [clean_comp(c) for c in p.components],
+                    "dependencies": [clean_dep(d) for d in p.dependencies],
+                    "evidence": {"agent": None,
+                                 "summary": "lsctl export 导出的可分享定义（secret 已脱敏）",
+                                 "unresolved": []},
                 },
-                "note": "可分享定义：不含凭据（secret 类 env 值已脱敏、env 文件只留引用）。"
-                        "导入 = 在目标机器把 source/cwd 改绑本机路径后执行 lsctl register --file；"
-                        "register 会校验路径、命令与端口并显示修改结果，显式导入才授予命令执行能力。",
             }
-            svc["service"]["components"] = [{k: v for k, v in c.items() if v is not None}
-                                            for c in svc["service"]["components"]]
-            text = json.dumps(svc, ensure_ascii=False, indent=1)
-            # 双保险：即便结构外混入令牌样式字符串也再脱敏一遍
-            text = redact(text)
+            text = redact(json.dumps(payload, ensure_ascii=False, indent=1))
             if a.file:
                 Path(a.file).write_text(text, encoding="utf-8")
-                print(f"已导出 {a.file}（凭据已脱敏）" if not a.json else
-                      json.dumps({"ok": True, "file": a.file, "redacted": True}, ensure_ascii=False))
+                print(f"已导出 {a.file}（凭据已脱敏；导入：改绑 source/cwd 后 lsctl register --file {a.file}）")
             else:
                 print(text)
             return 0

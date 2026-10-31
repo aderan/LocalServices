@@ -31,11 +31,11 @@ def _register_status(res: dict) -> tuple[int, dict]:
 # ---------------------------------------------------------------- 注册
 
 def handle_register(body: dict, ctl) -> tuple[int, dict]:
-    """POST /api/register。ctl 当前不参与注册本身（启动是独立的 start 端点）。"""
+    """POST /api/register。body.dry_run=true 时只返回字段级差异，不落盘（重新识别预览）。"""
     try:
         if not isinstance(body, dict):
             return 400, {"ok": False, "error": "body 必须是对象"}
-        return _register_status(_registry.register_service(body))
+        return _register_status(_registry.register_service(body, dry_run=bool(body.get("dry_run"))))
     except Exception as e:  # noqa: BLE001
         return _fail(e)
 
@@ -70,7 +70,7 @@ def handle_registry_get(ctl) -> tuple[int, dict]:
 # ---------------------------------------------------------------- Project / Directory
 
 def handle_project_upsert(body: dict) -> tuple[int, dict]:
-    """POST /api/projects：{id?, name, directories?, agent?}。"""
+    """POST /api/projects：{id?, name, directories?, agent?, autostart?, favorite?}。"""
     try:
         if not isinstance(body, dict):
             return 400, {"ok": False, "error": "body 必须是对象"}
@@ -80,7 +80,8 @@ def handle_project_upsert(body: dict) -> tuple[int, dict]:
         directories = body.get("directories")
         if directories is not None and not isinstance(directories, list):
             return 400, {"ok": False, "error": "directories 必须是数组"}
-        proj, created = _registry.ensure_project(pid, body.get("name"), directories, body.get("agent"))
+        proj, created = _registry.ensure_project(pid, body.get("name"), directories, body.get("agent"),
+                                                  autostart=body.get("autostart"), favorite=body.get("favorite"))
         return 200, {"ok": True, "created": created, "project": proj,
                      "revision": proj.get("revision", 0)}
     except Exception as e:  # noqa: BLE001

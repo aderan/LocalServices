@@ -18,6 +18,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 import tomllib
@@ -36,14 +37,14 @@ REGISTRANTS = ("gui", "cli", "skill")
 DISPOSITIONS = ("stop", "keep-external")
 
 SERVICE_KEYS = {"id", "name", "description", "source", "open", "autostart", "adapter",
-                "observe_only", "draft", "project_hint", "components", "dependencies", "evidence"}
+                "observe_only", "draft", "project_hint", "options", "components", "dependencies", "evidence"}
 COMP_KEYS = {"id", "kind", "name", "cmd", "shell_script", "cwd", "env", "env_files", "port", "ready",
              "required", "start_timeout", "after", "hot", "watch", "restart_on", "ignore", "build",
              "install", "install_when", "install_marker", "auto_update", "external_cmd",
              "external_cwd", "external_cwd_exact", "debounce"}
 READY_KEYS = {"http", "tcp", "json_ok", "timeout", "interval"}
 DEP_KEYS = {"name", "probe", "affects", "managed", "note", "required", "container", "volume", "resource"}
-PROBE_KEYS = {"http", "tcp", "json_ok", "timeout"}
+PROBE_KEYS = {"http", "tcp", "json_ok", "timeout", "interval"}
 COMPONENT_KINDS = ("server", "worker", "generator")
 
 # TOML 输出时组件/依赖字段的固定顺序（只写显式提供的字段，缺省由加载端补齐）
@@ -193,6 +194,36 @@ def _file_lock():
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+def _diff_definitions(old: dict, new: dict) -> list[dict]:
+    """字段级差异（dry_run 用）：顶层标量 + 按组件 id / 依赖 name 对齐的明细，old/new 原样呈现。"""
+    out: list[dict] = []
+    for k in ("name", "description", "source", "open", "autostart", "observe_only", "adapter", "options"):
+        if old.get(k) != new.get(k) and not (old.get(k) is None and new.get(k) is None):
+            out.append({"field": k, "old": old.get(k), "new": new.get(k)})
+    oldc = {c.get("id"): c for c in old.get("components", []) if isinstance(c, dict)}
+    newc = {c.get("id"): c for c in new.get("components", []) if isinstance(c, dict)}
+    for cid in sorted(set(oldc) | set(newc), key=str):
+        if cid not in oldc:
+            out.append({"field": f"components[{cid}]", "old": None, "new": "新增组件"})
+        elif cid not in newc:
+            out.append({"field": f"components[{cid}]", "old": "（移除）", "new": None})
+        else:
+            for f in sorted(set(oldc[cid]) | set(newc[cid])):
+                ov, nv = oldc[cid].get(f), newc[cid].get(f)
+                if ov != nv and not (ov is None and nv is None):
+                    out.append({"field": f"components[{cid}].{f}", "old": ov, "new": nv})
+    oldd = {d.get("name"): d for d in old.get("dependencies", []) if isinstance(d, dict)}
+    newd = {d.get("name"): d for d in new.get("dependencies", []) if isinstance(d, dict)}
+    for dn in sorted(set(oldd) | set(newd), key=str):
+        if dn not in oldd:
+            out.append({"field": f"dependencies[{dn}]", "old": None, "new": "新增依赖"})
+        elif dn not in newd:
+            out.append({"field": f"dependencies[{dn}]", "old": "（移除）", "new": None})
+        elif oldd[dn] != newd[dn]:
+            out.append({"field": f"dependencies[{dn}]", "old": oldd[dn], "new": newd[dn]})
+    return out
+
+
 def _identity(source: Path, comps) -> tuple:
     """注册身份 = resolve(source) + 排序后 cwd 集合 + 排序后 cmd argv 集合（CONTRACTS §2）。"""
     cwds = sorted(str((source / (c.cwd or ".")).resolve()) for c in comps)
@@ -297,7 +328,19 @@ class Registry:
     def _load(self) -> dict:
         try:
             data = json.loads(paths.registry_file().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except FileNotFoundError:
+            data = {}
+        except ValueError:
+            # 损坏文件不能当空库覆盖：先整体备份，再从空开始（原记录保留在备份里）
+            src = paths.registry_file()
+            backup = src.with_name(f"{src.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+            try:
+                os.replace(src, backup)
+                print(f"[registry] registry.json 损坏，已备份到 {backup}", file=sys.stderr)
+            except OSError:
+                pass
+            data = {}
+        except OSError:
             data = {}
         if not isinstance(data, dict):
             data = {}
@@ -324,7 +367,8 @@ class Registry:
     # ---------- Project / Directory ----------
 
     def ensure_project(self, pid: str | None, name: str, directories: list[dict] | None,
-                       agent: str | None, origin: str = "user") -> tuple[dict, bool]:
+                       agent: str | None, origin: str = "user", autostart: bool | None = None,
+                       favorite: bool | None = None) -> tuple[dict, bool]:
         """创建或更新工作台；返回 (project, created)。"""
         with _file_lock():
             data = self._load()
@@ -335,6 +379,9 @@ class Registry:
                 raise RegistryError("项目 name 不能为空")
             if agent is not None and agent not in AGENTS:
                 raise RegistryError(f"agent 必须是 {'/'.join(AGENTS)}")
+            for flag, key in ((autostart, "autostart"), (favorite, "favorite")):
+                if flag is not None and not isinstance(flag, bool):
+                    raise RegistryError(f"{key} 必须是布尔值")
             dirs = _norm_directories(directories)
             proj = _find(data, derived)
             created = proj is None
@@ -348,6 +395,12 @@ class Registry:
                     changed = True
                 if agent and proj.get("agent") != agent:
                     proj["agent"] = agent
+                    changed = True
+                if autostart is not None and proj.get("autostart") != autostart:
+                    proj["autostart"] = autostart
+                    changed = True
+                if favorite is not None and proj.get("favorite") != favorite:
+                    proj["favorite"] = favorite
                     changed = True
             for rp, role in dirs:
                 changed |= _add_directory_entry(proj, rp, role)
@@ -462,15 +515,15 @@ class Registry:
 
     # ---------- 注册（CONTRACTS §2） ----------
 
-    def register_service(self, payload: dict) -> dict:
+    def register_service(self, payload: dict, dry_run: bool = False) -> dict:
         try:
-            return self._register(payload)
+            return self._register(payload, dry_run=dry_run)
         except RegistryError as e:
             out = dict(e.payload)
             out.setdefault("details", [])
             return out
 
-    def _register(self, payload: dict) -> dict:
+    def _register(self, payload: dict, dry_run: bool = False) -> dict:
         if not isinstance(payload, dict):
             return {"ok": False, "error": "payload 必须是对象", "details": []}
         if payload.get("schemaVersion") != 1:
@@ -518,6 +571,10 @@ class Registry:
                     return {"ok": False, "error": f"服务 id {sid} 已属于项目 {owner_pid}", "details": []}
                 if (_identity(_resolved(existing.source), existing.components) == ident
                         and self._content_equal(toml, existing)):
+                    if dry_run:
+                        return {"ok": True, "action": "diff", "service_id": sid, "project_id": pid,
+                                "revision": (proj or {}).get("revision", 0), "diff": [],
+                                "draft_id": None, "validation": {"warnings": warnings}}
                     return _ok("unchanged", pid, sid, (proj or {}).get("revision", 0), warnings)
                 gate = _revision_gate(proj, revision)
                 if gate:
@@ -533,6 +590,16 @@ class Registry:
                         dup = lp.id
                         break
                 if dup:
+                    if dry_run:
+                        old_def = {}
+                        try:
+                            old_def = tomllib.loads(Path(loaded[dup].file).read_text(encoding="utf-8"))
+                        except (OSError, ValueError, TypeError):
+                            old_def = {}
+                        return {"ok": True, "action": "diff", "service_id": dup, "project_id": pid,
+                                "revision": (proj or {}).get("revision", 0),
+                                "diff": _diff_definitions(old_def, toml),
+                                "draft_id": None, "validation": {"warnings": warnings}}
                     return _ok("duplicate", pid, dup, (proj or {}).get("revision", 0), warnings)
                 gate = _revision_gate(proj, revision)
                 if gate:
@@ -553,30 +620,52 @@ class Registry:
                     return {"ok": False, "error": f"端口 {cobj.port} 已被占用",
                             "details": [f"{owner} 与 {sid}.{cobj.id}"]}
 
-            # ---- 校验完成，开始落盘（先 TOML 后 registry，均为原子写） ----
+            # ---- 校验完成，开始落盘（先 TOML 后 registry，均为原子写；registry 失败回滚 TOML） ----
             toml["registered"] = norm["registered"]
             if existing is not None and existing.file:
                 merged = self._merge_existing(Path(existing.file), toml)
                 target, text = Path(existing.file), dumps_toml(merged)
             else:
                 target, text = paths.user_services_dir() / f"{sid}.toml", dumps_toml(toml)
+            if dry_run:
+                old_def = {}
+                if existing is not None and existing.file:
+                    try:
+                        old_def = tomllib.loads(Path(existing.file).read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        old_def = {}
+                return {"ok": True, "action": "diff", "service_id": sid, "project_id": pid,
+                        "revision": proj["revision"] if proj else 0,
+                        "diff": _diff_definitions(old_def, toml),
+                        "draft_id": None, "validation": {"warnings": warnings}}
+            rollback = target.read_bytes() if target.exists() else None
             _write_bytes_atomic(target, text.encode("utf-8"))
-
-            if proj is None:
-                proj = _new_project(pid, norm["pj_name"] or svc.get("name", pid))
-                data["projects"].append(proj)
-            if norm["pj_name"]:
-                proj["name"] = norm["pj_name"]
-            if norm["agent"]:
-                proj["agent"] = norm["agent"]
-            for rp, role in norm["dirs"]:
-                _add_directory_entry(proj, rp, role)
-            if sid not in proj.get("services", []):
-                proj.setdefault("services", []).append(sid)
-            proj["revision"] = proj.get("revision", 0) + 1
-            proj["updated_at"] = _now()
-            data["revision"] = data.get("revision", 0) + 1
-            self._save(data)
+            try:
+                if proj is None:
+                    proj = _new_project(pid, norm["pj_name"] or svc.get("name", pid))
+                    data["projects"].append(proj)
+                if norm["pj_name"]:
+                    proj["name"] = norm["pj_name"]
+                if norm["agent"]:
+                    proj["agent"] = norm["agent"]
+                for rp, role in norm["dirs"]:
+                    _add_directory_entry(proj, rp, role)
+                if sid not in proj.get("services", []):
+                    proj.setdefault("services", []).append(sid)
+                proj["revision"] = proj.get("revision", 0) + 1
+                proj["updated_at"] = _now()
+                data["revision"] = data.get("revision", 0) + 1
+                self._save(data)
+            except Exception:
+                # "接口失败 = 无变化"：registry 落盘失败时恢复 TOML 原字节（新建则删除）
+                if rollback is not None:
+                    _write_bytes_atomic(target, rollback)
+                else:
+                    try:
+                        target.unlink()
+                    except OSError:
+                        pass
+                raise
             return _ok(action, pid, sid, proj["revision"], warnings)
 
     def _content_equal(self, toml: dict, existing: manifest.Project) -> bool:
@@ -658,6 +747,21 @@ class Registry:
                 except Exception:
                     break
                 time.sleep(0.2)
+        # 操作结束 ≠ 停止成功：确认没有组件仍在 launchd 中运行，否则不移除登记
+        # （避免"界面已删、进程还在"的半删除状态）
+        from . import launchd as _launchd
+        try:
+            ctl.reload()
+            p = ctl.projects.get(sid)
+        except Exception:
+            p = None
+        if p is not None:
+            still = [c.id for c in p.managed_components()
+                     if (ji := _launchd.info(ctl.label(p, c))) and (ji.running or ji.loaded)]
+            if still:
+                raise RegistryError(
+                    f"停止未完成（组件 {', '.join(still)} 仍在运行），登记未移除；"
+                    "可重试或选择「保留为外部实例」", status=409)
 
     # ---------- 迁移（CONTRACTS §7，一次性且幂等） ----------
 
