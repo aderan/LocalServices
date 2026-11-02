@@ -8,6 +8,7 @@
 | `vite-demo/` | 18210（dev server；`/api` 代理到 18211） | `http://127.0.0.1:18210/` | `npm install`（node_modules 不入库） |
 | `fastapi-demo/` | 18212 | `http://127.0.0.1:18212/health` → `{"ok":true}` | `uv sync`（.venv/uv.lock 不入库） |
 | `go-demo/` | 18213 | `http://127.0.0.1:18213/health` → `{"ok":true,"version":"…"}` | 无（manifest build 步骤构建；产物在隔离 home 的 build 目录） |
+| `next-demo/` | 18218 | `http://127.0.0.1:18218/api/health` → `{"ok":true}` | `npm install`（node_modules/.next 不入库） |
 | `compose-demo/` | 18214（宿主）→ 6379（容器） | `tcp 127.0.0.1:18214`（故意无 docker healthcheck → 端口探针路径） | 无（redis:7-alpine 本机已拉取，arm64 与 colima 匹配） |
 
 ## N04 真实验证得到的环境结论（写进夹具形状的原因）
@@ -26,3 +27,6 @@
 - compose-demo 组件：`run = "compose"`、`compose_service = "web"`、`provision = "up"`
   需注册时显式 `service.confirmed_provision = true`（首次创建容器/拉镜像的用户确认）；
   `provision = "existing"` 只 start 已存在容器。
+
+- **next-demo**：Next.js 15 App Router 最小工程；`npm run dev` = `next dev -H 127.0.0.1 -p 18218`。
+  build 需在 dev 停止后执行（共享 .next 会冲突）——dev 与 build/start 是两种模式，不混跑。
