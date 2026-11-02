@@ -217,7 +217,17 @@ def _atomic_commit(writes: list[tuple[Path, bytes]], after=None) -> None:
     """多文件事务提交（V2.4）：全部临时文件写好+fsync（经由 _write_bytes_atomic，
     保持单一失败注入接缝）→ 统一 rename → 执行 after 回调（如 registry _save）。
     任一阶段失败：已 rename 的文件用**原地写回**恢复原字节（新建文件删除），
-    未 rename 的临时文件清理，原始异常向上抛——持续 I/O 故障下保持一致或整体失败。"""
+    未 rename 的临时文件清理，原始异常向上抛——持续 I/O 故障下保持一致或整体失败。
+    同一目标路径出现两次 = 调用方编程错误（第二次 rename 必然 FileNotFoundError），
+    在任何写盘之前拒绝（R03）。"""
+    writes = list(writes)
+    seen: set[Path] = set()
+    for path, _data in writes:
+        if path in seen:
+            raise RuntimeError(
+                f"_atomic_commit 检测到重复目标路径 {path}：同一事务内每个文件只能写一次；"
+                "多服务变更需先在内存合并出整份文件（如 overrides.plan_restore_many）")
+        seen.add(path)
     staged: list[tuple[Path, Path, bytes | None]] = []
     try:
         for path, data in writes:
@@ -381,6 +391,33 @@ def _insert_project_line(text: str, pid: str) -> str:
                 return "".join(lines[:i - 1]) + line + "".join(lines[i - 1:])
             return "".join(lines[:i]) + line + "\n" + "".join(lines[i:])
     return text + ("" if text.endswith("\n") else "\n") + line
+
+
+_PROJECT_LINE_RE = re.compile(r'^project\s*=\s*"[^"]*"\s*(?:#.*)?$')
+
+
+def _set_project_field(text: str, pid: str) -> str:
+    """把清单 TOML 顶层 project = 值改写为目标项目（R10：成员表与 TOML 归属必须一致）。
+
+    已有键只替换该行的值（其余行字节不动）；没有键则按 _insert_project_line 插入。
+    只认第一个 [[section]] 之前的顶层键，避免误改组件段内的同名字段。
+    """
+    replacement = f'project = "{pid}"\n'
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    replaced = False
+    in_head = True
+    for l in lines:
+        if in_head and not replaced and _PROJECT_LINE_RE.match(l):
+            out.append(replacement)
+            replaced = True
+            continue
+        if l.lstrip().startswith("["):
+            in_head = False  # 顶层区域结束：不再匹配 project=，避免误改段内同名字段
+        out.append(l)
+    if replaced:
+        return "".join(out)
+    return _insert_project_line(text, pid)
 
 
 # ---------------------------------------------------------------- Registry
@@ -677,8 +714,10 @@ class Registry:
             except Exception as e:  # 现有清单坏：宁可拒绝也不叠加写入
                 return {"ok": False, "error": f"无法加载现有清单：{e}", "details": []}
 
-            # V2.3：覆盖层先于比较/写盘生效（accept_new 在此清除指定覆盖）→ dry_run diff = 实际
-            eff_fields = overrides.effective_fields(sid, svc.get("accept_new"))
+            # V2.3（R06 修订）：合并优先级 = 本次用户编辑（edited 路径）> 旧人工覆盖 > 模型候选。
+            # 覆盖层先于比较/写盘生效，但 edited 列出的路径旁路旧覆盖（本次 payload 值直接生效）；
+            # 成功后 plan(edited=...) 把最终值写回覆盖层。accept_new 在此清除指定覆盖 → dry_run diff = 实际
+            eff_fields = overrides.effective_fields(sid, svc.get("accept_new"), svc.get("edited"))
             toml = overrides.apply_fields(toml, eff_fields)
             comp_objs = [manifest._component(dict(c)) for c in toml.get("components", [])]
 
@@ -1268,7 +1307,9 @@ class Registry:
 
     def restore_service(self, sid: str, body: dict, ctl) -> dict:
         """V2.2：归档 TOML 写回 user_services_dir（即使原是 builtin）+ 恢复登记 +
-        state intent 显式设为所选值（缺省 stopped，绝不自动启动）。"""
+        state intent 显式设为所选值（缺省 stopped，绝不自动启动）。
+        R10：目标项目（body.project_id）≠ 归档 TOML 的 project 字段时，
+        同一事务把 TOML 归属重写为目标项目——成员表与清单归属一致。"""
         body = body if isinstance(body, dict) else {}
         with _file_lock():
             rm = tombstones._load_full()
@@ -1343,8 +1384,13 @@ class Registry:
             proj["updated_at"] = _now()
             data["revision"] = data.get("revision", 0) + 1
 
+            # R10：目标项目 ≠ 归档 TOML 声明的 project → 同一事务重写 project 字段
+            #（查询层优先 manifest.project：成员表与 TOML 归属必须一致；相同则保持原字节）
+            out_text = toml_text
+            if parsed.get("project") != target_pid:
+                out_text = _set_project_field(toml_text, target_pid)
             writes: list[tuple[Path, bytes]] = [
-                (paths.user_services_dir() / f"{sid}.toml", toml_text.encode("utf-8"))]
+                (paths.user_services_dir() / f"{sid}.toml", out_text.encode("utf-8"))]
             # tombstone：有内置模板 → 保留条目（持续遮蔽 builtin）；纯用户层 id → 解除
             builtin_shadow = (paths.services_dir() / f"{sid}.toml").exists()
             if not builtin_shadow:
@@ -1361,7 +1407,11 @@ class Registry:
                     "project_recreated": recreated}
 
     def restore_project(self, pid: str, body: dict, ctl) -> dict:
-        """V2.2：恢复项目条目（归档的原 project 对象）+ 全部成员服务。"""
+        """V2.2：恢复项目条目（归档的原 project 对象）+ 全部成员服务。
+
+        R02：写盘前对**全部**成员归档做端口/服务 id/注册身份预检（与当前有效清单及
+        成员相互之间），任何冲突 → 零写入 409。R03：成员覆盖层合并为一次 overrides.json
+        写入。R10：成员 TOML 的 project 字段统一重绑定为本项目。"""
         body = body if isinstance(body, dict) else {}
         with _file_lock():
             rm = tombstones._load_full()
@@ -1375,6 +1425,7 @@ class Registry:
             if _find(self._load(), pid) is not None:
                 raise RegistryError(f"项目 id {pid} 已存在（先移除再恢复）", status=409)
             members = [s for s in entry.get("services", []) if isinstance(s, str)]
+            members = list(dict.fromkeys(members))  # 防御去重：同目标 TOML 只能写一次
             intent = body.get("intent") or "stopped"
             if intent not in INTENTS:
                 raise RegistryError("intent 必须是 stopped/running")
@@ -1397,6 +1448,65 @@ class Registry:
                     archives[sid] = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, ValueError) as e:
                     raise RegistryError(f"归档无法读取（{sid}）：{e}", status=500) from e
+
+            # R02 预检：写盘前一次性验证**全部**成员归档定义——监听端口（成员之间 +
+            # 与当前有效清单）、服务 id、注册身份。任何冲突 → 零写入 409，逐条列出冲突对象
+            #（此前逐成员恢复后写盘成功、load_all 全局 duplicate listen port 崩溃）。
+            reg_snap = self._load()
+            pid_members = {s for x in reg_snap.get("projects", [])
+                           if x.get("id") == pid for s in x.get("services", [])}
+            owners: dict[int, str] = {}
+            for lp in loaded.values():
+                for lc in lp.managed_components():
+                    if lc.port:
+                        owners[lc.port] = f"{lp.id}.{lc.id}"
+            conflicts = []
+            parsed_defs: dict[str, dict] = {}
+            seen_ids: set[str] = set()
+            seen_ports: dict[int, str] = {}
+            seen_idents: dict[tuple, str] = {}
+            for sid in members:
+                try:
+                    parsed = tomllib.loads(str(archives[sid].get("toml") or ""))
+                except ValueError as e:
+                    raise RegistryError(f"归档 TOML 无法解析（{sid}）：{e}", status=500) from e
+                parsed_defs[sid] = parsed
+                inner = str(parsed.get("id") or sid)
+                if inner != sid:
+                    conflicts.append(f"{sid}: 归档 TOML 声明的 id {inner!r} 与移除记录不一致")
+                if inner in loaded:
+                    conflicts.append(f"服务 id {inner} 已登记")
+                elif inner in seen_ids:
+                    conflicts.append(f"服务 id {inner} 在恢复成员中重复")
+                seen_ids.add(inner)
+                try:
+                    comps = [manifest._component(dict(c))
+                             for c in parsed.get("components", []) or [] if isinstance(c, dict)]
+                except TypeError as e:
+                    raise RegistryError(f"归档 TOML 组件无法解析（{sid}）：{e}", status=500) from e
+                ident = _identity(_resolved(parsed.get("source", ".")), comps)
+                for other_sid, other_ident in seen_idents.items():
+                    if other_ident == ident:
+                        conflicts.append(f"{sid} 与 {other_sid} 注册身份相同（source/命令重叠）")
+                seen_idents[sid] = ident
+                for lp in loaded.values():
+                    if ((lp.project == pid or lp.id in pid_members)
+                            and _identity(_resolved(lp.source), lp.components) == ident):
+                        conflicts.append(f"{sid} 与已登记的 {lp.id} 注册身份相同")
+                for cobj in comps:
+                    if cobj.kind == "generator" or not cobj.port:
+                        continue
+                    if cobj.port in owners:
+                        conflicts.append(
+                            f"端口 {cobj.port} 已被 {owners[cobj.port]} 占用（与 {sid}.{cobj.id} 冲突）")
+                    elif cobj.port in seen_ports:
+                        conflicts.append(
+                            f"端口 {cobj.port} 同时用于 {seen_ports[cobj.port]} 与 {sid}.{cobj.id}")
+                    else:
+                        seen_ports[cobj.port] = f"{sid}.{cobj.id}"
+            if conflicts:
+                raise RegistryError(f"项目 {pid} 无法恢复：存在登记冲突", status=409,
+                                    details=conflicts)
 
             data = self._load()
             archived_proj = entry.get("project") or {}
@@ -1425,12 +1535,19 @@ class Registry:
             writes: list[tuple[Path, bytes]] = []
             if rm_bytes is not None:
                 writes.append((paths.removed_file(), rm_bytes))
+            ov_items: list[tuple[str, dict]] = []
             for sid in members:
-                writes.append((paths.user_services_dir() / f"{sid}.toml",
-                               str(archives[sid].get("toml") or "").encode("utf-8")))
-                ov_bytes = overrides.plan_restore(sid, archives[sid].get("overrides") or {})
-                if ov_bytes is not None:
-                    writes.append((paths.overrides_file(), ov_bytes))
+                text = str(archives[sid].get("toml") or "")
+                if parsed_defs[sid].get("project") != pid:
+                    # R10：归档 TOML 的 project 字段与本项目不一致 → 同一事务重写（归属一致）
+                    text = _set_project_field(text, pid)
+                writes.append((paths.user_services_dir() / f"{sid}.toml", text.encode("utf-8")))
+                ov_items.append((sid, archives[sid].get("overrides") or {}))
+            # R03：全部成员的覆盖层合并为**一次** overrides.json 写入
+            #（同一事务同一目标路径只能写一次；逐成员 plan 会让 rename 二次失败）
+            ov_bytes = overrides.plan_restore_many(ov_items)
+            if ov_bytes is not None:
+                writes.append((paths.overrides_file(), ov_bytes))
             _atomic_commit(writes, after=lambda: self._save(data))
             for sid in members:
                 self._set_state_intent(sid, intent, by="restore")

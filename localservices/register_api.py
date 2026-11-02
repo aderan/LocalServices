@@ -175,6 +175,119 @@ def handle_draft_delete(draft_id: str) -> tuple[int, dict]:
 # ---------------------------------------------------------------- V2 移除/恢复/覆盖（CONTRACTS V2.1–V2.9）
 
 
+def handle_service_definition(sid: str) -> tuple[int, dict]:
+    """GET /api/services/<sid>/definition（R05）：当前完整定义（payload 形状，含全部组件字段）。
+
+    GUI 编辑对话框据此初始化，保证"不编辑的字段零变化"；只返回清单层字段，不含凭据类
+    env 值的额外放大（值本就存在于本机清单中，接口仍走 token 鉴权）。
+    """
+    try:
+        try:
+            loaded = manifest.load_all()
+        except Exception as e:  # noqa: BLE001
+            return 500, {"ok": False, "error": f"无法加载清单：{e}"}
+        p = loaded.get(sid)
+        if p is None:
+            return 404, {"ok": False, "error": f"未知服务 {sid}"}
+
+        def comp_dict(c) -> dict:
+            d = {"id": c.id, "kind": c.kind}
+            if c.name:
+                d["name"] = c.name
+            if c.run != "local":
+                d["run"] = c.run
+                d["compose_service"] = c.compose_service
+                if c.compose_project:
+                    d["compose_project"] = c.compose_project
+                if c.compose_files:
+                    d["compose_files"] = list(c.compose_files)
+                d["provision"] = c.provision
+            else:
+                d["cmd"] = list(c.cmd)
+            d["cwd"] = c.cwd
+            if c.env:
+                d["env"] = dict(c.env)
+            if c.env_files:
+                d["env_files"] = list(c.env_files)
+            if c.port is not None:
+                d["port"] = c.port
+            if c.ready is not None:
+                r = {}
+                for k in ("http", "tcp", "json_ok", "timeout", "interval"):
+                    v = getattr(c.ready, k)
+                    if v is not None and not (k in ("timeout", "interval") and v in (0,)):
+                        r[k] = v
+                if r:
+                    d["ready"] = r
+            if not c.required:
+                d["required"] = False
+            if c.start_timeout != 30.0:
+                d["start_timeout"] = c.start_timeout
+            if c.after:
+                d["after"] = list(c.after)
+            if c.hot:
+                d["hot"] = True
+            if c.watch:
+                d["watch"] = list(c.watch)
+            if c.restart_on:
+                d["restart_on"] = list(c.restart_on)
+            if c.ignore:
+                d["ignore"] = list(c.ignore)
+            if c.build:
+                d["build"] = list(c.build)
+            if c.install:
+                d["install"] = list(c.install)
+            if c.install_when:
+                d["install_when"] = list(c.install_when)
+            if c.install_marker:
+                d["install_marker"] = c.install_marker
+            if not c.auto_update:
+                d["auto_update"] = False
+            if c.external_cmd:
+                d["external_cmd"] = c.external_cmd
+            if c.external_cwd:
+                d["external_cwd"] = c.external_cwd
+            if c.external_cwd_exact:
+                d["external_cwd_exact"] = True
+            return d
+
+        def dep_dict(x) -> dict:
+            d = {"name": x.name, "probe": {k: v for k, v in
+                 (("tcp", x.probe.tcp), ("http", x.probe.http), ("json_ok", x.probe.json_ok)) if v}}
+            if x.affects:
+                d["affects"] = list(x.affects)
+            if x.managed:
+                d["managed"] = True
+            if x.note:
+                d["note"] = x.note
+            if x.required:
+                d["required"] = True
+            if x.container:
+                d["container"] = x.container
+            if x.volume:
+                d["volume"] = x.volume
+            return d
+
+        svc = {"id": p.id, "name": p.name, "source": str(p.source)}
+        if p.description:
+            svc["description"] = p.description
+        if p.open:
+            svc["open"] = p.open
+        if p.autostart:
+            svc["autostart"] = True
+        if p.observe_only:
+            svc["observe_only"] = True
+        if p.adapter:
+            svc["adapter"] = p.adapter
+        svc["components"] = [comp_dict(c) for c in p.components]
+        svc["dependencies"] = [dep_dict(x) for x in p.dependencies]
+        return 200, {"ok": True, "service_id": sid, "definition": svc,
+                     "project_id": p.project,
+                     "revision": _registry.project(p.project or sid) or {}}
+    except Exception as e:  # noqa: BLE001
+        return _fail(e)
+
+
 def handle_service_remove_preview(sid: str, ctl) -> tuple[int, dict]:
     """GET /api/services/<sid>/remove-preview（V2.1）：零副作用。"""
     try:

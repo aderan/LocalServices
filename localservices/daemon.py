@@ -131,6 +131,10 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 self._send(*register_api.handle_service_remove_preview(m.group(1), self.ctl))
                 return
+            m = re.fullmatch(r"/api/services/([\w-]+)/definition", u.path)
+            if m:
+                self._send(*register_api.handle_service_definition(m.group(1)))
+                return
             m = re.fullmatch(r"/api/services/([\w-]+)/overrides", u.path)
             if m:
                 self._send(*register_api.handle_overrides_get(m.group(1)))

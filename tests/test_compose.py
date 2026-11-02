@@ -196,13 +196,16 @@ class StopComponentTest(ComposeBase):
 
 
 class ResolutionTest(ComposeBase):
-    def test_container_name_via_labels_then_fallback(self):
+    def test_container_name_via_labels_only(self):
         self.add_container("custom-db-1", service="db", project="demo")
         self.component.compose_service = "db"
         self.assertEqual(compose.container_name(self.project, self.component), "custom-db-1")
-        # 无标签匹配时回退 <project>-<service>-1 字面名
+        # R04（V2 复核）：名字回退已移除——无标签匹配的同名容器绝不认领（归属不明不能启动/停止）
         self.component.compose_service = "web"
         self.add_container("demo-web-1", service="other", project="other")
+        self.assertIsNone(compose.container_name(self.project, self.component))
+        # 同名且标签匹配本项目服务 → 认领
+        self.add_container("demo-web-1", service="web", project="demo")
         self.assertEqual(compose.container_name(self.project, self.component), "demo-web-1")
         # 完全没有 → None
         self.ps_rows.clear()

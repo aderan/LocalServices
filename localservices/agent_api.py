@@ -22,6 +22,10 @@ from pathlib import Path
 from . import paths
 from .agents import base, detect, invoke
 from .agents.base import KINDS
+# 复用 controller.redact 的 SECRET_RE 家族（键值对/bearer/URL 凭据/DSN/长十六进制）。
+# controller 不 import agents/agent_api，无循环依赖；controller.py 为 Integrator 所有，
+# 此处只读复用，绝不修改。
+from .controller import redact as _redact_text
 
 MAX_VERIFY_TIMEOUT = 180.0
 MAX_ANALYZE_TIMEOUT = 600.0
@@ -193,8 +197,9 @@ def handle_agents_candidates() -> tuple[int, dict]:
 
 
 def _cmd_summary(cmd: list[str]) -> str:
-    """组件命令摘要（仅清单层信息；绝不包含 env 值）。"""
-    argv = [str(x) for x in (cmd or [])]
+    """组件命令摘要（仅清单层信息；绝不包含 env 值）。
+    argv 元素逐个过字符串脱敏：--password=<val>、URL token= 等绝不进上下文。"""
+    argv = [_redact_text(str(x)) for x in (cmd or [])]
     head = " ".join(argv[:4])
     return head + (" …" if len(argv) > 4 else "")
 
@@ -202,11 +207,52 @@ def _cmd_summary(cmd: list[str]) -> str:
 _SECRET_KEY_RE = re.compile(r"(secret|token|password|passwd|credential|api[_-]?key|private[_-]?key)", re.I)
 
 
-def _redact_override(key: str, value):
-    """覆盖层值只承载清单层字段；键名带敏感信号的值一律脱敏（宁严勿漏）。"""
-    if _SECRET_KEY_RE.search(str(key)):
+# env 形态 dict 的判定：父键名是 env（含 dotted 覆盖路径 "components[x].env"），
+# 或全部键形如经典环境变量名（UPPER_SNAKE）。
+_ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def _env_like(d: dict, key) -> bool:
+    if isinstance(key, str) and (key == "env" or key.endswith(".env")):
+        return True
+    keys = list(d.keys())
+    return (bool(keys) and all(isinstance(k, str) and _ENV_NAME_RE.match(k) for k in keys))
+
+
+def _env_value(value):
+    """env 变量值投影：字符串过 redact（保留 127.0.0.1 等非敏感值）；非标量只留引用指示。"""
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return "***"
+
+
+def _sanitize(value, key: str | None = None):
+    """递归脱敏进入项目上下文的一切数据（R01：边界=模型请求构造前的上下文层）。
+
+    - 敏感键（password/token/...）：任意类型值一律 "***"（宁严勿漏，dict 值也不例外）；
+    - env 形态 dict：投影为变量名 + 非敏感值（{"DB_PASSWORD": "***", "DB_HOST": "127.0.0.1"}）；
+    - 字符串：过 controller.redact（掩掉 token=/--password=/DSN/bearer 等模式子串）；
+    - list/dict 递归（列表元素继承父键提示，深层嵌套同样命中）。"""
+    if key is not None and _SECRET_KEY_RE.search(str(key)):
         return "***"
+    if isinstance(value, dict):
+        if _env_like(value, key):
+            return {str(k): _env_value(v) if not _SECRET_KEY_RE.search(str(k))
+                    else "***" for k, v in value.items()}
+        return {str(k): _sanitize(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize(v, key) for v in value]
+    if isinstance(value, str):
+        return _redact_text(value)
     return value
+
+
+def _redact_override(key: str, value):
+    """覆盖层值只承载清单层字段；键名带敏感信号的值一律脱敏（宁严勿漏）。
+    R01：值本身可能是 dict/list（如 components[api].env），必须递归脱敏。"""
+    return _sanitize(value, str(key))
 
 
 def _overrides_raw() -> dict:
@@ -266,7 +312,9 @@ def build_project_context(pid: str) -> dict | None:
     """V2.10 目标项目上下文：项目/既有服务/覆盖层/资源摘要。
 
     防御式：registry/manifest/overrides/resources 任何一层失败都只降级（缺省/空），
-    项目不存在返回 None（调用方据此 400）。上下文只含清单层字段——绝不含 env 值。"""
+    项目不存在返回 None（调用方据此 400）。上下文只含清单层字段——绝不含 env 值；
+    R01：返回前对整个上下文递归脱敏（敏感键→"***"、env 投影为名字+非敏感值、
+    字符串过 redact），使嵌套覆盖值/argv 摘要中的秘密无法到达模型请求。"""
     try:
         from .registry import Registry
         proj = Registry().project(pid)
@@ -306,7 +354,8 @@ def build_project_context(pid: str) -> dict | None:
     ctx["services"] = services
     ctx["overrides"] = _project_overrides(seen)
     ctx["resources"] = _resources_summary()
-    return ctx
+    # R01：整个上下文（含覆盖层任意嵌套值、cmd 摘要、资源字段）递归脱敏后才可进入 prompt。
+    return _sanitize(ctx)
 
 
 def handle_analyze(body: dict) -> tuple[int, dict]:

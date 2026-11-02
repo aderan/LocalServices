@@ -2,13 +2,18 @@
 
 overrides.json = {"schemaVersion": 1, "services": {<sid>: {"fields": {<dotted path>: value},
 "updated_at": ...}}}。路径形如 `name`、`description`、`open`（清单顶层）与
-`components[<cid>].<field>`（组件字段）。注册合并时覆盖层优先生效：payload
-`service.accept_new` 显式清除指定覆盖，`service.edited` 在注册成功后把用户编辑的
-最终值写入覆盖层——因此 dry_run 的 diff 在应用覆盖后计算，预览 = 实际。
+`components[<cid>].<field>[.<subfield>...]`（组件字段，支持任意嵌套，如
+`components[api].ready.http`、`components[api].env.DB_HOST`）。
+
+合并优先级（R06 修订）：**本次用户编辑（payload service.edited 列出的路径）> 旧人工覆盖
+> 模型候选**——注册应用覆盖前先跳过本次 edited 的路径（用户编辑直接生效），注册成功后
+把 edited 路径的最终值写回覆盖层（覆盖旧值）。payload `service.accept_new` 显式清除
+指定覆盖。dry_run 的 diff 用同一合并计算，预览 = 实际。
 
 本模块自带原子写与进程内锁；注册事务需要把 overrides.json 并入同一原子提交时，
 用 `plan_*` 变体拿到新文件字节（不落盘），再由调用方随其余文件一起提交
-（`commit` / Registry._atomic_commit）。
+（`commit` / Registry._atomic_commit）。纯函数（apply_fields/_get_path/_set_path）
+与 GUI 共用同一嵌套路径契约。
 """
 
 from __future__ import annotations
@@ -29,7 +34,11 @@ _lock = threading.RLock()
 
 # 顶层可覆盖字段（V2.3 契约限定；source/id 等身份字段绝不可覆盖）
 TOP_FIELDS = ("name", "description", "open")
-_COMP_PATH_RE = re.compile(r"^components\[([A-Za-z0-9_-]+)\]\.([A-Za-z_][A-Za-z0-9_-]*)$")
+# 嵌套路径的根容器（成员按 id/name 定位，不得凭空发明成员）
+_SECTION_ROOTS = ("components", "dependencies")
+_MISSING = object()
+# 单段 token：`name`、`components[api]`、`[KEY]`（env 键等）
+_TOKEN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)?(?:\[([A-Za-z0-9_-]+)\])?$")
 
 
 def _now() -> str:
@@ -74,38 +83,116 @@ def commit(data_bytes: bytes) -> None:
 
 # ---------------------------------------------------------------- 路径读写
 
+def _parse_path(path: str) -> list[tuple[str | None, str | None]] | None:
+    """dotted path → [(name, index|None), ...]。
+
+    `name` → [("name", None)]；`components[api].ready.http` →
+    [("components","api"), ("ready",None), ("http",None)]。任一段非法 → None。
+    """
+    tokens: list[tuple[str | None, str | None]] = []
+    for part in (path or "").split("."):
+        m = _TOKEN_RE.match(part)
+        if not m or (m.group(1) is None and m.group(2) is None):
+            return None
+        tokens.append((m.group(1), m.group(2)))
+    return tokens or None
+
+
 def _valid_path(path: str) -> bool:
-    return path in TOP_FIELDS or bool(_COMP_PATH_RE.match(path or ""))
+    """顶层白名单字段，或 components/dependencies 下的任意嵌套路径（至少一层字段）。"""
+    if path in TOP_FIELDS:
+        return True
+    toks = _parse_path(path or "")
+    if not toks or len(toks) < 2:
+        return False
+    name, idx = toks[0]
+    return idx is not None and name in _SECTION_ROOTS
+
+
+def _descend(cur, name: str | None, idx: str | None):
+    """按 token 下潜一层；list 按 id/name 定位成员，dict 按键取值。缺路 → _MISSING。"""
+    if name is not None:
+        if not isinstance(cur, dict) or name not in cur:
+            return _MISSING
+        cur = cur[name]
+    if idx is not None:
+        if isinstance(cur, dict):
+            return cur[idx] if idx in cur else _MISSING
+        if isinstance(cur, list):
+            for item in cur:
+                if isinstance(item, dict) and idx in (item.get("id"), item.get("name")):
+                    return item
+        return _MISSING
+    return cur
+
+
+def _descend_set(cur, name: str | None, idx: str | None):
+    """set 路径的下潜：缺失的 dict 中间层补建；components/dependencies 成员不得凭空发明。"""
+    if name is not None:
+        if not isinstance(cur, dict):
+            return _MISSING
+        if name not in cur:
+            if name in _SECTION_ROOTS:
+                return _MISSING
+            cur[name] = {}
+        cur = cur[name]
+    if idx is not None:
+        if isinstance(cur, dict):
+            if idx not in cur:
+                cur[idx] = {}
+            return cur[idx]
+        if isinstance(cur, list):
+            for item in cur:
+                if isinstance(item, dict) and idx in (item.get("id"), item.get("name")):
+                    return item
+        return _MISSING
+    return cur
 
 
 def _get_path(definition: dict, path: str):
-    """从清单层定义取 dotted path 的当前值；路径不存在返回 None。"""
-    if path in TOP_FIELDS:
-        return definition.get(path)
-    m = _COMP_PATH_RE.match(path or "")
-    if not m:
+    """从清单层定义取 dotted path（任意嵌套）的当前值；路径不存在返回 None。"""
+    toks = _parse_path(path)
+    if not toks:
         return None
-    cid, field = m.group(1), m.group(2)
-    for c in definition.get("components", []) or []:
-        if isinstance(c, dict) and c.get("id") == cid:
-            return c.get(field)
-    return None
+    cur = definition
+    for name, idx in toks:
+        cur = _descend(cur, name, idx)
+        if cur is _MISSING:
+            return None
+    return cur
 
 
 def _set_path(definition: dict, path: str, value) -> bool:
-    """把值写入定义的 dotted path；未知路径/缺失组件返回 False（忽略，不报错）。"""
-    if not _valid_path(path):
+    """把值写入定义的 dotted path（任意嵌套）；未知路径/缺失成员返回 False（忽略，不报错）。"""
+    toks = _parse_path(path) if _valid_path(path) else None
+    if not toks:
         return False
-    if path in TOP_FIELDS:
-        definition[path] = value
+    cur = definition
+    for name, idx in toks[:-1]:
+        cur = _descend_set(cur, name, idx)
+        if cur is _MISSING:
+            return False
+    name, idx = toks[-1]
+    if name is not None and idx is not None:
+        # `env[KEY]` 形式的最后一段：定位/补建 name 容器后按键写值
+        if not isinstance(cur, dict):
+            return False
+        child = cur.get(name)
+        if not isinstance(child, dict):
+            if name in cur:
+                return False  # 已有标量：不覆盖成容器
+            child = cur[name] = {}
+        child[idx] = value
         return True
-    m = _COMP_PATH_RE.match(path)
-    cid, field = m.group(1), m.group(2)
-    for c in definition.get("components", []) or []:
-        if isinstance(c, dict) and c.get("id") == cid:
-            c[field] = value
-            return True
-    return False
+    if name is not None:
+        if not isinstance(cur, dict):
+            return False
+        cur[name] = value
+        return True
+    if idx is not None and isinstance(cur, dict):
+        cur[idx] = value
+        return True
+    return False  # list 成员不得整体替换
 
 
 # ---------------------------------------------------------------- 查询
@@ -135,7 +222,7 @@ def snapshot(sid: str) -> dict:
 # ---------------------------------------------------------------- 应用与变更
 
 def apply_fields(definition: dict, flds: dict) -> dict:
-    """把覆盖字段应用到定义的副本上（覆盖层优先；未知路径忽略）。"""
+    """把覆盖字段应用到定义的副本上（覆盖层优先；未知路径忽略；支持嵌套 dotted path）。"""
     out = copy.deepcopy(definition)
     for path, value in (flds or {}).items():
         _set_path(out, path, value)
@@ -147,14 +234,23 @@ def apply(sid: str, definition: dict) -> dict:
     return apply_fields(definition, fields(sid))
 
 
-def effective_fields(sid: str, accept=None) -> dict:
-    """应用 accept_new 之后的生效覆盖（纯读：payload accept 清除在写盘前生效）。"""
+def effective_fields(sid: str, accept=None, edited=()) -> dict:
+    """应用 accept_new 与**本次 edited 路径旁路**之后的生效覆盖（纯读）。
+
+    合并优先级（R06）：本次用户编辑（edited）> 旧人工覆盖 > 模型候选——
+    edited 列出的路径本次直接用 payload 值，旧覆盖不参与比较/写盘；
+    随后 `plan(edited=...)` 会把这些路径的最终值写回覆盖层（覆盖旧值）。
+    """
     flds = fields(sid)
-    if not accept or not flds:
-        return flds
-    if "*" in accept:
+    if not flds:
         return {}
-    return {p: v for p, v in flds.items() if p not in set(accept)}
+    if accept:
+        if "*" in accept:
+            return {}
+        flds = {p: v for p, v in flds.items() if p not in set(accept)}
+    if edited:
+        flds = {p: v for p, v in flds.items() if p not in set(edited)}
+    return flds
 
 
 def plan(sid: str, accept=None, edited=(), final_definition: dict | None = None) -> bytes | None:
@@ -224,6 +320,27 @@ def plan_restore(sid: str, snap: dict) -> bytes | None:
         else:
             return None
         return _dump(data)
+
+
+def plan_restore_many(items) -> bytes | None:
+    """整项目恢复：把多个成员的归档覆盖层**合并进同一份** overrides.json（R03）。
+
+    一次事务只能写同一目标路径一次——逐成员 plan_restore 会把 overrides.json
+    重复加入 _atomic_commit；这里一次累计全部变更，单次写入。无变化返回 None。
+    """
+    with _lock:
+        data = _load()
+        changed = False
+        for sid, snap in items:
+            flds = (snap or {}).get("fields") or {}
+            if flds:
+                data["services"][sid] = {"fields": dict(flds),
+                                         "updated_at": (snap or {}).get("updated_at") or _now()}
+                changed = True
+            elif sid in data["services"]:
+                del data["services"][sid]
+                changed = True
+        return _dump(data) if changed else None
 
 
 # ---------------------------------------------------------------- 即刻写入口

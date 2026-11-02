@@ -560,6 +560,12 @@ async function importCandidate(path) {
   } catch (e) { setConn(false); }
 }
 
+// V2.6/R08：消费者（谁引用）、归属（共享/独占）、bind_mounts、已停止徽标——数据都在盘点响应里
+function resourceConsumers(rid) { return (resourcesData?.consumers?.[rid]) || []; }
+function consumerProject(sid) {
+  return (registry?.services || []).find(s => s.id === sid)?.project || null;
+}
+
 function viewResources() {
   if (!resourcesData) return `<div class="empty">加载中…</div>`;
   if (!resourcesData.ok) return `<section class="card"><div class="card-head"><h3>Docker 不可达</h3></div>
@@ -570,16 +576,27 @@ function viewResources() {
       r.name.toLowerCase().includes(q) || (r.image || "").toLowerCase().includes(q)).map(r => {
     const ports = Object.entries(r.ports || {}).map(([k, v]) =>
       esc(k) + " → " + v.map(b => b.host_port).join("/")).join("<br>") || "—";
+    const rid = r.id || ("container:" + r.name);
+    const cons = resourceConsumers(rid);
+    const projects = [...new Set(cons.map(x => consumerProject(x.service)).filter(Boolean))];
+    const ownership = !cons.length ? "未被引用"
+      : projects.length > 1 ? "共享（多项目引用）"
+      : `由 ${cons.map(x => esc(x.service)).join("、")} 使用`;
+    const consCell = cons.map(x =>
+      `${esc(x.service)}（via ${esc(x.via || "dependency")}）[${x.running ? "运行中" : "未运行"}]`).join("<br>") || "—";
+    const binds = (r.bind_mounts || []).map(b => `${esc(b.source)}→${esc(b.target)}`).join("<br>") || "—";
+    const stateCell = esc(r.state) + (r.state && r.state !== "running" ? ` <span class="badge mut">已停止</span>` : "");
     return `<tr><td style="font-weight:600">${esc(r.name)}</td><td>${esc(r.image || "—")}</td>
-      <td>${esc(r.state)}</td><td>${esc(r.health || "none")}</td>
+      <td>${stateCell}</td><td>${esc(r.health || "none")}</td>
       <td>${esc(r.compose_project || "—")}${r.compose_service ? " / " + esc(r.compose_service) : ""}</td>
-      <td>${ports}</td><td>${esc((r.volumes || []).join(", ") || "—")}</td></tr>`;
+      <td>${ports}</td><td>${esc((r.volumes || []).join(", ") || "—")}</td>
+      <td>${binds}</td><td>${consCell}</td><td>${ownership}</td></tr>`;
   }).join("");
   return `<section class="card">
-    <div class="card-head"><h3>共享资源</h3><span class="note">docker context：${esc(resourcesData.docker_context || "default")} · 只读盘点</span></div>
+    <div class="card-head"><h3>共享资源</h3><span class="note">docker context：${esc(resourcesData.docker_context || "default")} · 只读盘点（含已停止容器）· 归属/消费者由清单推导</span></div>
     <div class="table-scroll"><table>
-      <tr><td class="k">名称</td><td class="k">镜像</td><td class="k">状态</td><td class="k">健康</td><td class="k">compose 项目</td><td class="k">端口映射</td><td class="k">卷</td></tr>
-      ${rows || `<tr><td class="muted">（无运行中的容器）</td></tr>`}
+      <tr><td class="k">名称</td><td class="k">镜像</td><td class="k">状态</td><td class="k">健康</td><td class="k">compose 项目</td><td class="k">端口映射</td><td class="k">卷</td><td class="k">bind_mounts</td><td class="k">消费者</td><td class="k">归属</td></tr>
+      ${rows || `<tr><td class="muted">（无容器）</td></tr>`}
     </table></div></section>`;
 }
 
@@ -641,12 +658,12 @@ function viewNewProject() {
         ${w.project
           ? `<button class="primary" onclick="wizAnalyzePresetDirs()" ${busy("wiz-create") ? "disabled" : ""}>识别所选目录</button>
              <button onclick="wizStartManual()">手动添加服务</button>
-             <span class="inline-note">已选用项目 ${esc(w.project.id)}（${w.presetDirs.filter(d => d.sel).length}/${w.presetDirs.length} 目录）</span>`
+             <span class="inline-note">已选用项目 ${esc(w.project.id)}（${(w.presetDirs || []).filter(d => d.sel).length}/${(w.presetDirs || []).length} 目录）</span>`
           : `<button class="primary" onclick="wizCreateProject()" ${busy("wiz-create") ? "disabled" : ""}>${busy("wiz-create") ? "创建中…" : "创建项目"}</button>
              <button onclick="wizStartManual()">跳过识别，手动添加服务</button>`}
       </div>
-      ${w.presetDirs.length ? `<div class="card-head"><h3 style="font-size:14px">项目目录（多选 = 联合识别，逐目录分析后合并候选）</h3></div>
-        ${w.presetDirs.map((d, i) => `<label style="display:flex;align-items:center;gap:6px;margin:2px 0">
+      ${(w.presetDirs || []).length ? `<div class="card-head"><h3 style="font-size:14px">项目目录（多选 = 联合识别，逐目录分析后合并候选）</h3></div>
+        ${(w.presetDirs || []).map((d, i) => `<label style="display:flex;align-items:center;gap:6px;margin:2px 0">
           <input type="checkbox" ${d.sel ? "checked" : ""} onchange="wizTogglePresetDir(${i})"> ${esc(d.path)}</label>`).join("")}` : ""}
       ${w.error ? `<div class="msg bad">${esc(w.error)}</div>` : ""}
     </section>`;
@@ -676,22 +693,31 @@ function viewNewProject() {
       <section class="card"><div class="card-head"><h3>2 · 识别（${esc(w.agent)}，任务 ${esc(w.jobId || "")}）</h3></div>
       ${projNote}
       <p class="note">${running ? "进行中…（只读分析，默认最长 240 秒；本页每 2 秒轮询）" : job.state === "done" ? "完成" : "未完成"}</p>
-      ${errBox}${w.unresolved.length ? `<p class="reason warn">未解决项：${w.unresolved.map(esc).join("；")}</p>` : ""}
+      ${errBox}${(w.unresolved || []).length ? `<p class="reason warn">未解决项：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}
       </section>`;
   }
 
-  // step === review（进入时预取每候选与已登记服务的差异预览，dry_run 不落盘）
+  // step === review（进入时预取每候选与已登记服务的差异预览，dry_run 不落盘；R08 复用资源懒加载）
   if (!w._diffFetched && w.project) { w._diffFetched = true; w.candidates.forEach((_, i) => wizPrefetchDiff(i)); }
+  if (!w._resFetched && w.project) { w._resFetched = true; wizLoadResources(); }
   const candCards = w.candidates.map((c, i) => {
     const r = w.results[i];
     const d = w.diffs[i];
+    const editedNow = candidateEditedPaths(c);   // R06：本次审核中用户改过的字段（优先于旧覆盖）
     const advKeys = c.components?.flatMap(k => COMP_FWD_KEYS.filter(f => k[f] !== null && k[f] !== undefined && !(Array.isArray(k[f]) && !k[f].length))) || [];
-    const diffBox = d && d.action === "diff"
+    const diffBox = d && (d.action === "diff" || d.action === "duplicate")
       ? (d.diff?.length
-          ? `<details class="diffbox"><summary>与已登记服务 ${esc(d.service_id)} 匹配：${d.diff.length} 项差异（你的修改优先生效 / 你的覆盖优先生效）</summary>
-             <table>${d.diff.map(x => `<tr><td class="k">${esc(x.field)}</td><td>${esc(JSON.stringify(x.old) ?? "")}</td><td>→</td><td>${esc(JSON.stringify(x.new) ?? "")}</td>
-               <td>${d.overrideFields && d.overrideFields.includes(x.field) ? `<button onclick="wizAcceptNew(${i}, '${esc(x.field)}')">采用新值</button>` : ""}</td></tr>`).join("")}</table>
-             ${d.overrideFields?.length ? `<p class="inline-note">你的覆盖优先生效：命中覆盖的字段可点「采用新值」（注册时随 accept_new 清除该覆盖）</p>` : ""}</details>`
+          ? `<details class="diffbox"><summary>与已登记服务 ${esc(d.service_id)} 匹配：${d.diff.length} 项差异（你的修改优先生效；你的覆盖优先生效，但本次编辑优先）</summary>
+             <table>${d.diff.map(x => {
+               const isEdited = editedNow.includes(x.field);
+               const isOvr = !!(d.overrideFields && d.overrideFields.includes(x.field));
+               const cell = isOvr && !isEdited
+                 ? `<button onclick="wizAcceptNew(${i}, '${esc(x.field)}')">采用新值</button>`
+                 : isOvr && isEdited
+                   ? `<span class="inline-note">本次编辑优先（提交值即你的修改，注册后旧覆盖将被更新）</span>` : "";
+               return `<tr><td class="k">${esc(x.field)}</td><td>${esc(JSON.stringify(x.old) ?? "")}</td><td>→</td><td>${esc(JSON.stringify(x.new) ?? "")}</td><td>${cell}</td></tr>`;
+             }).join("")}</table>
+             ${d.overrideFields?.length ? `<p class="inline-note">你的覆盖优先生效，但本次编辑优先：仅未编辑且命中覆盖的字段可用「采用新值」（注册时随 accept_new 清除该覆盖）</p>` : ""}</details>`
           : `<p class="inline-note">与已登记服务 ${esc(d.service_id)} 内容一致（将返回 unchanged/duplicate，不产生重复登记）</p>`)
       : "";
     const res = r
@@ -701,6 +727,8 @@ function viewNewProject() {
           : `<div class="result-box bad">注册失败：${esc(r.res?.error || r.code)}${(r.res?.details || []).length ? `<div class="warnlist">${r.res.details.map(esc).join("；")}</div>` : ""}
              ${r.code === 409 ? "<br>版本冲突：已刷新修订号，可重试注册。" : ""}<button onclick="wizRegister()">重试注册</button></div>`)
       : "";
+    const provisionWarn = isComposeCand(c) && effectiveProvision(c) === "up" && !c._confirmed_provision
+      ? `<p class="reason warn">provision=up：需勾选「允许创建容器/拉镜像——由我确认」后才能注册（未确认时后台同样拒绝，注册前请确认）。</p>` : "";
     return `<div class="cand">
       <div class="cand-head">
         <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" ${c._sel !== false ? "checked" : ""} onchange="wizToggleCand(${i})"> 启用</label>
@@ -709,14 +737,40 @@ function viewNewProject() {
       <div class="field"><label>服务 id</label><input value="${esc(c.id)}" oninput="wizCandField(${i},'id',this.value)"></div>
       <div class="field"><label>名称</label><input value="${esc(c.name)}" oninput="wizCandField(${i},'name',this.value)"></div>
       <div class="field"><label>入口 URL</label><input value="${esc(c.open || "")}" placeholder="http://127.0.0.1:<端口>/" oninput="wizCandField(${i},'open',this.value)"></div>
-      ${(c.components || []).map((k, ci) => `<div class="comp-edit">
+      ${(c.components || []).map((k, ci) => compIsCompose(k, c) ? `<div class="comp-edit">
+        <div class="field"><label>组件 ${esc(k.id)}（compose）</label>
+          <span class="inline-note">compose 组件无需命令；字段可编辑，其余随注册保留</span></div>
+        <div class="field"><label>Compose service</label><input placeholder="compose 服务名（必填）" value="${esc(k.compose_service || c.compose_service || "")}" oninput="wizCompField(${i},${ci},'compose_service',this.value)"></div>
+        <div class="field"><label>Compose 项目</label><input placeholder="缺省=目录名" value="${esc(k.compose_project || c.compose_project || "")}" oninput="wizCompField(${i},${ci},'compose_project',this.value)"></div>
+        <div class="field"><label>Compose 文件</label><input placeholder="docker-compose.yml, compose.yaml, …" value="${esc((k.compose_files || c.compose_files || []).join(", "))}" oninput="wizCompField(${i},${ci},'compose_files',this.value)"></div>
+        <div class="field"><label>provision</label>
+          <select oninput="wizCompField(${i},${ci},'provision',this.value)" aria-label="compose provision">
+            <option value="existing" ${(k.provision || c.provision) !== "up" ? "selected" : ""}>existing（只启动已有容器）</option>
+            <option value="up" ${(k.provision || c.provision) === "up" ? "selected" : ""}>up（允许 compose up 创建/拉取）</option>
+          </select></div>
+        <div class="field"><label></label>
+          <input style="min-width:80px;max-width:110px" placeholder="端口" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)">
+          <input placeholder="探针 URL" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)"></div>
+      </div>` : `<div class="comp-edit">
         <div class="field"><label>组件 ${esc(k.id)}</label>
           <input placeholder="命令（空格分隔 argv）" value="${esc((k.cmd || []).join(" "))}" oninput="wizCompField(${i},${ci},'cmd',this.value)">
           <input style="min-width:80px;max-width:110px" placeholder="端口" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)">
           <input placeholder="探针 URL" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)"></div>
       </div>`).join("")}
+      ${isComposeCand(c) ? `<div class="field"><label>创建/拉取确认</label>
+        <label class="radio"><input type="checkbox" ${c._confirmed_provision ? "checked" : ""} onchange="wizConfirmProvision(${i}, this.checked)"> 允许创建容器/拉镜像——由我确认</label>
+        <span class="inline-note">provision=up 时必勾，否则后台拒绝注册</span></div>` : ""}
+      ${provisionWarn}
       ${c.dependencies?.length ? `<p class="inline-note">依赖 ${c.dependencies.length} 项（${c.dependencies.map(d => esc(d.name)).join("、")}）将随注册保留</p>` : ""}
+      ${(c.dependencies || []).map((d, di) => `<div class="field"><label>依赖 ${esc(d.name)} 复用选择</label>
+        <select onchange="wizBindDependency(${i},${di},this.value)" aria-label="复用已有容器">
+          <option value="" ${!d._bind ? "selected" : ""}>不绑定（保持识别值）</option>
+          ${wizResourceOptions(d).map(o => `<option value="${esc(o.name)}" ${d._bind === o.name ? "selected" : ""}>${esc(o.label)}</option>`).join("")}
+        </select>
+        <span class="inline-note">选择已有容器即自动带出 container/卷，无需手填</span></div>
+        ${d.container || d.volume ? `<p class="inline-note">当前绑定：container=${esc(d.container || "—")} · volume=${esc(d.volume || "—")}</p>` : ""}`).join("")}
       ${advKeys.length ? `<p class="inline-note">高级字段随注册保留：${[...new Set(advKeys)].map(esc).join("、")}</p>` : ""}
+      ${editedNow.length ? `<p class="inline-note">本次编辑（优先于旧覆盖）：${editedNow.map(esc).join("、")}</p>` : ""}
       ${diffBox}
       ${c.unresolved?.length ? `<p class="reason warn">需人工确认：${c.unresolved.map(esc).join("；")}</p>` : ""}
       ${res}
@@ -746,13 +800,13 @@ function viewNewProject() {
     </section>
     ${w.candidates.length ? `<section class="card"><div class="card-head"><h3>3 · 候选服务（${w.candidates.length}）</h3>
       <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || busy("wiz-reg") ? "disabled" : ""}>${w.registering || busy("wiz-reg") ? "注册中…" : "注册所选"}</button></div></div>
-      ${w.unresolved.length ? `<p class="reason warn">未解决项（不会静默丢弃）：${w.unresolved.map(esc).join("；")}</p>` : ""}
+      ${(w.unresolved || []).length ? `<p class="reason warn">未解决项（不会静默丢弃）：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}
       ${w.dupIds ? `<p class="inline-note">多目录同名服务已分配稳定 ID，可修改</p>` : ""}
       ${candCards}
     </section>` : `<section class="card"><p class="note">识别完成，但没有可用的候选。可重试、换 agent，或手动添加。</p>
       <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()">重试识别</button>
       <button onclick="wizStartManual()">手动添加服务</button></div>
-      ${w.unresolved.length ? `<p class="reason warn">未解决项：${w.unresolved.map(esc).join("；")}</p>` : ""}</section>`}
+      ${(w.unresolved || []).length ? `<p class="reason warn">未解决项：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}</section>`}
     ${manualForm}`;
 }
 
@@ -1115,18 +1169,20 @@ async function execProjectRemove(pid, disposition) {
   } catch (e) { setConn(false); return {code: 0, res: {error: "无法连接控制服务"}}; }
 }
 
-// ---------- 编辑对话框（dry_run diff → 确认注册，edited 路径入覆盖层） ----------
+// ---------- 编辑对话框（R05：完整定义保真编辑；dry_run diff → 确认注册，edited 路径入覆盖层） ----------
 
 function editBodyHtml(extra) {
   const e = editState;
   return `
-    <p class="modal-line muted">保存流程：先 dry_run 预览与已登记定义的差异，确认后才真正注册；改过的字段将记入覆盖层（edited）。GUI 看不到当前命令/端口时请按实际定义填写。</p>
+    <p class="modal-line muted">保存流程：先 dry_run 预览与已登记定义的差异，确认后才真正注册；改过的字段将记入覆盖层（edited）。${e.degraded ? "完整定义接口不可用，以下为降级编辑：GUI 看不到当前命令/端口，请按实际定义填写。" : "命令/端口/探针已按当前定义预填；未列出的字段（env、build、worker、compose 等）随注册原样保留，零变化。"}</p>
     <div class="field"><label>名称</label><input value="${esc(e.fields.name)}" oninput="editField('name', this.value)"></div>
     <div class="field"><label>描述</label><input value="${esc(e.fields.description)}" oninput="editField('description', this.value)"></div>
     <div class="field"><label>入口 URL</label><input value="${esc(e.fields.open)}" placeholder="http://127.0.0.1:<端口>/" oninput="editField('open', this.value)"></div>
     ${e.comps.map((c, i) => `<div class="comp-edit">
-      <div class="field"><label>组件 ${esc(c.id)}</label>
-        <textarea rows="2" placeholder="命令 argv（空格分隔，如 make serve-api）" oninput="editComp(${i}, 'cmd', this.value)">${esc(c.cmd.join(" "))}</textarea></div>
+      <div class="field"><label>组件 ${esc(c.id)}${(c.run || "local") === "compose" ? "（compose）" : ""}</label>
+        ${(c.run || "local") === "compose"
+          ? `<span class="inline-note">compose 组件（${esc(c.composeService || "?")}）：service/文件/provision 等字段随注册原样保留，无需命令</span>`
+          : `<textarea rows="2" placeholder="命令 argv（每行一个参数，如 make↵serve-api）" oninput="editComp(${i}, 'cmd', this.value)">${esc(c.cmd.join("\n"))}</textarea>`}</div>
       <div class="field"><label></label>
         <input style="min-width:80px;max-width:110px" placeholder="端口" value="${c.port ?? ""}" oninput="editComp(${i}, 'port', this.value)">
         <input placeholder="探针 http 路径" value="${esc(c.probe)}" oninput="editComp(${i}, 'probe', this.value)"></div>
@@ -1138,75 +1194,151 @@ function editField(key, value) { if (editState) editState.fields[key] = value; }
 function editComp(i, key, value) {
   if (!editState || !editState.comps[i]) return;
   const c = editState.comps[i];
-  if (key === "cmd") c.cmd = String(value).split(/\s+/).filter(Boolean);
+  if (key === "cmd") c.cmd = String(value).split("\n").map(s => s.trim()).filter(Boolean);
   if (key === "port") c.port = value ? parseInt(value, 10) || null : null;
   if (key === "probe") c.probe = value;
 }
 
-function editedPaths(e) {
-  // 与初始值对比生成 dotted paths（V2.3 service.edited：name / components[api].port …）
+// ---- V2.3/R06 嵌套 dotted path 契约（GUI 与后台同一文法）----
+// 组件字段按字段逐个产出：components[<id>].cmd / .port / .ready.http / .env.<KEY>；
+// 顶层仅 name / description / open（id/source 等身份字段绝不可覆盖）。
+function serviceEditedPaths(cur, orig) {
   const out = [];
+  const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   for (const k of ["name", "description", "open"])
-    if ((e.fields[k] || "") !== (e.initial.fields[k] || "")) out.push(k);
-  e.comps.forEach((c, i) => {
-    const init = e.initial.comps[i] || {cmd: [], port: null, probe: ""};
-    const prefix = "components[" + c.id + "]";
-    if ((c.cmd || []).join(" ") !== (init.cmd || []).join(" ")) out.push(prefix + ".cmd");
-    if ((c.port ?? null) !== (init.port ?? null)) out.push(prefix + ".port");
-    if ((c.probe || "") !== (init.probe || "")) out.push(prefix + ".ready.http");
+    if ((cur[k] ?? "") !== (orig[k] ?? "")) out.push(k);
+  const ocomps = (orig && orig.components) || [];
+  ((cur && cur.components) || []).forEach((c, i) => {
+    const o = ocomps[i] || {};
+    const prefix = "components[" + (c.id || o.id) + "]";
+    if ((c.cmd || []).join("\n") !== (o.cmd || []).join("\n")) out.push(prefix + ".cmd");
+    if ((c.port ?? null) !== (o.port ?? null)) out.push(prefix + ".port");
+    if (((c.ready || {}).http || "") !== ((o.ready || {}).http || "")) out.push(prefix + ".ready.http");
+    const env = c.env || {}, oenv = o.env || {};
+    for (const k of new Set([...Object.keys(env), ...Object.keys(oenv)]))
+      if (!eq(env[k], oenv[k])) out.push(prefix + ".env." + k);
   });
   return out;
+}
+
+// 编辑对话框当前态 → 与定义快照同构（供 serviceEditedPaths 比较）
+function editSnapshot(e) {
+  return {name: e.fields.name, description: e.fields.description, open: e.fields.open,
+          components: (e.comps || []).map(c => ({id: c.id, cmd: c.cmd || [], port: c.port ?? null,
+                                                 ready: c.probe ? {http: c.probe} : null, env: c.env || {}}))};
+}
+
+function editedPaths(e) {
+  // 与初始值对比生成 dotted paths（V2.3 service.edited：name / components[api].port / components[api].ready.http …）
+  return serviceEditedPaths(editSnapshot(e), e.initial || {});
+}
+
+// 候选审核卡：用户在审核阶段的编辑（相对识别原始值 _orig）——注册同样携带 edited，
+// 使「本次编辑」优先于旧覆盖（R06）。
+function candidateEditedPaths(c) {
+  return serviceEditedPaths(c, c && c._orig ? c._orig : c);
+}
+
+// R05：从完整定义构建注册 service——只有用户在对话框里改掉的值被替换，
+// 其余字段（worker/compose/env/build/install/after/依赖…）逐字节保真 ride through。
+function editFullService(e) {
+  const svc = JSON.parse(JSON.stringify(e.definition || {}));
+  svc.id = e.sid;
+  svc.name = e.fields.name;
+  svc.description = e.fields.description || "";
+  svc.open = e.fields.open || null;
+  svc.components = (svc.components || []).map(c => {
+    const ec = (e.comps || []).find(x => x.id === c.id);
+    if (!ec || c.kind === "generator") return c;   // 未在对话框展示：原样保留
+    const out = JSON.parse(JSON.stringify(c));
+    if ((out.run || "local") === "local") out.cmd = (ec.cmd || []).slice();
+    if (ec.port === null || ec.port === undefined || ec.port === "") { if ("port" in out) delete out.port; }
+    else out.port = ec.port;
+    const rd = Object.assign({}, out.ready || {});
+    if (ec.probe) rd.http = ec.probe; else delete rd.http;
+    if (Object.keys(rd).length) out.ready = rd; else delete out.ready;
+    return out;
+  });
+  return svc;
 }
 
 function editPayload(dryRun) {
   const e = editState;
   const regsvc = (registry?.services || []).find(s => s.id === e.sid);
-  const pid = (regsvc && regsvc.project) || "";
+  const pid = e.projectId || (regsvc && regsvc.project) || "";
   const proj = (registry?.registry?.projects || []).find(x => x.id === pid)
                || {id: pid || e.sid, name: pid || e.sid, revision: 0};
-  const source = (regsvc && regsvc.source) || (servicesById()[e.sid] || {}).source || "";
-  const cand = {id: e.sid, name: e.fields.name, description: e.fields.description,
-                open: e.fields.open || null, source_dir: null, _root: source,
-                components: e.comps.map(c => ({id: c.id, kind: "server", name: c.name,
-                  cmd: c.cmd, cwd: ".", port: c.port || null,
-                  ready: c.probe ? {http: c.probe} : null}))};
-  const payload = candPayload(cand, proj);
-  payload.revision = proj.revision ?? 0;
+  const svc = editFullService(e);   // R05：完整保真提交（未编辑字段零变化）
+  const source = svc.source || (regsvc && regsvc.source) || (servicesById()[e.sid] || {}).source || "";
+  const payload = {schemaVersion: 1, revision: proj.revision ?? 0,
+                   project: {id: proj.id, name: proj.name, agent: proj.agent || "none"},
+                   directories: [{path: source, role: "source"}],
+                   by: "gui", service: svc};
   if (!dryRun) payload.service.edited = editedPaths(e);
+  if (e._accept_new?.length) payload.service.accept_new = [...new Set(e._accept_new)];
   return payload;
 }
+
+// dry_run 预览（含覆盖层命中标注；R06：本次已编辑的字段不再算“覆盖保护”，未编辑的才可「采用新值」）
+async function editPreviewStep(handle) {
+  const e = editState;
+  let code = 0, res = null;
+  try { [code, res] = await api("POST", "/api/register", Object.assign(editPayload(true), {dry_run: true})); }
+  catch (err) { setConn(false); }
+  if (code !== 200 || !res || !res.ok) {
+    handle.setBody(editBodyHtml(`<p class="reason warn">dry_run 失败：${esc((res && res.error) || code || "无法连接控制服务")}</p>`));
+    return "keep";
+  }
+  let extra = "";
+  if (res.action === "incomplete") {
+    extra = `<p class="reason warn">payload 不完整：${esc((res.missing || []).join("、"))}（dry_run 不写草稿）</p>`;
+  } else if (res.action === "diff") {
+    let overrideFields = [];
+    try {  // 覆盖层端点未就绪（404/501）→ 静默降级为普通 diff
+      const [oc, o] = await api("GET", `/api/services/${res.service_id}/overrides`);
+      if (oc === 200 && o && o.ok) overrideFields = Object.keys(o.fields || {});
+    } catch (e2) { /* 不阻塞 diff */ }
+    const editedNow = editedPaths(e);
+    const rows = (res.diff || []).map(x => {
+      const isEdited = editedNow.includes(x.field);
+      const isOvr = overrideFields.includes(x.field);
+      const cell = isOvr && !isEdited
+        ? `<button onclick="editAcceptNew('${esc(x.field)}')">采用新值</button>`
+        : isOvr && isEdited
+          ? `<span class="inline-note">本次编辑优先（提交值即你的修改，注册后旧覆盖将被更新）</span>` : "";
+      return `<tr><td class="k">${esc(x.field)}</td><td>${esc(JSON.stringify(x.old) ?? "")}</td><td>→</td><td>${esc(JSON.stringify(x.new) ?? "")}</td><td>${cell}</td></tr>`;
+    }).join("");
+    extra = `<p class="inline-note">与已登记服务 ${esc(res.service_id)} 的差异${overrideFields.length ? "（你的覆盖优先生效，但本次编辑优先：仅未编辑且命中覆盖的字段可用「采用新值」）" : ""}：</p>
+      <div class="table-scroll"><table>${rows || `<tr><td class="muted">（无差异，注册将返回 unchanged）</td></tr>`}</table></div>`;
+  } else {
+    extra = `<p class="inline-note">dry_run 结果：${esc(res.action || "?")}</p>`;
+  }
+  e.confirmed = true;
+  handle.setOkDanger(true);
+  handle.setOkText("确认注册");
+  handle.setBody(editBodyHtml(extra));
+  return "keep";
+}
+
+// V2.3「采用新值」：接受新识别值、清除该字段的旧覆盖（编辑对话框侧）
+function editAcceptNew(field) {
+  const e = editState;
+  if (!e || !field) return;
+  e._accept_new = [...new Set([...(e._accept_new || []), field])];
+  if (e._handle) { e.confirmed = false; handleReset(e._handle); editPreviewStep(e._handle); }
+}
+function handleReset(handle) { handle.setOkDanger(false); handle.setOkText("预览修改（dry_run）"); }
 
 async function editOnOk(body, handle) {
   const e = editState;
   if (!e) return true;
+  e._handle = handle;
   if (!e.confirmed) {
-    if (e.comps.some(c => !c.cmd.length)) {
-      handle.setBody(editBodyHtml(`<p class="reason warn">组件命令为必填（当前值 GUI 不可见，请按实际定义填写后再预览）。</p>`));
+    if (e.comps.some(c => (c.run || "local") === "local" && !(c.cmd || []).length)) {
+      handle.setBody(editBodyHtml(`<p class="reason warn">本地组件命令为必填（当前值 GUI 不可见，请按实际定义填写后再预览）。</p>`));
       return "keep";
     }
-    let code = 0, res = null;
-    try { [code, res] = await api("POST", "/api/register", Object.assign(editPayload(true), {dry_run: true})); }
-    catch (err) { setConn(false); }
-    if (code !== 200 || !res || !res.ok) {
-      handle.setBody(editBodyHtml(`<p class="reason warn">dry_run 失败：${esc((res && res.error) || code || "无法连接控制服务")}</p>`));
-      return "keep";
-    }
-    let extra = "";
-    if (res.action === "incomplete") {
-      extra = `<p class="reason warn">payload 不完整：${esc((res.missing || []).join("、"))}（dry_run 不写草稿）</p>`;
-    } else if (res.action === "diff") {
-      const rows = (res.diff || []).map(x =>
-        `<tr><td class="k">${esc(x.field)}</td><td>${esc(JSON.stringify(x.old) ?? "")}</td><td>→</td><td>${esc(JSON.stringify(x.new) ?? "")}</td></tr>`).join("");
-      extra = `<p class="inline-note">与已登记服务 ${esc(res.service_id)} 的差异（你的覆盖优先生效）：</p>
-        <div class="table-scroll"><table>${rows || `<tr><td class="muted">（无差异，注册将返回 unchanged）</td></tr>`}</table></div>`;
-    } else {
-      extra = `<p class="inline-note">dry_run 结果：${esc(res.action || "?")}</p>`;
-    }
-    e.confirmed = true;
-    handle.setOkDanger(true);
-    handle.setOkText("确认注册");
-    handle.setBody(editBodyHtml(extra));
-    return "keep";
+    return await editPreviewStep(handle);
   }
   // 第二步：真正注册（service.edited = 用户改过的 dotted paths → 注册成功后写入覆盖层）
   let code = 0, res = null;
@@ -1223,18 +1355,46 @@ async function editOnOk(body, handle) {
   return true;
 }
 
-function editService(sid) {
+async function editService(sid) {
   const p = servicesById()[sid];
   if (!p) return;
-  const comps = (p.components || []).filter(c => c.kind !== "generator")
-      .map(c => ({id: c.id, name: c.name || c.id, cmd: [], port: null, probe: ""}));
-  editState = {sid, confirmed: false,
-               fields: {name: p.name || sid, description: p.description || "", open: ""},
-               comps: comps.length ? comps : [{id: "main", name: "main", cmd: [], port: null, probe: ""}]};
-  editState.initial = {fields: Object.assign({}, editState.fields),
-                       comps: editState.comps.map(c => Object.assign({}, c))};
+  // R05：先取完整当前定义（认证端点），以完整保真对象编辑——不为改名称重写整个启动配置
+  let defRes = null;
+  try {
+    const [code, res] = await api("GET", `/api/services/${sid}/definition`);
+    if (code === 200 && res && res.ok) defRes = res;
+  } catch (e) { /* 网络异常 → 降级 */ }
+  const def = (defRes && defRes.definition) || legacyDefinitionFromSnap(p);
+  editState = {sid, confirmed: false, degraded: !defRes,
+               definition: def, projectId: defRes?.project_id || null,
+               fields: {name: def.name || sid, description: def.description || "", open: def.open || ""},
+               comps: (def.components || []).filter(c => c.kind !== "generator")
+                 .map(c => ({id: c.id, name: c.name || c.id,
+                             run: (c.run === "compose" || c.compose_service) ? "compose" : "local",
+                             composeService: c.compose_service || "",
+                             cmd: Array.isArray(c.cmd) ? c.cmd.slice() : [],
+                             port: c.port ?? null, probe: (c.ready && c.ready.http) || "",
+                             env: c.env || null}))};
+  if (!editState.comps.length)
+    editState.comps = [{id: "main", name: "main", run: "local", probe: "", cmd: [], port: null, env: null}];
+  editState.initial = {name: editState.fields.name, description: editState.fields.description,
+                       open: editState.fields.open,
+                       components: (def.components || [])
+                         .filter(c => c.kind !== "generator")
+                         .map(c => ({id: c.id, cmd: Array.isArray(c.cmd) ? c.cmd : [],
+                                     port: c.port ?? null,
+                                     ready: (c.ready && c.ready.http) ? {http: c.ready.http} : null,
+                                     env: c.env || {}}))};
   return showModal({title: "编辑服务 " + sid, okText: "预览修改（dry_run）",
                     bodyHtml: editBodyHtml(), onOk: editOnOk});
+}
+
+// 定义端点不可用时的降级来源（旧行为：快照只知道组件 id/name——字段需用户手填）
+function legacyDefinitionFromSnap(p) {
+  const comps = (p.components || []).filter(c => c.kind !== "generator")
+    .map(c => ({id: c.id, kind: "server", name: c.name || c.id, cwd: ".", cmd: [], port: null}));
+  return {id: p.id, name: p.name || p.id, description: p.description || "", open: "",
+          source: p.source || "", components: comps, dependencies: []};
 }
 
 // ---------- 已移除登记视图（V2.2 恢复入口） ----------
@@ -1563,7 +1723,8 @@ async function wizPoll() {
     if (job.state === "done") {
       if (wiz.pollTimer) clearInterval(wiz.pollTimer);
       const r = job.result || {};
-      const fresh = (r.services || r.candidates || []).map(c => ({...c, _root: wiz.jobDir || wiz.dir}));
+      const fresh = (r.services || r.candidates || []).map(c => ({...c, _root: wiz.jobDir || wiz.dir,
+        _orig: JSON.parse(JSON.stringify(c))}));   // R06：审核期编辑 diff 的原始值基准
       wiz.candidates = wiz.candidates.concat(fresh);   // 多目录：合并候选（同身份注册时去重）
       wiz.unresolved = (wiz.unresolved || []).concat(r.unresolved || []);
       if (wiz.dirs && wiz.dirs.length) {               // 联合识别：继续下一个目录
@@ -1595,17 +1756,110 @@ function wizCompField(i, ci, key, value) {
   if (key === "cmd") c.cmd = value.split(/\s+/).filter(Boolean);
   if (key === "port") c.port = value ? parseInt(value, 10) || null : null;
   if (key === "ready") c.ready = value ? {http: value} : null;
+  // R07：compose 组件参数在候选卡中直接可编辑（不要求 cmd）
+  if (key === "compose_service") c.compose_service = value.trim() || null;
+  if (key === "compose_project") c.compose_project = value.trim() || null;
+  if (key === "compose_files") c.compose_files = value.split(",").map(s => s.trim()).filter(Boolean);
+  if (key === "provision") c.provision = value;
 }
 
-// V2.10 多目录候选消歧：批内同 id 冲突时，按目录出现顺序确定性分配 -2/-3 后缀
-// （首个保持原 id；改过的 id 仍可在候选卡中人工再改）。返回是否发生调整。
+// ---- V2.7/R07：compose 候选（LocalProcess | Compose 统一表达）----
+function compIsCompose(k, c) {
+  return !!(k && (k.run === "compose" || k.compose_service ||
+    (c && (c.run === "compose" || c.compose_service))));
+}
+function isComposeCand(c) {
+  return !!(c && ((c.components || []).some(k => compIsCompose(k, c)) ||
+    c.run === "compose" || c.compose_service));
+}
+function effectiveProvision(c) {
+  for (const k of (c?.components || []))
+    if (compIsCompose(k, c)) return k.provision || c.provision || "existing";
+  return c?.provision || "existing";
+}
+function wizConfirmProvision(i, checked) {
+  if (wiz.candidates[i]) wiz.candidates[i]._confirmed_provision = !!checked;
+  render();
+}
+
+// ---- V2.6/R08：资源复用绑定（Goal §6.2：不要求用户手填 container/name/volume）----
+async function wizLoadResources() {
+  try {
+    const [c, d] = await api("GET", "/api/resources");
+    wiz.resources = (c === 200 && d && d.ok) ? (d.resources || []) : [];
+  } catch (e) { wiz.resources = []; }
+  render();
+}
+
+function wizResourceOptions(dep) {
+  const scored = (wiz.resources || []).map(r => {
+    let why = "";
+    if (dep?.volume && (r.volumes || []).includes(dep.volume)) why = why ? why + "/卷" : "卷";
+    if (dep?.container && r.name === dep.container) why = why ? why + "/名称" : "名称";
+    return {name: r.name, why, r};
+  });
+  scored.sort((a, b) => (b.why ? 1 : 0) - (a.why ? 1 : 0));   // 匹配项排前，其余按盘点顺序
+  return scored.map(({name, why, r}) => ({
+    name,
+    label: `${name} · ${r.state || "?"}` +
+      `${r.compose_project ? " · " + r.compose_project + (r.compose_service ? "/" + r.compose_service : "") : ""}` +
+      ` · ${(r.volumes || []).join(",") || "无卷"}` +
+      (why ? `（匹配：${why}）` : ""),
+  }));
+}
+
+// 复用选择：选中容器 → 依赖 container=容器名；命名卷自动带出（声明的卷在容器上则保持）。
+// 「不绑定」恢复识别原值（候选携带的 container/volume 不被覆盖）。
+function wizBindDependency(i, di, name) {
+  const cand = wiz.candidates && wiz.candidates[i];
+  const d0 = cand && cand.dependencies && cand.dependencies[di];
+  if (!d0) return;
+  const d = cand.dependencies[di] = {...d0};
+  if (!name) {
+    if (d._bindOrig) { d.container = d._bindOrig.container || ""; d.volume = d._bindOrig.volume || ""; }
+    d._bind = "";
+    render();
+    return;
+  }
+  if (!d._bindOrig) d._bindOrig = {container: d.container || "", volume: d.volume || ""};
+  d.container = name;
+  const res = (wiz.resources || []).find(r => r.name === name);
+  const named = ((res && res.volumes) || []).filter(v => v && !v.startsWith("/"));
+  if (!(d.volume && named.includes(d.volume)) && named.length) d.volume = named[0];
+  d._bind = name;
+  render();
+}
+
+// V2.10 多目录候选消歧（R09 修复）：已占用集合 = 全部已登记服务 id ∪ 批内全部候选 id，
+// 每个重名候选按出现顺序取下一个空闲后缀（id、id-2、id-3…），分配即从占用集中消费——
+// 批内绝无重复，也绝不撞已登记 id。
+// 例外：候选与某已登记服务运行身份一致（同 source——GUI 可见的身份信号；cwd/cmd 的
+// 完整身份判定在后台 unchanged/duplicate 逻辑）→ 这是再识别/更新路径，保持原 id 不改名，
+// 否则会把“更新既有服务”变成“另建一条”。返回是否发生调整。
+function sameSource(a, b) {
+  const norm = s => String(s || "").replace(/\/+$/, "");
+  return !!a && !!b && norm(a) === norm(b);
+}
+function candSource(c) { return joinDir(c._root || wiz.dir || "", c.source_dir || "."); }
+
 function disambiguateIds(cands) {
-  const seen = {};
+  const registered = registry?.services || [];
+  const occupied = new Set(registered.map(s => s.id));
+  for (const c of (cands || []))
+    if (c && typeof c.id === "string" && c.id) occupied.add(c.id);
+  const claimed = new Set();   // 本批次中已被先前候选保住/分配的 id
   let adjusted = false;
   for (const c of (cands || [])) {
     if (!c || typeof c.id !== "string" || !c.id) continue;
-    seen[c.id] = (seen[c.id] || 0) + 1;
-    if (seen[c.id] > 1) { c.id = c.id + "-" + seen[c.id]; adjusted = true; }
+    const reg = registered.find(s => s.id === c.id);
+    if (reg && sameSource(candSource(c), reg.source)) continue;  // 再识别/更新路径：不改名
+    if (!reg && !claimed.has(c.id)) { claimed.add(c.id); continue; }   // 首个出现且未登记：保持
+    let n = 2, next = c.id + "-" + n;
+    while (occupied.has(next) || claimed.has(next)) { n += 1; next = c.id + "-" + n; }
+    c.id = next;
+    occupied.add(next);
+    claimed.add(next);
+    adjusted = true;
   }
   return adjusted;
 }
@@ -1631,9 +1885,27 @@ function fwdReady(k, port) {
 function candPayload(c, proj) {
   const root = c._root || wiz.dir;
   const source = joinDir(root, c.source_dir || ".");
+  const compNotes = [];
   const comps = (c.components || []).map(k => {
-    const out = {id: k.id, kind: k.kind || "server", name: k.name || k.id,
-                 cmd: k.cmd || [], cwd: k.cwd || "."};
+    const out = {id: k.id, kind: k.kind || "server", name: k.name || k.id};
+    if (compIsCompose(k, c)) {
+      // V2.7/R07：compose 参数必须转发（run/compose_service/compose_project/compose_files/provision），
+      // 组件级值优先、候选级值兜底；run=compose 无本地 cmd（不校验 cmd）。
+      out.run = "compose";
+      out.cwd = k.cwd || c.cwd || ".";
+      out.compose_service = k.compose_service || c.compose_service || null;
+      if (!out.compose_service) {
+        compNotes.push(`组件 ${k.id} 为 compose 但缺 compose_service，未随注册提交（请补填后重试）`);
+        return null;
+      }
+      if (k.compose_project || c.compose_project) out.compose_project = k.compose_project || c.compose_project;
+      if ((k.compose_files || []).length || (c.compose_files || []).length)
+        out.compose_files = (k.compose_files || []).length ? k.compose_files : c.compose_files;
+      out.provision = k.provision || c.provision || "existing";
+    } else {
+      out.cmd = k.cmd || [];
+      out.cwd = k.cwd || ".";
+    }
     if (k.port) out.port = k.port;
     const rd = fwdReady(k, k.port || null);
     if (rd) out.ready = rd;   // 无端口组件的探针（如固定外部端口）同样转发
@@ -1642,7 +1914,8 @@ function candPayload(c, proj) {
       if (v !== null && v !== undefined && !(Array.isArray(v) && !v.length)) out[f] = v;
     }
     return out;
-  });
+  }).filter(Boolean);
+  if (compNotes.length && c.unresolved) c.unresolved = c.unresolved.concat(compNotes);
   const depNotes = [];
   const deps = (c.dependencies || []).map(d => {
     const out = {name: d.name};
@@ -1656,7 +1929,7 @@ function candPayload(c, proj) {
       return null;
     }
     for (const f of ["affects", "required", "container", "volume", "note"])
-      if (d[f] !== null && d[f] !== undefined && d[f] !== "") out[f] = d[f];
+      if (d[f] !== null && d[f] !== undefined && d[f] !== "") out[f] = d[f];   // R08：复用绑定结果随注册提交
     return out;
   }).filter(Boolean);
   if (depNotes.length && c.unresolved) c.unresolved = c.unresolved.concat(depNotes);
@@ -1666,6 +1939,10 @@ function candPayload(c, proj) {
                           files: c.evidence?.files || [], unresolved: c.unresolved || []},
                components: comps};
   if (deps.length) svc.dependencies = deps;
+  if (comps.some(x => x.run === "compose") && c._confirmed_provision)
+    svc.confirmed_provision = true;   // R07：仅当用户勾选「允许创建容器/拉镜像」才携带
+  const edited = candidateEditedPaths(c);
+  if (edited.length) svc.edited = edited;   // R06/V2.3：审核期编辑随注册携带（本次编辑优先于旧覆盖）
   if (c._accept_new?.length) svc.accept_new = [...new Set(c._accept_new)];  // V2.3：显式清除指定覆盖
   return {schemaVersion: 1, revision: wiz.project?.revision || 0,
           project: {id: proj.id, name: proj.name, agent: wiz.agent || proj.agent || "none"},
@@ -1691,6 +1968,11 @@ async function wizRegister() {
   for (let i = 0; i < wiz.candidates.length; i++) {
     const c = wiz.candidates[i];
     if (c._sel === false) continue;
+    // R07：provision=up 未确认 → 后台必 400；GUI 先解释并拦下该条（其余候选不受影响）
+    if (isComposeCand(c) && effectiveProvision(c) === "up" && !c._confirmed_provision) {
+      wiz.results[i] = {code: 400, res: {error: "provision=up 需先勾选「允许创建容器/拉镜像——由我确认」（后台同样拒绝未确认的 up）"}};
+      continue;
+    }
     try {
       const [code, res] = await wizRegisterOnce(i);
       wiz.results[i] = {code, res};

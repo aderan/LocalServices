@@ -98,9 +98,10 @@ def _ps_labels(row: dict) -> dict:
 
 
 def container_name(p: Project, c: Component) -> str | None:
-    """声明服务实际对应的容器名（docker ps -a，按 compose project 标签，回退 project-service-1）。
+    """声明服务实际对应的容器名（docker ps -a，**只按 compose project+service 标签**解析）。
 
-    容器不存在 → None；docker 本身不可用 → ComposeError。
+    容器名巧合不能证明归属（任何人都能创建同名无标签容器）——名字回退已移除（R04）：
+    无标签匹配 → None（调用方绝不据此 start/stop 未知容器）；docker 本身不可用 → ComposeError。
     """
     proj = project_name(p, c)
     r = _run(["ps", "-a", "--filter", f"label=com.docker.compose.project={proj}", "--format", "{{json .}}"])
@@ -116,12 +117,6 @@ def container_name(p: Project, c: Component) -> str | None:
             name = str(row.get("Names", "")).split(",")[0].strip()
             if name:
                 return name
-    fallback = f"{proj}-{c.compose_service}-1"
-    r2 = _run(["ps", "-a", "--filter", f"name={fallback}", "--format", "{{.Names}}"])
-    if r2.returncode == 0:
-        for name in r2.stdout.split():
-            if name == fallback:
-                return fallback
     return None
 
 

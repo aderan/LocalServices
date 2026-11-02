@@ -224,6 +224,10 @@ V1 §1–§8 继续有效；与之冲突的地方以本节为准。变更必须�
   走用户层）→ registry 恢复成员（目标项目缺省原 id，不存在则以归档名重建）→ state intent 显式
   设为所选值（缺省 stopped；**绝不从归档自动带回 running**）→ 不自动启动。同 id 已登记 → 409。
 - `POST /api/removed/projects/<pid>/restore` body `{intent?}`：恢复项目条目 + 全部成员服务。
+- **整项目恢复预检（V2 复核修订）**：写盘前对全部成员归档做端口/服务 id/注册身份预检（对当前
+  清单与成员集合双向），任一冲突 → 409（details 逐条列出冲突对象）且零写入；成员归档 TOML 的
+  `project` 字段统一重绑定为目标项目（跨项目恢复 `restore_service` 同理；一致时保持原字节）；
+  多成员覆盖层合并为**单次** overrides.json 写入；`_atomic_commit` 拒绝同一事务的重复目标路径。
 
 ## V2.3 覆盖层（人工覆盖）
 
@@ -234,6 +238,11 @@ V1 §1–§8 继续有效；与之冲突的地方以本节为准。变更必须�
 - 注册合并：进入比较/写盘前，先把 `overrides[sid].fields` 应用到新定义（覆盖层优先）；payload
   `service.accept_new: [paths]`（或 `["*"]`）显式清除指定覆盖。**dry_run diff 在应用覆盖后计算**，
   预览=实际。
+- **合并优先级（V2 复核修订）**：本次用户编辑（`service.edited` 列出的路径）> 旧人工覆盖 >
+  模型候选——edited 路径旁路旧覆盖直接生效，成功后其最终值写回覆盖层（覆盖旧值）。
+- **嵌套路径（V2 复核修订）**：覆盖/edited 路径支持任意嵌套 dotted path
+  （`components[<cid>].<field>.<subfield>…`，如 `components[api].ready.http`、
+  `components[api].env.DB_HOST`）；顶层仍限 name/description/open；缺失成员的路径忽略。
 - `GET /api/services/<sid>/overrides` → `{"ok",sid,fields{}}`（GUI 显示"你的覆盖优先生效"与逐字段
   "采用新值"入口；采用新值 = 下次注册带 accept_new）。
 - 移除时覆盖层随服务归档；恢复时带回。
@@ -287,6 +296,11 @@ V1 §1–§8 继续有效；与之冲突的地方以本节为准。变更必须�
   `{ok,released[],errors[]}`。
 - compose 组件的"外部实例"= 容器已在运行（up 幂等，无需接管杀树）；端口冲突遇到 docker 宿主代理
   进程（gvproxy/com.docker.backend/docker-proxy/vpnkit）→ 解析为容器归属，不误报进程冲突。
+- **容器认领仅凭标签（V2 复核修订）**：compose 容器解析只认 project+service 标签；名字回退已
+  移除——无标签匹配 → None（existing → 拒绝创建；up → compose up 创建带标签容器；stop/logs/state
+  对 None 一律 no-op/missing），绝不按名字猜测操作归属不明的容器。
+- **分析上下文脱敏（V2 复核修订，R01）**：项目上下文与证据在构造模型请求前递归脱敏——敏感键名
+  一律掩码，env 映射只传变量名与非敏感值，argv 摘要逐元素脱敏，prompt 组装最后一道全文脱敏。
 
 ## V2.8 外部实例识别增强
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "LocalServices agent analysis output",
-  "description": "What a Codex/Claude recognition call must return: candidate service definitions grounded in the analyzed directory, with evidence. Analysis only - no execution, no installation, no migration. Strict-mode compatible (every property required; optional = nullable union) so codex --output-schema / OpenAI structured output accepts it.",
+  "description": "What a Codex/Claude recognition call must return: candidate service definitions grounded in the analyzed directory, with evidence. Analysis only - no execution, no installation, no migration. Optional fields are nullable unions or may be omitted (cmd is omitted for run=compose components; run/compose_*/provision/confirmed_provision are optional) so codex --output-schema / OpenAI structured output accepts it.",
   "type": "object",
   "required": ["services"],
   "additionalProperties": false,
@@ -22,14 +22,19 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["id", "kind", "name", "cwd", "cmd", "shell_script", "port", "ready", "required", "start_timeout", "after", "hot", "watch", "restart_on", "install", "build", "install_when", "install_marker", "auto_update", "external_cmd"],
+              "required": ["id", "kind", "name", "cwd", "shell_script", "port", "ready", "required", "start_timeout", "after", "hot", "watch", "restart_on", "install", "build", "install_when", "install_marker", "auto_update", "external_cmd"],
               "additionalProperties": false,
               "properties": {
                 "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 32},
                 "kind": {"type": "string", "enum": ["server", "worker", "generator"]},
                 "name": {"type": ["string", "null"], "maxLength": 64},
                 "cwd": {"type": ["string", "null"], "maxLength": 200, "description": "Working directory relative to source_dir"},
-                "cmd": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "argv array. Prefer real executables/scripts (make targets: ['make','<target>']). No shell strings."},
+                "cmd": {"type": "array", "items": {"type": "string"}, "description": "argv array (local components only; required unless run=\"compose\"). Prefer real executables/scripts (make targets: ['make','<target>']). No shell strings."},
+                "run": {"type": ["string", "null"], "enum": ["local", "compose", null], "description": "local = LocalServices-launched process (cmd required). compose = managed via docker compose (no cmd; compose_service required). Default local."},
+                "compose_service": {"type": ["string", "null"], "maxLength": 200, "description": "run=compose: service name inside the compose project (required for compose components)"},
+                "compose_project": {"type": ["string", "null"], "maxLength": 200, "description": "run=compose: compose project name (default: cwd directory name)"},
+                "compose_files": {"type": "array", "items": {"type": "string"}, "description": "run=compose: compose file paths relative to source_dir (no ..); default auto-detect in cwd"},
+                "provision": {"type": ["string", "null"], "enum": ["existing", "up", null], "description": "run=compose: existing = only start existing containers; up = may create/pull via compose up -d --no-deps, requires service.confirmed_provision=true (user authorization)"},
                 "shell_script": {"type": ["string", "null"], "maxLength": 200, "description": "Only if the project's own script genuinely requires a shell: path of an existing script inside the directory"},
                 "port": {"type": ["integer", "null"], "minimum": 1, "maximum": 65535},
                 "ready": {
@@ -86,6 +91,7 @@
             }
           },
           "resource_refs": {"type": "array", "items": {"type": "string"}, "description": "Existing docker/compose resources this service reuses, as 'container:<name>'"},
+          "confirmed_provision": {"type": ["boolean", "null"], "description": "Explicit user authorization for provision=up compose components (container creation/pull). The analysis phase must never assume it; leave it out/null unless the user explicitly confirmed."},
           "evidence": {
             "type": "object",
             "required": ["summary", "files"],

@@ -14,6 +14,9 @@ import time
 from pathlib import Path
 
 from .. import paths
+# R01 最后一道防线复用 controller.redact 的 SECRET_RE 家族（controller 不 import
+# agents，无循环依赖；只读复用，绝不修改 controller）。
+from ..controller import redact as _redact
 from . import base, detect, scanner
 from .base import KINDS
 from .claude_adapter import ClaudeAdapter
@@ -41,6 +44,13 @@ Hard rules:
   or a path relative to the service source directory.
 - Ports must be 1-65535. "cwd" is relative to the service "source_dir" and must stay
   inside the analyzed directory.
+- For services defined by a compose file you MAY propose a component with
+  "run": "compose" and "compose_service": "<service name in the compose file>"
+  (optional: "compose_project", "compose_files" as paths relative to source_dir,
+  "provision": "existing"|"up"). Compose components have NO "cmd" (it is optional
+  and unused for them). provision="up" may create/pull containers and requires
+  explicit user confirmation later — never assume that authorization; when unsure
+  keep "provision": "existing" and put the question in "unresolved".
 - Anything uncertain or only the user can decide goes into that service's "unresolved"
   array instead of being guessed.
 """
@@ -58,17 +68,20 @@ Target project rules (apply when a candidate overlaps the existing services):
 
 def _build_prompt(directory: Path, evidence: dict, focus: str | None,
                   project_context: dict | None = None) -> str:
+    """R01：prompt 是模型请求的最终载荷，组装时全程脱敏——序列化的上下文/证据
+    blob 逐块过 redact，最终整串再过一次（覆盖 focus 等其余片段），秘密的边界
+    在这里闭合，不依赖上游是否已经清理。"""
     parts = [PROMPT_HEAD, f"Analyzed directory: {directory}"]
     if focus:
         parts.append(f"User focus: {focus}")
     if project_context:
         parts.append("Target project context (目标项目上下文，manifest-level fields only):")
-        parts.append(json.dumps(project_context, ensure_ascii=False))
+        parts.append(_redact(json.dumps(project_context, ensure_ascii=False)))
         parts.append(PROJECT_CONTEXT_RULES)
     parts.append("Scan evidence (read-only, machine-collected):")
-    parts.append(json.dumps(evidence, ensure_ascii=False))
+    parts.append(_redact(json.dumps(evidence, ensure_ascii=False)))
     parts.append("Return only the JSON object now.")
-    return "\n".join(parts)
+    return _redact("\n".join(parts))
 
 
 def get_adapter(kind: str, bin_path: str) -> CodexAdapter | ClaudeAdapter:
@@ -168,7 +181,10 @@ def _cmd0_ok(cmd0: str, src: Path) -> bool:
 
 
 def local_issues(service: dict, root: Path) -> list[str]:
-    """注册规则的本地子集：source_dir/cwd 在范围内且存在、cmd[0] 可解析、端口合法。"""
+    """注册规则的本地子集：source_dir/cwd 在范围内且存在、cmd[0] 可解析、端口合法。
+    R07（V2.7）：run=compose 组件无 cmd（跳过 cmd 校验），必填 compose_service；
+    provision 枚举校验；compose_files 必须是相对路径；provision=up 需要候选级
+    confirmed_provision=true（识别阶段不允许隐式授权创建容器）。"""
     issues: list[str] = []
     sid = service.get("id") or service.get("name") or "?"
     src_dir = service.get("source_dir") or "."
@@ -185,11 +201,29 @@ def local_issues(service: dict, root: Path) -> list[str]:
             issues.append(f"{sid}.{cid}: cwd 不存在（{cwd}）")
         elif not _inside(cdir, root):
             issues.append(f"{sid}.{cid}: cwd 越出分析目录（{cwd}）")
-        cmd = comp.get("cmd") or []
-        if not cmd or not isinstance(cmd[0], str):
-            issues.append(f"{sid}.{cid}: cmd 为空")
-        elif not _cmd0_ok(cmd[0], src):
-            issues.append(f"{sid}.{cid}: cmd[0] 无法解析（{cmd[0]}）")
+        if comp.get("run") == "compose":
+            svc_name = comp.get("compose_service")
+            if not isinstance(svc_name, str) or not svc_name.strip():
+                issues.append(f"{sid}.{cid}: run=compose 缺少 compose_service"
+                              f"（compose 项目内的服务名，非空字符串）")
+            prov = comp.get("provision")
+            if prov is not None and prov not in ("existing", "up"):
+                issues.append(f"{sid}.{cid}: provision 非法（{prov!r}，必须是 existing|up）")
+            for f in comp.get("compose_files") or []:
+                if not isinstance(f, str) or not f.strip() or f.startswith("/") \
+                        or ".." in Path(f).parts:
+                    issues.append(f"{sid}.{cid}: compose_files 必须是相对路径且不含 ..（{f!r}）")
+            if prov == "up" and service.get("confirmed_provision") is not True:
+                issues.append(f"{sid}.{cid}: provision=up 需要用户显式授权"
+                              f"（service.confirmed_provision=true），"
+                              f"识别阶段不允许隐式授权创建容器")
+            # run=compose 无 cmd：不校验 cmd（V2.7）
+        else:
+            cmd = comp.get("cmd") or []
+            if not cmd or not isinstance(cmd[0], str):
+                issues.append(f"{sid}.{cid}: cmd 为空")
+            elif not _cmd0_ok(cmd[0], src):
+                issues.append(f"{sid}.{cid}: cmd[0] 无法解析（{cmd[0]}）")
         port = comp.get("port")
         if port is not None and (isinstance(port, bool) or not isinstance(port, int)
                                  or not 1 <= port <= 65535):
