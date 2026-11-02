@@ -76,6 +76,21 @@ def state_file() -> Path:
     return home() / "state.json"
 
 
+def removed_file() -> Path:
+    """用户配置层移除标记（tombstone）：V2.0。"""
+    return home() / "removed.json"
+
+
+def removed_dir() -> Path:
+    """移除归档目录（removed/<sid>-<ts>.json）。"""
+    return home() / "removed"
+
+
+def overrides_file() -> Path:
+    """人工覆盖层（V2.3）。"""
+    return home() / "overrides.json"
+
+
 def token_file() -> Path:
     return home() / "token"
 
@@ -86,5 +101,5 @@ def daemon_port() -> int:
 
 def ensure() -> None:
     for d in (home(), logs_dir(), agents_dir(), run_dir(), build_dir(),
-              user_services_dir(), drafts_dir(), jobs_dir()):
+              user_services_dir(), drafts_dir(), jobs_dir(), removed_dir()):
         d.mkdir(parents=True, exist_ok=True)

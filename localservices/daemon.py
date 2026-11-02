@@ -123,6 +123,22 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/drafts":
                 self._send(*register_api.handle_drafts())
                 return
+            m = re.fullmatch(r"/api/removed", u.path)
+            if m:
+                self._send(*register_api.handle_removed_list())
+                return
+            m = re.fullmatch(r"/api/services/([\w-]+)/remove-preview", u.path)
+            if m:
+                self._send(*register_api.handle_service_remove_preview(m.group(1), self.ctl))
+                return
+            m = re.fullmatch(r"/api/services/([\w-]+)/overrides", u.path)
+            if m:
+                self._send(*register_api.handle_overrides_get(m.group(1)))
+                return
+            m = re.fullmatch(r"/api/projects/([\w-]+)/remove-preview", u.path)
+            if m:
+                self._send(*register_api.handle_project_remove_preview(m.group(1), self.ctl))
+                return
             m = re.fullmatch(r"/api/jobs/([\w-]+)", u.path)
             if m:
                 self._send(*agent_api.handle_job_get(m.group(1)))
@@ -170,6 +186,22 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/projects/([\w-]+)/favorite", u.path)
             if m:
                 self._send(*register_api.handle_favorite(m.group(1), body))
+                return
+            m = re.fullmatch(r"/api/projects/([\w-]+)/autostart", u.path)
+            if m:
+                self._send(*register_api.handle_autostart(m.group(1), body))
+                return
+            m = re.fullmatch(r"/api/removed/services/([\w-]+)/restore", u.path)
+            if m:
+                res = register_api.handle_restore_service(m.group(1), body, self.ctl)
+                self._registry_changed(res[1])
+                self._send(*res)
+                return
+            m = re.fullmatch(r"/api/removed/projects/([\w-]+)/restore", u.path)
+            if m:
+                res = register_api.handle_restore_project(m.group(1), body, self.ctl)
+                self._registry_changed(res[1])
+                self._send(*res)
                 return
             m = re.fullmatch(r"/api/drafts/([\w-]+)/register", u.path)
             if m:
@@ -233,10 +265,23 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 self._send(*register_api.handle_draft_delete(m.group(1)))
                 return
+            m = re.fullmatch(r"/api/projects/([\w-]+)/directories/([\w-]+)", u.path)
+            if m:
+                self._send(*register_api.handle_directory_remove(*m.groups()))
+                return
             m = re.fullmatch(r"/api/services/([\w-]+)", u.path)
             if m:
                 q = parse_qs(u.query)
                 res = register_api.handle_service_remove(m.group(1), q.get("disposition", ["keep-external"])[0], self.ctl)
+                self._registry_changed(res[1])
+                self._send(*res)
+                return
+            m = re.fullmatch(r"/api/projects/([\w-]+)", u.path)
+            if m:
+                q = parse_qs(u.query)
+                disposition = q.get("disposition", ["keep-external"])[0]
+                dry_run = q.get("dry_run", ["false"])[0].lower() in ("1", "true", "yes")
+                res = register_api.handle_project_remove(m.group(1), disposition, dry_run, self.ctl)
                 self._registry_changed(res[1])
                 self._send(*res)
                 return

@@ -170,6 +170,53 @@ def handle_draft_delete(draft_id: str) -> tuple[int, dict]:
         return _fail(e)
 
 
+# ---------------------------------------------------------------- V2 移除/恢复/覆盖（骨架，Core 线实现）
+
+
+def _not_implemented(name: str) -> tuple[int, dict]:
+    return 501, {"ok": False, "error": f"{name} 尚未实现（V2 Core 线）"}
+
+
+def handle_service_remove_preview(sid: str, ctl) -> tuple[int, dict]:
+    """GET /api/services/<sid>/remove-preview（V2.1）。"""
+    return _not_implemented("service-remove-preview")
+
+
+def handle_project_remove_preview(pid: str, ctl) -> tuple[int, dict]:
+    """GET /api/projects/<pid>/remove-preview（V2.2）。"""
+    return _not_implemented("project-remove-preview")
+
+
+def handle_project_remove(pid: str, disposition: str, dry_run: bool, ctl) -> tuple[int, dict]:
+    """DELETE /api/projects/<pid>?disposition=stop|keep-external[&dry_run=true]（V2.2）。"""
+    return _not_implemented("project-remove")
+
+
+def handle_removed_list() -> tuple[int, dict]:
+    """GET /api/removed（V2.2）。"""
+    return _not_implemented("removed-list")
+
+
+def handle_restore_service(sid: str, body: dict, ctl) -> tuple[int, dict]:
+    """POST /api/removed/services/<sid>/restore（V2.2）。"""
+    return _not_implemented("restore-service")
+
+
+def handle_restore_project(pid: str, body: dict, ctl) -> tuple[int, dict]:
+    """POST /api/removed/projects/<pid>/restore（V2.2）。"""
+    return _not_implemented("restore-project")
+
+
+def handle_autostart(pid: str, body: dict) -> tuple[int, dict]:
+    """POST /api/projects/<pid>/autostart（V2.9）。"""
+    return _not_implemented("project-autostart")
+
+
+def handle_overrides_get(sid: str) -> tuple[int, dict]:
+    """GET /api/services/<sid>/overrides（V2.3）。"""
+    return _not_implemented("service-overrides")
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     out = dict(base)
     for k, v in override.items():

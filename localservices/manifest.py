@@ -69,6 +69,12 @@ class Component:
     external_cmd: str | None = None  # regex on process command line
     external_cwd: str | None = None  # relative to source; defaults to cwd
     external_cwd_exact: bool = False  # distinguish apps that share a monorepo source
+    # V2.7 run adapter: local process (launchd+runner) vs docker compose service
+    run: str = "local"  # local | compose
+    compose_service: str | None = None  # required when run=compose
+    compose_project: str | None = None  # default: name of the cwd directory
+    compose_files: list[str] = field(default_factory=list)  # default: auto-detect in cwd
+    provision: str = "existing"  # existing = start only; up = compose up -d --no-deps (needs explicit user confirmation at registration)
     # generator only
     debounce: float = 2.0
 
@@ -145,6 +151,12 @@ def load_file(path: Path) -> Project:
         if c.id in seen:
             raise ValueError(f"{path}: duplicate component {c.id}")
         seen.add(c.id)
+        if c.run == "compose":
+            if not c.compose_service:
+                raise ValueError(f"{path}: component {c.id} run=compose 需要 compose_service")
+            if c.provision not in ("existing", "up"):
+                raise ValueError(f"{path}: component {c.id} provision 必须是 existing/up")
+            continue  # compose 组件无本地 cmd
         if c.kind in ("server", "worker", "generator") and not c.cmd:
             raise ValueError(f"{path}: component {c.id} has no cmd")
     return p
@@ -154,14 +166,20 @@ def load_all(directory: Path | None = None) -> dict[str, Project]:
     """Load built-in services plus user-registered ones. An explicit `directory` loads only
     that directory (used by tests); otherwise the search path is services_dir() +
     user_services_dir(). Duplicate ids and duplicate listen ports are rejected across all
-    loaded files so there is exactly one registration authority."""
+    loaded files so there is exactly one registration authority. Services listed in the
+    user-level tombstone file (V2.0) are skipped — removing a builtin never edits the
+    repo-distributed template."""
+    from . import tombstones
     dirs = [Path(directory)] if directory else paths.service_search_path()
+    skipped = tombstones.services()
     out: dict[str, Project] = {}
     for d in dirs:
         for f in sorted(d.glob("*.toml")):
             p = load_file(f)
             if p.id in out:
                 raise ValueError(f"duplicate project id {p.id}: {out[p.id].file} and {f}")
+            if p.id in skipped and directory is None:
+                continue
             out[p.id] = p
     ports: dict[int, str] = {}
     for p in out.values():
