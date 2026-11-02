@@ -138,7 +138,7 @@ lsctl analyze <dir> --agent A [--project PID] ...                  # 带目标�
 ## 测试
 
 ```sh
-python3 -m pytest tests/ -q               # 372 项：V1 全量 + V2 增删恢复/覆盖层/事务/迁移/compose/资源/外部实例/CLI/GUI
+python3 -m pytest tests/ -q               # 430 项：V1 全量 + V2 增删恢复/覆盖层/事务/迁移/compose/资源/外部实例/CLI/GUI + 重审修复（R01-R12）
 python3 scripts/n00_repro_v2.py            # N00 遗留问题复现脚本（修复后 8/10 NOT-REPRODUCED；2 项在 GUI/引擎层另有行为测试）
 node scripts/verify_v2_gui.cjs             # 无头 GUI 逻辑验证（39 项，自带隔离 daemon）
 python3 tests/verify_next_clone.py         # Next.js 热更新：在 Buildbase 的 APFS 克隆上验证
