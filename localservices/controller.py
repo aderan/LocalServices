@@ -523,7 +523,8 @@ class Controller:
                     pass
                 proc.communicate()
                 log.write(f"[localservices] {what} timed out\n".encode())
-                return False, f"启动超时（总预算 {STARTUP_TIMEOUT:g}s）：{what}未完成"
+                budget = self.ops.get(p.id, {}).get("budget", STARTUP_TIMEOUT)
+                return False, f"启动超时（总预算 {budget:g}s）：{what}未完成"
             except OSError as e:
                 return False, f"{what}无法执行：{e}"
             log.write(output)
@@ -614,7 +615,7 @@ class Controller:
         running = st.get("state") == "running"
         health = st.get("health")
         cs = {"id": c.id, "name": c.name or c.id, "kind": c.kind, "run": "compose",
-              "pid": None, "running": running, "loaded": st.get("state") not in ("missing",),
+              "pid": None, "running": running, "loaded": False,  # F-4：compose 无 launchd job，loaded 恒 false
               "started_at": self._compose_started.get(key), "required": c.required,
               "last_exit": None, "failures": 0, "container": st.get("container"),
               "health": health or "none", "probe_used": key in self._compose_probe_used,
@@ -690,20 +691,33 @@ class Controller:
         return done
 
     # ---------- operations ----------
-    def _begin(self, pid: str, kind: str) -> bool:
+    def _startup_budget(self, p: Project | None) -> float:
+        """启动总预算：STARTUP_TIMEOUT 为基线，组件声明的 start_timeout 超出默认 30s 的
+        部分叠加进总预算（F-2：冷构建 >30s 时声明的超时应生效；叠加而非取 max，
+        保持 STARTUP_TIMEOUT 可被测试/环境下调的既有语义）。"""
+        if p is None:
+            return STARTUP_TIMEOUT
+        timeouts = [c.start_timeout for c in p.managed_components()]
+        extra = max(0.0, max(timeouts, default=0.0) - 30.0)
+        return STARTUP_TIMEOUT + min(270.0, extra)
+
+    def _begin(self, pid: str, kind: str, budget: float | None = None) -> bool:
         with self.lock:
             if pid in self.ops:
                 return False
             self.ops[pid] = {"kind": kind, "since": time.time()}
             if kind == "starting":
-                self.ops[pid]["deadline"] = time.monotonic() + STARTUP_TIMEOUT
+                self.ops[pid]["budget"] = budget if budget is not None else STARTUP_TIMEOUT
+                self.ops[pid]["deadline"] = time.monotonic() + self.ops[pid]["budget"]
             return True
 
     def _startup_remaining(self, p: Project) -> float:
-        deadline = self.ops.get(p.id, {}).get("deadline")
-        remaining = deadline - time.monotonic() if deadline is not None else STARTUP_TIMEOUT
+        op = self.ops.get(p.id, {})
+        deadline = op.get("deadline")
+        budget = op.get("budget", STARTUP_TIMEOUT)
+        remaining = deadline - time.monotonic() if deadline is not None else budget
         if remaining <= 0:
-            raise TimeoutError(f"启动超时（总预算 {STARTUP_TIMEOUT:g}s）")
+            raise TimeoutError(f"启动超时（总预算 {budget:g}s）")
         return remaining
 
     def _end(self, pid: str) -> None:
@@ -722,7 +736,9 @@ class Controller:
         progress("检查必要依赖")
         self.infrastructure.ensure(p.dependencies, progress)
         with self.lock:
-            self.ops[p.id].update(kind="starting", detail="", deadline=time.monotonic() + STARTUP_TIMEOUT)
+            self.ops[p.id].update(kind="starting", detail="",
+                                  budget=self._startup_budget(p),
+                                  deadline=time.monotonic() + self._startup_budget(p))
 
     def start(self, pid: str, open_after: bool = False) -> dict:
         p = self.projects.get(pid)
@@ -748,7 +764,7 @@ class Controller:
                 self.open(pid)
             return {"ok": True, "accepted": False,
                     "message": "已在运行" if snap["state"] == "available" else "已有外部实例在运行，已直接打开；可点「接管」改由本工具管理"}
-        if not self._begin(pid, "starting"):
+        if not self._begin(pid, "starting", budget=self._startup_budget(p)):
             return {"ok": True, "accepted": False, "message": "启动中，请稍候"}
         self.store.set_intent(pid, "running")
         threading.Thread(target=self._do_start, args=(p, open_after), daemon=True).start()

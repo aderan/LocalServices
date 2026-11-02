@@ -82,6 +82,21 @@ def compose_files(p: Project, c: Component) -> list[Path]:
     return unique
 
 
+def _ps_labels(row: dict) -> dict:
+    """docker ps --format {{json .}} 的 Labels 是逗号拼接字符串（真实引擎行为，
+    inspect 才返回字典）；统一规范化，避免 .get 崩溃（N04 F-B1）。"""
+    labels = row.get("Labels")
+    if isinstance(labels, str):
+        out: dict[str, str] = {}
+        for kv in labels.split(","):
+            kv = kv.strip()
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                out[k] = v
+        return out
+    return labels if isinstance(labels, dict) else {}
+
+
 def container_name(p: Project, c: Component) -> str | None:
     """声明服务实际对应的容器名（docker ps -a，按 compose project 标签，回退 project-service-1）。
 
@@ -96,7 +111,7 @@ def container_name(p: Project, c: Component) -> str | None:
             row = json.loads(line)
         except ValueError:
             continue
-        labels = row.get("Labels") or {}
+        labels = _ps_labels(row)
         if labels.get("com.docker.compose.service") == c.compose_service:
             name = str(row.get("Names", "")).split(",")[0].strip()
             if name:

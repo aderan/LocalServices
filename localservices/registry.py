@@ -1139,6 +1139,8 @@ class Registry:
             warnings.append(f"资源状态未验证（Docker 不可达：{inv.get('error', '')}）")
         out = []
         for name, consumers in sorted(refs.items()):
+            if not (set(consumers) & member_ids):
+                continue  # F-6：只列本 Project 成员引用的资源；其他项目的资源不属于本预览
             others = [s for s in consumers if s not in member_ids]
             out.append({"name": name,
                         "state": states.get(name, "unknown"),
@@ -1969,9 +1971,15 @@ def _check_resource_ref(dep_name: str, ref: str, name: str, details: list[str], 
     if not inv.get("ok"):
         warnings.append(f"依赖 {dep_name} 的资源引用 {ref} 未验证（Docker 不可达：{inv.get('error', '')}）")
         return
-    names = {r.get("name") for r in inv.get("resources", [])}
-    if name not in names:
+    res = {r.get("name"): r for r in inv.get("resources", [])}
+    if name not in res:
         details.append(f"依赖 {dep_name} 引用的资源不存在：{ref}")
+        return
+    state = res[name].get("state", "unknown")
+    if state in ("exited", "created", "paused"):
+        # V2.6：已停止容器仍是合法引用（启动时按需恢复），但要显式告知，不能静默当运行中；
+        # unknown（旧盘点形状未带 state）不告警
+        warnings.append(f"依赖 {dep_name} 的容器 {name} 当前状态为 {state}（已停止，启动时将按需恢复）")
 
 
 def _check_cmd(nc: dict, src: Path, details: list[str], warnings: list[str], comp_cwd: Path | None = None) -> None:

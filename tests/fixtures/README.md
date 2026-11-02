@@ -1,36 +1,28 @@
-# tests/fixtures — Runtime/Resources 线（V2）人工验证骨架
+# tests/fixtures — 六开发模式人工验证夹具（V2/N04）
 
 只提交小文本文件：**不含** node_modules / .venv / go 构建产物 / 任何二进制与锁文件，
-**不含任何密钥**（无 token/password/api key；全部为公开演示内容）。
+**不含任何密钥**。端口统一 18200–18299，绝不触碰 8000/5176/47800。
 
-端口统一走测试网段 18200-18299，绝不触碰 8000/5176/47800。
-
-| 目录 | 端口 | 就绪探针 | 准备步骤（仅 N04，经用户可见计划执行） |
+| 目录 | 端口 | 就绪探针 | 准备步骤（仅 N04，按动作范围执行） |
 |---|---|---|---|
-| `vite-demo/` | 18210（dev server；`/api` 代理到 18211） | `http://127.0.0.1:18210/`（任意 2xx/3xx） | `npm install`（生成 node_modules，不入库） |
-| `fastapi-demo/` | 18212 | `http://127.0.0.1:18212/health` → `{"ok": true}` | `uv sync`（生成 .venv，不入库） |
-| `go-demo/` | 18213 | `http://127.0.0.1:18213/health` → `{"ok": true}` | `go build`（产物不入库；也可直接 `go run .`） |
-| `compose-demo/` | 18214（宿主）→ 80（容器） | `http://127.0.0.1:18214/`（busybox httpd 返回 'ok'） | 无（镜像 alpine:3.20 本机已拉取，离线可跑） |
+| `vite-demo/` | 18210（dev server；`/api` 代理到 18211） | `http://127.0.0.1:18210/` | `npm install`（node_modules 不入库） |
+| `fastapi-demo/` | 18212 | `http://127.0.0.1:18212/health` → `{"ok":true}` | `uv sync`（.venv/uv.lock 不入库） |
+| `go-demo/` | 18213 | `http://127.0.0.1:18213/health` → `{"ok":true,"version":"…"}` | 无（manifest build 步骤构建；产物在隔离 home 的 build 目录） |
+| `compose-demo/` | 18214（宿主）→ 6379（容器） | `tcp 127.0.0.1:18214`（故意无 docker healthcheck → 端口探针路径） | 无（redis:7-alpine 本机已拉取，arm64 与 colima 匹配） |
 
-## 各 fixture 说明
+## N04 真实验证得到的环境结论（写进夹具形状的原因）
 
-- **vite-demo**：`package.json` devDependency 仅 `vite ^7`（无锁文件）；`npm run dev`
-  = `vite --port 18210 --strictPort`；`vite.config.js` 将 `/api` 代理到
-  `http://127.0.0.1:18211`（预留位：可再挂一个后端验证代理链路）；页面为静态文本 +
-  容错的 `/api/health` fetch。
-- **fastapi-demo**：`pyproject.toml`（dependencies: fastapi, uvicorn；无锁文件）；
-  `app/main.py` 暴露 `GET /health`。启动：
-  `uv run --directory <dir> uvicorn app.main:app --port 18212`。
-- **go-demo**：`go.mod`（module godemo, go 1.24）+ `main.go`，仅标准库，
-  `GET /health` 返回 `{"ok":true}`，监听 `127.0.0.1:18213`。
-- **compose-demo**：单服务 `web`，镜像 `alpine:3.20`（本机已有，避免拉取），
-  用 busybox `httpd` 起静态服务；**故意不配置 docker healthcheck** —— 就绪判定
-  依赖宿主端口探针（18214），用于验证 V2.7 “无 health 用端口探针” 的路径。
+- **node ≥17 绑定行为（F-1）**：`vite` 不带 `--host` 时 node v26 只绑 `[::1]`，
+  `127.0.0.1` 探针永远连接拒绝。dev script 显式 `--host 127.0.0.1`（与 ShiCha 日常
+  清单同法）。识别建议：Vite/Node 候选应显式 host/port，不用默认绑定。
+- **本机 alpine:3.20 是 amd64 模拟镜像且 busybox 无 httpd applet（F-B2）**：compose
+  夹具改用已在跑的 redis:7-alpine（tcp 探针同样验证“无 healthcheck → 端口探针”）。
+- **DEFAULT_PATH 曾缺 goenv（F-3）**：`~/.goenv/shims` 已加入 manifest.DEFAULT_PATH
+  （pyenv shims 同法）；项目仍可用绝对路径/自身 wrapper 覆盖。
 
-## 对应清单字段（人工验证 TOML 示例要点）
+## 对应清单字段要点
 
-- vite/fastapi/go 组件：普通 `run = "local"`（cmd + ready.http）。
-- compose-demo 组件：`run = "compose"`、`compose_service = "web"`、
-  `compose_project` 缺省（= cwd 目录名 `compose-demo`）、`compose_files` 缺省
-  （自动探测 `docker-compose.yml`）、`provision = "existing"`（只 start 已有容器；
-  `up` 需注册时显式 `confirmed_provision=true`）。
+- vite/fastapi/go 组件：`run = "local"`（cmd + ready）。
+- compose-demo 组件：`run = "compose"`、`compose_service = "web"`、`provision = "up"`
+  需注册时显式 `service.confirmed_provision = true`（首次创建容器/拉镜像的用户确认）；
+  `provision = "existing"` 只 start 已存在容器。

@@ -12,6 +12,7 @@ from . import paths
 DEFAULT_PATH = ":".join(
     [
         str(Path.home() / ".pyenv" / "shims"),  # generic per-user python env, first so python3 resolves there
+        str(Path.home() / ".goenv" / "shims"),  # generic per-user go env (N04 F-3: homebrew go may be older than go.mod requires)
         "/opt/homebrew/bin",
         "/opt/homebrew/sbin",
         "/usr/local/bin",
