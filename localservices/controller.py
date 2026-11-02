@@ -177,10 +177,14 @@ class Controller:
         self.reload()
 
     # ---------- manifests ----------
-    def reload(self) -> None:
+    def reload(self, force: bool = False) -> None:
+        """重载清单。mtime 签名只覆盖 *.toml 增删改；tombstone（removed.json）变化不动
+        任何 TOML，因此登记面变更必须 force=True（daemon._registry_changed）。
+        卸载的服务在此收敛式清理 state 条目——并发 refresh 可能带着旧清单在
+        release_service 之后又经 Store.intent 懒播种写回（V2.7 收尾一致性）。"""
         dirs = paths.service_search_path()
         sig = tuple((str(d), f.name, f.stat().st_mtime) for d in dirs for f in sorted(d.glob("*.toml")))
-        if sig == self.manifest_sig:
+        if sig == self.manifest_sig and not force:
             return
         try:
             projects = manifest.load_all()
@@ -196,6 +200,14 @@ class Controller:
         with self.lock:
             self.projects, self.adapters = projects, ads
             self.manifest_sig, self.manifest_error = sig, ""
+            stale = [pid for pid in self.store.data.get("projects", {}) if pid not in projects]
+            for pid in stale:
+                self.store.data["projects"].pop(pid, None)
+            if stale:
+                try:
+                    self.store.save()
+                except OSError:
+                    pass
 
     def _registry_autostart_map(self) -> dict[str, bool]:
         """V2.9: Registry.autostart_map()（Core 线提供），30s 缓存；任何失败按空处理。

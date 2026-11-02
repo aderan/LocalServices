@@ -156,9 +156,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"ok": False, "error": str(e)})
 
     def _registry_changed(self, res: dict) -> None:
-        """A register/remove landed: make the new manifests visible immediately."""
+        """A register/remove landed: make the new manifests visible immediately.
+        force=True：tombstone（removed.json）变化不改任何 TOML 的 mtime 签名。"""
         if res.get("ok") and res.get("action") != "draft":
-            self.ctl.reload()
+            self.ctl.reload(force=True)
             threading.Thread(target=self.ctl.refresh_snapshot, daemon=True).start()
 
     def do_POST(self):
