@@ -994,10 +994,22 @@ function showModal(opts) {
 
 // ---------- 移除对话框（先 remove-preview，取消零副作用） ----------
 
+// 观察项移除（V2 §3.1）：观察项没有受管进程，只解除登记，绝不停止其外部引擎；
+// 因此不提供处置选择，固定 keep-external 语义。
+async function askRemoveObserve(sid, p) {
+  const ok = await showModal({title: "移除观察登记…", danger: true, okText: "移除",
+    bodyHtml: `
+      <p class="modal-line">对象：<b>${esc(p.name)}</b>（${esc(sid)}，观察项）</p>
+      <p class="modal-line">只解除本工具的观察登记；被观察的外部引擎/进程照常运行，不受影响。</p>
+      <p class="modal-line muted">恢复方式：lsctl restore ${esc(sid)}，或本页「已移除登记」视图恢复。</p>`,
+    onOk: async () => { await doRemove(sid, "keep-external"); return true; }});
+  return ok;
+}
+
 async function askRemoveService(sid) {
   const p = servicesById()[sid];
   if (!p) return;
-  if (p.observe_only) return;
+  if (p.observe_only) return askRemoveObserve(sid, p);
   let prev = null;
   try {  // 预览端点未就绪（501）时静默降级为已知状态展示
     const [code, res] = await api("GET", `/api/services/${sid}/remove-preview`);
