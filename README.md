@@ -40,7 +40,14 @@ lsctl dir-add <pid> --path P ；lsctl dir-remove <pid> <dir-id>
 lsctl register [--file F|--stdin] [--json]                   # 注册（机器可读；409→退出码 5）
 lsctl analyze <dir> --agent codex|claude [--focus ...] [--wait S] [--json]
 lsctl agents|agent-scan|agent-verify <kind>|jobs <id>|resources [--json]
-lsctl service-remove <id> [--stop|--keep-external] ；lsctl export <service> [--file F]
+lsctl service-remove <id> [--stop|--keep-external] [--preview] ；lsctl export <service> [--file F]
+# —— V2 增删恢复（MB-LOCAL-SERVICES-LIFECYCLE-V2）——
+lsctl project-remove <pid> [--stop|--keep-external] [--dry-run]   # 整项目移除（先预览）
+lsctl removed [--json]                                            # 已移除登记（可恢复）
+lsctl restore <sid> [--project PID] [--intent stopped|running]     # 从归档恢复服务（缺省 stopped，不自动启动）
+lsctl project-restore <pid> [--intent stopped|running]             # 恢复整个项目
+lsctl project-autostart <pid> --on|--off                           # 项目级自动启动（进引擎）
+lsctl analyze <dir> --agent A [--project PID] ...                  # 带目标项目上下文识别
 ```
 
 ## Codex Skill（聊天内注册）
@@ -50,12 +57,58 @@ lsctl service-remove <id> [--stop|--keep-external] ；lsctl export <service> [--
 按需 `lsctl start --open` 完成真实验证；不递归调用另一个模型 CLI、不直接写状态文件。
 受限沙箱（禁本地回环）中会如实报告无法连接而不写入任何状态。
 
+## 增删恢复（V2：MB-LOCAL-SERVICES-LIFECYCLE-V2）
+
+- **移除语义**：移除只解除登记，永不删除源码/业务数据/共享容器/卷。入口：项目卡与服务行
+  的 `⋯` 菜单 → 自绘模态（展示将停止的实例、保留内容、受影响项目、恢复方式；Esc 取消零副作用）。
+- **内置模板遮蔽**：移除随仓分发的内置服务（如 shicha）不修改 `services/*.toml`，改在用户配置层
+  写 tombstone（`removed.json`）；重新注册/恢复以用户层文件接管，内置模板保持原样。
+- **收尾一致性**：移除同时释放意图（state.json）、launchd 标签（plist）、runner 记录；受管运行中
+  选「保留为外部实例」会被拒绝并说明（launchd KeepAlive 无法安全脱离）；重启/升级不复活已移除对象。
+- **恢复**：移除即归档（TOML+意图+覆盖层快照到 `removed/`）；`lsctl restore` / GUI「已移除登记」
+  视图恢复，运行意图由本次选择明确设定（缺省 stopped，绝不从归档悄悄自启动）。
+- **人工覆盖层**：候选审核/编辑的字段作为覆盖持久化（`overrides.json`），重新识别默认保留你的
+  值；diff 预览逐字段提供「采用新值」；预览=实际（duplicate/diff 一致）。
+- **项目级移除**：预览列成员/实例/资源（含共享标记与消费者）→ 停止受管成员 → 全部成功才提交；
+  任一失败整体保留登记并报告已停止/仍在运行成员。
+
+## 运行模式与资源（V2）
+
+| 模式 | 状态 | 说明 |
+|---|---|---|
+| Vue/React+Vite | ✅ 已验证 | 真实夹具 + ShiCha 生产；HMR 不重启进程；端口/代理显式声明 |
+| Node/Next | ✅ 已验证 | Next 15 dev/build 两种模式分开；dev 与 build 不共享 .next |
+| Python/FastAPI | ✅ 已验证 | uv/venv 入口；uvicorn --reload 监督树可识别并安全接管 |
+| Go/Make | ✅ 已验证 | 优先项目 wrapper（make api-run 含构建）；构建失败保留旧实例 |
+| Docker/Compose | ✅ 已验证 | `run="compose"` 组件；up/start/stop 语义分开；绝不 down/rm/删卷 |
+| 混合 | ✅ 已验证 | 本机 API＋容器 DB＋前端依赖顺序（ShiCha 真实链） |
+
+- **Compose 组件**：清单 `run = "compose"` + `compose_service`（可选 project/files）；`provision
+  = "existing"` 只 start 已有容器，`"up"` 允许创建但注册时必须显式 `confirmed_provision = true`。
+  就绪：容器 health → 声明端口探针 → Running；无 healthcheck 的容器靠端口探针判活。
+- **资源页**（`GET /api/resources`）：`ps -a` 含已停止容器（state/container_id/bind_mounts/context），
+  附 consumers（哪些服务以何种方式引用）；观测与动作统一显式 `--context`（缺省 colima，环境变量
+  `LOCALSERVICES_DOCKER_CONTEXT` 覆盖），绝不改全局 context、不自动操作远程 engine。
+- **外部实例**：端口/PID/cwd/命令+监督父链（npm/make/go run/uvicorn reload 等）识别；docker 宿主
+  代理端口归因为容器而非进程冲突；未知归属不接管不强停；显式接管收尾整棵监督树。
+- **测试夹具**：`tests/fixtures/`（vite/fastapi/go/next/compose 最小代表工程 + 环境结论 README），
+  N04 真实验证记录在 `artifacts/acceptance-MB-LOCAL-SERVICES-LIFECYCLE-V2/n04/modes/`。
+
+### ShiCha 用户操作步骤（真实闭环样例）
+
+1. 服务行 `⋯` → 移除登记…（预览→取消=零变化→确认停止后移除；shicha-postgres/卷不动）；
+2. 项目 `⋯` → 添加服务… → 选 `~/Sources/Products/ShiCha` → 本机 Agent 识别（含项目上下文与资源）；
+3. 候选确认（管理端端口 5176、receiver 就绪契约、npm 安装步骤）→ 登记 → 启动并打开；
+4. 验证：`http://127.0.0.1:5176/` 页面与 `/v1` 代理链、API `/v1/admin/commerce/runtime` 的
+   `receiverEnabled=true`；重复注册（GUI/CLI/Skill）保持一个逻辑服务；
+5. 终端 `make api-run` + `npm run dev` 自启时工作台显示「外部运行」，可直接打开；需要受管时点「接管」。
+
 ## 模型（服务生命周期，沿用 V0）
 
 - `services/<id>.toml` 是项目清单：组件（server / worker / generator）、命令、端口、就绪探针、
   依赖、热更新与监视范围。端口固定写在清单里，用户不需要管理地址。
   清单加载时拒绝重复监听端口；运行时其他受管项目占用端口也会报告冲突。
-- 每次启动共用 30 秒预算（包括安装、编译、生成和就绪探测）；进程提前退出立即报错。
+- 每次启动共用一个总预算（基线 30 秒，组件声明的 `start_timeout` 超出 30s 的部分会叠加，上限 300s；含安装、编译、就绪探测）；进程提前退出立即报错。
   超时后清理本轮拉起的组件，保留错误并释放操作状态；可以停止或重试，不自动循环启动。
   Next.js 首次冷编译若超过预算，同样显示失败；不会把仅端口可连接当作页面已就绪。
 - 必要依赖先检查，未就绪前不编译或启动 API。Climbo/ShiCha 可自动恢复已有 Colima default
@@ -85,12 +138,16 @@ lsctl service-remove <id> [--stop|--keep-external] ；lsctl export <service> [--
 ## 测试
 
 ```sh
-python3 -m unittest discover -s tests -v   # 173 项：生命周期/工作台/注册幂等并发/迁移回退/Agent 检测调用/扫描器/Skill 安装/WebUI/更新策略
+python3 -m pytest tests/ -q               # 372 项：V1 全量 + V2 增删恢复/覆盖层/事务/迁移/compose/资源/外部实例/CLI/GUI
+python3 scripts/n00_repro_v2.py            # N00 遗留问题复现脚本（修复后 8/10 NOT-REPRODUCED；2 项在 GUI/引擎层另有行为测试）
+node scripts/verify_v2_gui.cjs             # 无头 GUI 逻辑验证（39 项，自带隔离 daemon）
 python3 tests/verify_next_clone.py         # Next.js 热更新：在 Buildbase 的 APFS 克隆上验证
 ```
 
 生命周期类测试使用真实 launchd 但隔离 label 前缀与临时目录，不触碰真实项目实例与数据。
-MB-LOCAL-SERVICES-PROJECTS-V1 的逐 AC 验收证据在 `artifacts/acceptance-MB-LOCAL-SERVICES-PROJECTS-V1/`。
+MB-LOCAL-SERVICES-PROJECTS-V1 的逐 AC 验收证据在 `artifacts/acceptance-MB-LOCAL-SERVICES-PROJECTS-V1/`；
+V2（增删恢复/运行模式/资源复用/ShiCha 真实闭环）的逐 AC 证据与独立复核在
+`artifacts/acceptance-MB-LOCAL-SERVICES-LIFECYCLE-V2/AC-CHECKLIST.md`。接口契约以 `docs/CONTRACTS.md`（含 V2 节）为准。
 
 ### ShiCha 开发启动契约
 
