@@ -1289,12 +1289,18 @@ class Registry:
                     "directories": copy.deepcopy(proj.get("directories", []))}
 
     def removed_list(self) -> dict:
-        """V2.2 GET /api/removed：只列当前未登记（load_all 不含该 id）的移除条目。"""
+        """V2.2 GET /api/removed：只列当前未登记（load_all 不含该 id）的移除条目。
+        项目条目同理过滤：registry.json 中已重建同 id 项目（或全部成员已重新登记）的
+        stale 条目不再显示——否则会建议"恢复"一个已在运行的项目（真实 Chat 使用发现）。"""
         rm = tombstones._load_full()
         try:
             loaded = manifest.load_all()
         except Exception:  # noqa: BLE001
             loaded = {}
+        try:
+            live_projects = {p.get("id") for p in self._load().get("projects", [])}
+        except RegistryError:
+            live_projects = None  # 注册表读失败时保守显示全部（恢复入口宁可多给）
         services = [{"sid": sid, "project_id": e.get("project_id"),
                      "removed_at": e.get("removed_at"), "disposition": e.get("disposition"),
                      "archive": e.get("archive")}
@@ -1302,7 +1308,9 @@ class Registry:
         projects = [{"pid": pid, "removed_at": e.get("removed_at"),
                      "disposition": e.get("disposition"),
                      "services": list(e.get("services", []))}
-                    for pid, e in rm.get("projects", {}).items()]
+                    for pid, e in rm.get("projects", {}).items()
+                    if not (live_projects is not None and pid in live_projects)
+                    and not all(sid in loaded for sid in e.get("services", []) if sid)]
         return {"ok": True, "services": services, "projects": projects}
 
     def restore_service(self, sid: str, body: dict, ctl) -> dict:
