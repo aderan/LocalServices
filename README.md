@@ -76,7 +76,7 @@ lsctl analyze <dir> --agent A [--project PID] ...                  # 带目标�
 
 | 模式 | 状态 | 说明 |
 |---|---|---|
-| Vue/React+Vite | ✅ 已验证 | 真实夹具 + ShiCha 生产；HMR 不重启进程；端口/代理显式声明 |
+| Vue/React+Vite | ✅ React/Vite 已验证（Vue 为同 Vite 机制推断，本机无真实 Vue 工程） | React/Vite 夹具 + ShiCha 生产；HMR 不重启进程；端口/代理显式声明 |
 | Node/Next | ✅ 已验证 | Next 15 dev/build 两种模式分开；dev 与 build 不共享 .next |
 | Python/FastAPI | ✅ 已验证 | uv/venv 入口；uvicorn --reload 监督树可识别并安全接管 |
 | Go/Make | ✅ 已验证 | 优先项目 wrapper（make api-run 含构建）；构建失败保留旧实例 |
