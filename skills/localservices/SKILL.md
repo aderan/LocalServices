@@ -45,6 +45,36 @@ lsctl register --file <临时文件路径> --json
 
 409 revision 冲突：`lsctl projects --json` 取该 Project 当前 `revision` 填回 payload，重试一次；再失败就如实报告现状，不再猜。
 
+### 目标已有 Project（V2.13）
+
+用户提到的工程已在工作台时，**必须**登记进既有 Project，绝不新建同名 Project：
+
+1. `lsctl projects --json` 查 `registry.projects[]`（按目录 path 或名称匹配）。
+2. payload 的 `project.id` 填既有 id，`revision` 填该项目当前 `revision`；缺省 revision 0 = 仅当不存在时创建——只有确认没有同目录/同名项目时才省略。
+3. 找不到匹配且用户没说"新项目"时，先向用户确认归属，再注册。
+
+## 3a. 移除与恢复（V2.13）
+
+移除一律先预览（零副作用），向用户复述预览内容（将停止什么、保留什么、如何恢复），用户确认后才执行：
+
+```sh
+lsctl service-remove <id> --preview            # 预览：将停止的实例 / 保留内容 / 恢复方式
+lsctl service-remove <id> --keep-external      # 只解除登记（默认），进程照跑、按外部实例识别
+lsctl service-remove <id> --stop               # 先停再移除
+lsctl project-remove <pid> --stop|--keep-external [--dry-run]   # 整项目（dry-run 只预览）
+lsctl removed                                  # 已移除登记列表
+lsctl restore <sid> [--project PID] [--intent stopped|running]  # 恢复服务（默认 stopped，绝不自动启动）
+lsctl project-restore <pid> [--intent stopped|running]          # 恢复整个项目
+```
+
+要点：移除只解除登记，源码/数据库/容器/卷永不删除；恢复缺省意图 stopped，绝不自动启动。任何失败（退出码非 0）登记保持不变——如实报告，绝不手工补救写状态文件。
+
+## 3b. 覆盖层与 compose 置信（V2.13）
+
+- 人工改过的字段由覆盖层（overrides）保护：注册 payload 带上 `service.edited = ["name", "components[api].port", …]`（本次人工确认改过的 dotted path），注册成功后这些路径的最终值写入覆盖层，后续重新识别/注册不会悄悄改掉它们。
+- 用户明确要放弃自己的旧值、采用识别新值时，payload 带 `service.accept_new = ["<path>", …]`（或 `["*"]`）显式清除指定覆盖。
+- compose 组件（`run = "compose"`）要创建/拉取容器（`provision = "up"`）时，注册 payload 必须显式 `service.confirmed_provision = true`（用户已知情同意），否则服务端 400 拒绝并解释。`provision = "existing"`（缺省）只启动已存在容器，无需该字段。
+
 ## 4. 启动并打开（仅在用户明确要求时）
 
 ```sh
@@ -59,8 +89,9 @@ lsctl start <service_id> --open --wait 60
 
 ## 硬规则
 
-- 绝不直接写 `~/Library/Application Support/LocalServices` 下任何文件（含清单 TOML、registry.json、state.json、草稿）；唯一写入口是 lsctl。
-- 绝不递归调用 codex / claude 做工程分析（需要分析时提示用户另行运行 `lsctl analyze`）；本技能只做注册、启动与查询。
+- 绝不直接写 `~/Library/Application Support/LocalServices` 下任何文件（含清单 TOML、registry.json、state.json、overrides.json、removed.json、草稿）；唯一写入口是 lsctl。
+- 绝不递归调用 codex / claude 做工程分析（需要分析时提示用户另行运行 `lsctl analyze`）；本技能只做注册、移除/恢复、启动与查询。
+- 失败不改写状态：CLI 不可达、校验失败、移除/恢复失败、启动失败都原样转达，登记保持原状，宁可中断也不编造成功、绝不手工补救。
 - 不改用户的 `~/.codex` 配置与任何其他配置文件。
 - 只读、只操作用户明确提到的项目目录；其他目录不看不动。
 - 全程如实报告：CLI 不可达、校验失败、启动失败都原样转达，宁可中断也不编造成功。

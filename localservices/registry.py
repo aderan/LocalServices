@@ -26,7 +26,7 @@ import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import manifest, paths, resources
+from . import manifest, overrides, paths, resources, tombstones
 
 SCHEMA_VERSION = 1
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -35,13 +35,18 @@ DRAFT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 AGENTS = ("codex", "claude", "none")
 REGISTRANTS = ("gui", "cli", "skill")
 DISPOSITIONS = ("stop", "keep-external")
+INTENTS = ("stopped", "running")
 
 SERVICE_KEYS = {"id", "name", "description", "source", "open", "autostart", "adapter",
-                "observe_only", "draft", "project_hint", "options", "components", "dependencies", "evidence"}
+                "observe_only", "draft", "project_hint", "options", "components", "dependencies", "evidence",
+                # V2.3 覆盖层 / V2.7 compose 确认（payload-only，不进 TOML）
+                "edited", "accept_new", "confirmed_provision"}
 COMP_KEYS = {"id", "kind", "name", "cmd", "shell_script", "cwd", "env", "env_files", "port", "ready",
              "required", "start_timeout", "after", "hot", "watch", "restart_on", "ignore", "build",
              "install", "install_when", "install_marker", "auto_update", "external_cmd",
-             "external_cwd", "external_cwd_exact", "debounce"}
+             "external_cwd", "external_cwd_exact", "debounce",
+             # V2.7 运行适配（manifest v2 向后兼容字段）
+             "run", "compose_service", "compose_project", "compose_files", "provision"}
 READY_KEYS = {"http", "tcp", "json_ok", "timeout", "interval"}
 DEP_KEYS = {"name", "probe", "affects", "managed", "note", "required", "container", "volume", "resource"}
 PROBE_KEYS = {"http", "tcp", "json_ok", "timeout", "interval"}
@@ -51,7 +56,8 @@ COMPONENT_KINDS = ("server", "worker", "generator")
 _COMP_ORDER = ["id", "kind", "name", "cwd", "cmd", "env", "env_files", "port", "ready", "required",
                "start_timeout", "after", "hot", "watch", "restart_on", "ignore", "build", "install",
                "install_when", "install_marker", "auto_update", "external_cmd", "external_cwd",
-               "external_cwd_exact", "debounce"]
+               "external_cwd_exact", "debounce", "run", "compose_service", "compose_project",
+               "compose_files", "provision"]
 _DEP_ORDER = ["name", "probe", "affects", "managed", "note", "required", "container", "volume"]
 
 _lock = threading.RLock()
@@ -180,6 +186,66 @@ def _write_bytes_atomic(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
+def _current_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _quiet_unlink(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _restore_inplace(path: Path, data: bytes) -> None:
+    """恢复已替换文件的原字节：r+b truncate+write+fsync，不新分配空间（V2.4）。"""
+    try:
+        with open(path, "r+b") as f:
+            f.truncate(0)
+            f.seek(0)
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError:
+        pass  # 尽力而为：调用方仍会抛出原始异常
+
+
+def _atomic_commit(writes: list[tuple[Path, bytes]], after=None) -> None:
+    """多文件事务提交（V2.4）：全部临时文件写好+fsync（经由 _write_bytes_atomic，
+    保持单一失败注入接缝）→ 统一 rename → 执行 after 回调（如 registry _save）。
+    任一阶段失败：已 rename 的文件用**原地写回**恢复原字节（新建文件删除），
+    未 rename 的临时文件清理，原始异常向上抛——持续 I/O 故障下保持一致或整体失败。"""
+    staged: list[tuple[Path, Path, bytes | None]] = []
+    try:
+        for path, data in writes:
+            tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            _write_bytes_atomic(tmp, data)
+            staged.append((path, tmp, _current_bytes(path)))
+    except BaseException:
+        for _p, tmp, _o in staged:
+            _quiet_unlink(tmp)
+        raise
+    replaced: list[tuple[Path, bytes | None]] = []
+    try:
+        for path, tmp, orig in staged:
+            os.replace(tmp, path)
+            replaced.append((path, orig))
+        if after is not None:
+            after()
+    except BaseException:
+        for path, orig in replaced:
+            if orig is None:
+                _quiet_unlink(path)
+            else:
+                _restore_inplace(path, orig)
+        for _p, tmp, _o in staged:
+            _quiet_unlink(tmp)
+        raise
+
+
 @contextmanager
 def _file_lock():
     """进程内 RLock + 进程间 flock；锁内重读磁盘是调用方的责任。"""
@@ -255,7 +321,8 @@ def _new_project(pid: str, name: str, origin: str = "user") -> dict:
 _COMP_FIELDS = ("id", "kind", "name", "cmd", "cwd", "env", "env_files", "port", "ready", "required",
                 "start_timeout", "after", "hot", "watch", "restart_on", "ignore", "build", "install",
                 "install_when", "install_marker", "auto_update", "external_cmd", "external_cwd",
-                "external_cwd_exact", "debounce")
+                "external_cwd_exact", "debounce", "run", "compose_service", "compose_project",
+                "compose_files", "provision")
 _DEP_FIELDS = ("name", "probe", "affects", "managed", "note", "required", "container", "volume")
 
 
@@ -326,25 +393,38 @@ class Registry:
     # ---------- 读取 ----------
 
     def _load(self) -> dict:
+        path = paths.registry_file()
         try:
-            data = json.loads(paths.registry_file().read_text(encoding="utf-8"))
+            raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
+            raw = None  # 惰性空库（首次运行）
+        except OSError as e:
+            # 权限等读失败：fail-closed——绝不当空库（空库会随后续保存无备份覆盖真实记录）
+            raise RegistryError(f"registry.json 不可读（{e}），拒绝按空注册表处理：{path}",
+                                status=500) from e
+        corrupt = False
+        if raw is None:
             data = {}
-        except ValueError:
-            # 损坏文件不能当空库覆盖：先整体备份，再从空开始（原记录保留在备份里）
-            src = paths.registry_file()
-            backup = src.with_name(f"{src.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+        else:
             try:
-                os.replace(src, backup)
-                print(f"[registry] registry.json 损坏，已备份到 {backup}", file=sys.stderr)
+                data = json.loads(raw)
+            except ValueError:
+                corrupt = True
+                data = {}
+            else:
+                if not isinstance(data, dict):
+                    corrupt = True  # 合法 JSON 但非对象（如数组）：与损坏同路径
+                    data = {}
+        if corrupt:
+            # 损坏文件不能当空库覆盖：先整体备份，再从空开始（原记录保留在备份里）
+            backup = path.with_name(f"{path.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+            try:
+                os.replace(path, backup)
+                print(f"[registry] registry.json 损坏（非 JSON 对象），已备份到 {backup}",
+                      file=sys.stderr)
             except OSError as e:
                 # 备份失败绝不能继续当空库（否则下次写入覆盖原始记录）
-                raise RegistryError(f"registry.json 损坏且备份失败（{e}），请先人工处理 {src}") from e
-            data = {}
-        except OSError:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
+                raise RegistryError(f"registry.json 损坏且备份失败（{e}），请先人工处理 {path}") from e
         data.setdefault("schemaVersion", SCHEMA_VERSION)
         data.setdefault("revision", 0)
         data.setdefault("projects", [])
@@ -356,7 +436,12 @@ class Registry:
                             json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))
 
     def data(self) -> dict:
-        return copy.deepcopy(self._load())
+        """全量只读快照。读失败（fail-closed）时返回带 error 的标记对象——
+        绝不伪装成空注册表（空 projects 会让调用方误判并覆盖真实记录）。"""
+        try:
+            return copy.deepcopy(self._load())
+        except RegistryError as e:
+            return {"ok": False, "error": e.payload.get("error", "registry.json 不可读")}
 
     def projects(self) -> list[dict]:
         return copy.deepcopy(self._load()["projects"])
@@ -376,7 +461,9 @@ class Registry:
             derived = pid or _slug(name or "")
             if not derived or not ID_RE.fullmatch(derived):
                 raise RegistryError(f"项目 id 非法：{derived!r}")
-            if not isinstance(name, str) or not name.strip():
+            proj = _find(data, derived)
+            if proj is None and (not isinstance(name, str) or not name.strip()):
+                # 仅创建时要求 name；更新已有项目允许缺省（GUI 开关只发 {id, autostart} 等）
                 raise RegistryError("项目 name 不能为空")
             if agent is not None and agent not in AGENTS:
                 raise RegistryError(f"agent 必须是 {'/'.join(AGENTS)}")
@@ -384,14 +471,13 @@ class Registry:
                 if flag is not None and not isinstance(flag, bool):
                     raise RegistryError(f"{key} 必须是布尔值")
             dirs = _norm_directories(directories)
-            proj = _find(data, derived)
             created = proj is None
             changed = created
             if created:
                 proj = _new_project(derived, name.strip(), origin=origin)
                 data["projects"].append(proj)
             else:
-                if name.strip() and proj.get("name") != name.strip():
+                if isinstance(name, str) and name.strip() and proj.get("name") != name.strip():
                     proj["name"] = name.strip()
                     changed = True
                 if agent and proj.get("agent") != agent:
@@ -474,6 +560,27 @@ class Registry:
             self._save(data)
             return copy.deepcopy(proj)
 
+    def set_autostart(self, pid: str, value: bool) -> dict:
+        """V2.9 专用端点：只切换 autostart，不需要 name。"""
+        if not isinstance(value, bool):
+            raise RegistryError("value 必须是布尔值")
+        with _file_lock():
+            data = self._load()
+            proj = _find(data, pid)
+            if proj is None:
+                raise RegistryError(f"未知项目 {pid}", status=404)
+            proj["autostart"] = value
+            proj["revision"] = proj.get("revision", 0) + 1
+            proj["updated_at"] = _now()
+            data["revision"] = data.get("revision", 0) + 1
+            self._save(data)
+            return copy.deepcopy(proj)
+
+    def autostart_map(self) -> dict[str, bool]:
+        """{pid: autostart} 只读助手（V2.9：Runtime 引擎 Store.intent 初始缺省用）。"""
+        return {p.get("id"): bool(p.get("autostart", False))
+                for p in self._load().get("projects", []) if p.get("id")}
+
     # ---------- 草稿 ----------
 
     def save_draft(self, payload: dict) -> dict:
@@ -538,6 +645,12 @@ class Registry:
         unknown = set(svc) - SERVICE_KEYS
         if unknown:
             return {"ok": False, "error": f"service 含未知字段：{sorted(unknown)}", "details": []}
+        for key in ("edited", "accept_new"):  # V2.3 payload-only 字段
+            v = svc.get(key)
+            if v is not None and not _is_str_list(v):
+                return {"ok": False, "error": f"service.{key} 必须是字符串数组", "details": []}
+        if svc.get("confirmed_provision") is not None and not isinstance(svc.get("confirmed_provision"), bool):
+            return {"ok": False, "error": "service.confirmed_provision 必须是布尔值", "details": []}
 
         comps_in = svc.get("components")
         comps_in = comps_in if isinstance(comps_in, list) else []
@@ -547,11 +660,15 @@ class Registry:
                       or not comps_in
                       or not all(_component_complete(c) for c in comps_in))
         if incomplete:
+            if dry_run:
+                # V2.4：dry_run 零写入——草稿只由非 dry_run 请求产生
+                return {"ok": True, "action": "incomplete",
+                        "missing": _missing_fields(svc, comps_in), "draft_id": None}
             return self.save_draft(payload)  # 草稿绝不进 user_services_dir
 
         warnings: list[str] = []
         norm = self._validate(payload, warnings)  # 全部校验通过才继续
-        sid, pid, src, comp_objs, toml = (norm["sid"], norm["pid"], norm["src"], norm["comps"], norm["toml"])
+        sid, pid, src, toml = (norm["sid"], norm["pid"], norm["src"], norm["toml"])
 
         with _file_lock():
             data = self._load()
@@ -560,9 +677,15 @@ class Registry:
             except Exception as e:  # 现有清单坏：宁可拒绝也不叠加写入
                 return {"ok": False, "error": f"无法加载现有清单：{e}", "details": []}
 
+            # V2.3：覆盖层先于比较/写盘生效（accept_new 在此清除指定覆盖）→ dry_run diff = 实际
+            eff_fields = overrides.effective_fields(sid, svc.get("accept_new"))
+            toml = overrides.apply_fields(toml, eff_fields)
+            comp_objs = [manifest._component(dict(c)) for c in toml.get("components", [])]
+
             existing = loaded.get(sid)
             proj = _find(data, pid)
             ident = _identity(src, comp_objs)
+            identity_changed, identity_note = False, None
 
             # 身份判定先行：unchanged / duplicate 都不落盘、不检查端口与 revision
             if existing is not None:
@@ -570,11 +693,22 @@ class Registry:
                     (x["id"] for x in data.get("projects", []) if sid in x.get("services", [])), None)
                 if owner_pid and owner_pid != pid:
                     return {"ok": False, "error": f"服务 id {sid} 已属于项目 {owner_pid}", "details": []}
-                if (_identity(_resolved(existing.source), existing.components) == ident
-                        and self._content_equal(toml, existing)):
+                ex_src = _resolved(existing.source)
+                identity_changed = (str(src) != str(ex_src)
+                                    or {str((src / (c.cwd or ".")).resolve()) for c in comp_objs}
+                                    != {str((ex_src / (c.cwd or ".")).resolve())
+                                        for c in existing.components})
+                identity_note = ("注册身份变化（source 或组件 cwd 集合不同），已按 revision 门控执行更新"
+                                 if identity_changed else None)
+                toml["registered"] = norm["registered"]
+                final_def = (self._merge_existing(Path(existing.file), toml)
+                             if existing.file else toml)
+                # 比较对象 = 实际将写盘的合并定义（merge 保留未提供的顶层键，预览 = 实际）
+                if ident == _identity(ex_src, existing.components) and self._content_equal(final_def, existing):
                     if dry_run:
                         return {"ok": True, "action": "diff", "service_id": sid, "project_id": pid,
                                 "revision": (proj or {}).get("revision", 0), "diff": [],
+                                "identity_changed": identity_changed, "identity_note": identity_note,
                                 "draft_id": None, "validation": {"warnings": warnings}}
                     return _ok("unchanged", pid, sid, (proj or {}).get("revision", 0), warnings)
                 gate = _revision_gate(proj, revision)
@@ -592,12 +726,13 @@ class Registry:
                         break
                 if dup:
                     if dry_run:
+                        # V2.4：dry_run 与实际一致——返回 duplicate 动作 + 字段级 diff，不写盘
                         old_def = {}
                         try:
                             old_def = tomllib.loads(Path(loaded[dup].file).read_text(encoding="utf-8"))
                         except (OSError, ValueError, TypeError):
                             old_def = {}
-                        return {"ok": True, "action": "diff", "service_id": dup, "project_id": pid,
+                        return {"ok": True, "action": "duplicate", "service_id": dup, "project_id": pid,
                                 "revision": (proj or {}).get("revision", 0),
                                 "diff": _diff_definitions(old_def, toml),
                                 "draft_id": None, "validation": {"warnings": warnings}}
@@ -606,6 +741,8 @@ class Registry:
                 if gate:
                     return gate
                 action = "created"
+                toml["registered"] = norm["registered"]
+                final_def = toml
 
             # 端口冲突（锁内重读后的最新状态；更新自身端口除外）
             owners: dict[int, str] = {}
@@ -621,13 +758,10 @@ class Registry:
                     return {"ok": False, "error": f"端口 {cobj.port} 已被占用",
                             "details": [f"{owner} 与 {sid}.{cobj.id}"]}
 
-            # ---- 校验完成，开始落盘（先 TOML 后 registry，均为原子写；registry 失败回滚 TOML） ----
-            toml["registered"] = norm["registered"]
-            if existing is not None and existing.file:
-                merged = self._merge_existing(Path(existing.file), toml)
-                target, text = Path(existing.file), dumps_toml(merged)
-            else:
-                target, text = paths.user_services_dir() / f"{sid}.toml", dumps_toml(toml)
+            # ---- 校验完成，开始落盘 ----
+            target = (Path(existing.file) if existing is not None and existing.file
+                      else paths.user_services_dir() / f"{sid}.toml")
+            text = dumps_toml(final_def).encode("utf-8")
             if dry_run:
                 old_def = {}
                 if existing is not None and existing.file:
@@ -637,37 +771,44 @@ class Registry:
                         old_def = {}
                 return {"ok": True, "action": "diff", "service_id": sid, "project_id": pid,
                         "revision": proj["revision"] if proj else 0,
-                        "diff": _diff_definitions(old_def, toml),
+                        "diff": _diff_definitions(old_def, final_def),
+                        "identity_changed": identity_changed, "identity_note": identity_note,
                         "draft_id": None, "validation": {"warnings": warnings}}
-            rollback = target.read_bytes() if target.exists() else None
-            _write_bytes_atomic(target, text.encode("utf-8"))
-            try:
-                if proj is None:
-                    proj = _new_project(pid, norm["pj_name"] or svc.get("name", pid))
-                    data["projects"].append(proj)
-                if norm["pj_name"]:
-                    proj["name"] = norm["pj_name"]
-                if norm["agent"]:
-                    proj["agent"] = norm["agent"]
-                for rp, role in norm["dirs"]:
-                    _add_directory_entry(proj, rp, role)
-                if sid not in proj.get("services", []):
-                    proj.setdefault("services", []).append(sid)
-                proj["revision"] = proj.get("revision", 0) + 1
-                proj["updated_at"] = _now()
-                data["revision"] = data.get("revision", 0) + 1
-                self._save(data)
-            except Exception:
-                # "接口失败 = 无变化"：registry 落盘失败时恢复 TOML 原字节（新建则删除）
-                if rollback is not None:
-                    _write_bytes_atomic(target, rollback)
-                else:
-                    try:
-                        target.unlink()
-                    except OSError:
-                        pass
-                raise
-            return _ok(action, pid, sid, proj["revision"], warnings)
+
+            # 先在内存里完成全部 registry 变更，再走多文件事务（V2.4）：
+            # TOML + overrides.json + removed.json（按需）统一提交，registry 经 after=_save；
+            # 任一失败 → 已替换文件原地写回原字节（新建则删除），接口失败 = 无变化。
+            if proj is None:
+                proj = _new_project(pid, norm["pj_name"] or svc.get("name", pid))
+                data["projects"].append(proj)
+            if norm["pj_name"]:
+                proj["name"] = norm["pj_name"]
+            if norm["agent"]:
+                proj["agent"] = norm["agent"]
+            for rp, role in norm["dirs"]:
+                _add_directory_entry(proj, rp, role)
+            if sid not in proj.get("services", []):
+                proj.setdefault("services", []).append(sid)
+            proj["revision"] = proj.get("revision", 0) + 1
+            proj["updated_at"] = _now()
+            data["revision"] = data.get("revision", 0) + 1
+
+            writes: list[tuple[Path, bytes]] = [(target, text)]
+            ov_bytes = overrides.plan(sid, accept=svc.get("accept_new"),
+                                      edited=svc.get("edited"), final_definition=final_def)
+            if ov_bytes is not None:
+                writes.append((paths.overrides_file(), ov_bytes))
+            if sid in tombstones.services():
+                # 同 sid 重新注册解除 tombstone（内置遮蔽语义：有内置模板则保留条目）
+                rm_bytes = tombstones.plan_clear_on_reregister(sid)
+                if rm_bytes is not None:
+                    writes.append((paths.removed_file(), rm_bytes))
+            _atomic_commit(writes, after=lambda: self._save(data))
+            out = _ok(action, pid, sid, proj["revision"], warnings)
+            if action == "updated":
+                out["identity_changed"] = identity_changed
+                out["identity_note"] = identity_note
+            return out
 
     def _content_equal(self, toml: dict, existing: manifest.Project) -> bool:
         try:
@@ -692,15 +833,26 @@ class Registry:
         base.update(toml)
         return base
 
-    # ---------- 移除登记 ----------
+    # ---------- 移除登记（V2.1 / V2.2） ----------
 
-    def remove_service(self, sid: str, disposition: str, ctl) -> dict:
+    def remove_service(self, sid: str, disposition: str, ctl, removed_by: str = "user") -> dict:
+        """按 V2.1 语义移除单个服务登记；失败 = 登记不变（幂等可重试）。
+
+        步骤：预检/停止 → 快照（state/overrides/TOML）→ ctl.release_service（失败即 409，
+        此时什么都还没写，登记原样保留）→ 归档 + tombstone + registry 去成员（多文件事务）
+        → 删除用户层 TOML（builtin 模板永不修改，靠 tombstone 遮蔽）。"""
         if disposition not in DISPOSITIONS:
             raise RegistryError(f"disposition 必须是 {'/'.join(DISPOSITIONS)}")
         if disposition == "stop":
             if ctl is None:
                 raise RegistryError("controller unavailable", status=503)
             self._stop_via_controller(ctl, sid)
+        else:  # keep-external：绝不留下孤儿 KeepAlive job
+            alive = self._launchd_alive(ctl, sid)
+            if alive:
+                raise RegistryError(
+                    "无法保留为外部实例：仍由本工具 launchd 保活，请选择停止后移除"
+                    f"（组件 {', '.join(alive)}）", status=409, components=alive)
         with _file_lock():
             try:
                 loaded = manifest.load_all()
@@ -711,17 +863,152 @@ class Registry:
                 raise RegistryError(f"未知服务 {sid}", status=404)
             data = self._load()
             owner = next((x for x in data.get("projects", []) if sid in x.get("services", [])), None)
-            if p.file and Path(p.file).exists():
-                Path(p.file).unlink()  # 只删登记，业务数据/源码永不删除
+
+            # 释放运行期对象（state 条目/run 记录/launchd 残留）——放在任何写盘之前：
+            # 释放失败 → 409，登记一字节未动（幂等可重试）
+            released = self._release_via_controller(ctl, sid)
+
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            removed_at = _now()
+            project_id = owner.get("id") if owner else p.project
+            archive_name = f"{sid}-{ts}.json"
+            archive_doc = {"sid": sid, "project_id": project_id, "removed_at": removed_at,
+                           "disposition": disposition,
+                           "toml": (Path(p.file).read_text(encoding="utf-8", errors="replace")
+                                    if p.file else ""),
+                           "state": self._state_snapshot(sid), "overrides": overrides.snapshot(sid)}
+            entry = {"removed_at": removed_at, "removed_by": removed_by,
+                     "disposition": disposition, "project_id": project_id, "archive": archive_name}
+
             if owner is not None:
                 owner["services"] = [s for s in owner.get("services", []) if s != sid]
                 owner["revision"] = owner.get("revision", 0) + 1
-                owner["updated_at"] = _now()
+                owner["updated_at"] = removed_at
                 data["revision"] = data.get("revision", 0) + 1
-                self._save(data)
+
+            writes: list[tuple[Path, bytes]] = [
+                (paths.removed_dir() / archive_name,
+                 json.dumps(archive_doc, ensure_ascii=False, indent=1).encode("utf-8")),
+                (paths.removed_file(), tombstones.plan_add_service(sid, entry)),
+            ]
+            ov_bytes = overrides.plan_drop(sid)
+            if ov_bytes is not None:
+                writes.append((paths.overrides_file(), ov_bytes))
+            _atomic_commit(writes, after=(lambda: self._save(data)) if owner is not None else None)
+
+            # 用户层 TOML 删除；builtin（services_dir 内随仓模板）永不触碰
+            builtin = bool(p.file and _inside(Path(p.file).resolve(), paths.services_dir().resolve()))
+            if not builtin and p.file and Path(p.file).exists():
+                try:
+                    Path(p.file).unlink()  # 只删登记，业务数据/源码永不删除
+                except OSError as e:
+                    raise RegistryError(f"登记已移除但清单文件删除失败：{e}", status=500) from e
             return {"ok": True, "service_id": sid, "disposition": disposition,
-                    "project_id": owner.get("id") if owner else None,
+                    "project_id": project_id, "archived": True, "archive": archive_name,
+                    "released": released, "builtin": builtin,
                     "revision": owner.get("revision") if owner else None}
+
+    def service_remove_preview(self, sid: str, ctl) -> dict:
+        """V2.1 移除预览：零副作用。"""
+        try:
+            loaded = manifest.load_all()
+        except Exception as e:
+            raise RegistryError(f"无法加载现有清单：{e}", status=500)
+        p = loaded.get(sid)
+        if p is None:
+            raise RegistryError(f"未知服务 {sid}", status=404)
+        state = "unknown"
+        external: list[dict] = []
+        if ctl is not None:
+            try:
+                snap = {x.get("id"): x for x in (ctl.snapshot() or {}).get("projects", [])}
+                state = (snap.get(sid) or {}).get("state", "unknown")
+            except Exception:  # noqa: BLE001
+                pass
+            ext_fn = getattr(ctl, "external_instances", None)
+            if callable(ext_fn):
+                try:
+                    external = ext_fn(p) or []
+                except Exception:  # noqa: BLE001
+                    external = []
+        alive = self._launchd_alive(ctl, sid)
+        keep = [str(p.source)]
+        for d in p.dependencies:
+            if d.container:
+                keep.append(f"container:{d.container}")
+            if d.volume:
+                keep.append(f"volume:{d.volume}")
+        keep_external = {"enabled": not alive,
+                         "reason": (None if not alive else
+                                    f"组件 {', '.join(alive)} 仍由本工具 launchd 保活")}
+        return {"ok": True, "service_id": sid, "name": p.name, "state": state,
+                "running_components": alive, "external_instances": external, "keep": keep,
+                "dispositions": {"stop": {"enabled": True}, "keep-external": keep_external},
+                "restore_hint": (f"移除后登记归档于 removed/{sid}-<时间戳>.json，"
+                                 f"可通过 POST /api/removed/services/{sid}/restore 恢复")}
+
+    @staticmethod
+    def _launchd_alive(ctl, sid: str) -> list[str]:
+        """仍由本工具 launchd loaded/running 的组件 id；无法确认（ctl 缺失/未加载该服务）
+        时返回空——只有 ctl 证实 loaded 才拒绝 keep-external。"""
+        from . import launchd as _launchd
+        try:
+            if ctl is None:
+                return []
+            p = getattr(ctl, "projects", {}).get(sid)
+            label = getattr(ctl, "label", None)
+            if p is None or label is None:
+                return []
+            alive = []
+            for c in p.managed_components():
+                ji = _launchd.info(label(p, c))
+                if ji and (ji.running or ji.loaded):
+                    alive.append(c.id)
+            return alive
+        except Exception:  # noqa: BLE001
+            return []
+
+    @staticmethod
+    def _release_via_controller(ctl, sid: str) -> list:
+        """防御式调用 ctl.release_service（Runtime 线提供；缺省视为 no-op）。
+        返回 released 组件列表；释放失败抛 409——调用方此时尚未写盘，登记保留。"""
+        rel = getattr(ctl, "release_service", None)
+        if rel is None:
+            return []
+        try:
+            res = rel(sid) or {}
+        except Exception as e:  # noqa: BLE001
+            raise RegistryError(f"释放运行期对象失败（{e}），登记保留；可重试", status=409) from e
+        if not res.get("ok"):
+            raise RegistryError(
+                f"释放运行期对象失败（{res.get('error', '')}），登记保留；可重试",
+                status=409, errors=res.get("errors", []))
+        return res.get("released", []) or []
+
+    @staticmethod
+    def _state_snapshot(sid: str) -> dict:
+        try:
+            data = json.loads(paths.state_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        entry = (data.get("projects") or {}).get(sid)
+        return copy.deepcopy(entry) if isinstance(entry, dict) else {}
+
+    @staticmethod
+    def _set_state_intent(sid: str, intent: str, by: str = "restore") -> None:
+        """恢复时显式写 state.json 意图（缺省 stopped；绝不自动启动）。"""
+        try:
+            data = json.loads(paths.state_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        projects = data.setdefault("projects", {})
+        entry = projects.get(sid) if isinstance(projects.get(sid), dict) else {}
+        entry.update({"intent": intent, "intent_at": time.time(), "intent_by": by})
+        projects[sid] = entry
+        _write_bytes_atomic(paths.state_file(),
+                            json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))
 
     @staticmethod
     def _stop_via_controller(ctl, sid: str) -> None:
@@ -765,6 +1052,389 @@ class Registry:
                     f"停止未完成（组件 {', '.join(still)} 仍在运行），登记未移除；"
                     "可重试或选择「保留为外部实例」", status=409)
 
+    # ---------- Project 移除 / 恢复 / removed 列表（V2.2） ----------
+
+    def remove_project_preview(self, pid: str, ctl) -> dict:
+        with _file_lock():
+            data = self._load()
+            proj = _find(data, pid)
+            if proj is None:
+                raise RegistryError(f"未知项目 {pid}", status=404)
+            try:
+                loaded = manifest.load_all()
+            except Exception as e:
+                raise RegistryError(f"无法加载现有清单：{e}", status=500)
+            return self._project_remove_preview(proj, loaded, ctl)
+
+    def _project_remove_preview(self, proj: dict, loaded: dict, ctl) -> dict:
+        warnings: list[str] = []
+        services = []
+        snap: dict[str, dict] = {}
+        if ctl is not None:
+            try:
+                snap = {x.get("id"): x for x in (ctl.snapshot() or {}).get("projects", [])}
+            except Exception:  # noqa: BLE001
+                pass
+        for sid in proj.get("services", []):
+            p = loaded.get(sid)
+            if p is None:
+                warnings.append(f"成员 {sid} 当前未加载（可能已移除），仅移除登记关联")
+                continue
+            alive = self._launchd_alive(ctl, sid)
+            external: list[dict] = []
+            if ctl is not None:
+                ext_fn = getattr(ctl, "external_instances", None)
+                if callable(ext_fn):
+                    try:
+                        external = ext_fn(p) or []
+                    except Exception:  # noqa: BLE001
+                        external = []
+            services.append({
+                "id": sid, "name": p.name,
+                "state": (snap.get(sid) or {}).get("state", "unknown"),
+                "external_instances": external,
+                "dispositions": {"stop": {"enabled": True},
+                                 "keep-external": {"enabled": not alive,
+                                                   "reason": (None if not alive else
+                                                              f"组件 {', '.join(alive)} 仍由本工具 launchd 保活")}},
+            })
+        resources = self._resources_referenced(proj, loaded, warnings)
+        return {"ok": True, "project": {"id": proj["id"], "name": proj.get("name")},
+                "services": services,
+                "directories": copy.deepcopy(proj.get("directories", [])),
+                "resources_referenced": resources,
+                "kept": sorted({str(loaded[sid].source) for sid in proj.get("services", [])
+                                if sid in loaded} |
+                               {d.get("path", "") for d in proj.get("directories", [])} - {""}),
+                "warnings": warnings}
+
+    def _resources_referenced(self, proj: dict, loaded: dict, warnings: list[str]) -> list[dict]:
+        """成员服务依赖引用的容器/卷；shared=其他项目的服务也在引用。"""
+        member_ids = set(proj.get("services", []))
+        refs: dict[str, list[str]] = {}
+        for lp in loaded.values():
+            names: list[str] = []
+            for d in lp.dependencies:
+                if d.container:
+                    names.append(f"container:{d.container}")
+                if d.volume:
+                    names.append(f"volume:{d.volume}")
+            for c in lp.components:
+                if getattr(c, "run", "local") == "compose":
+                    names.append(f"compose:{c.compose_service}@{c.compose_project or ''}")
+            for n in names:
+                refs.setdefault(n, []).append(lp.id)
+        if not refs:
+            return []
+        inv: dict = {}
+        try:
+            inv = resources.inventory()
+        except Exception as e:  # noqa: BLE001
+            inv = {"ok": False, "error": str(e)}
+        states: dict[str, str] = {}
+        if inv.get("ok"):
+            for r in inv.get("resources", []):
+                states[f"container:{r.get('name')}"] = r.get("state", "unknown")
+        else:
+            warnings.append(f"资源状态未验证（Docker 不可达：{inv.get('error', '')}）")
+        out = []
+        for name, consumers in sorted(refs.items()):
+            others = [s for s in consumers if s not in member_ids]
+            out.append({"name": name,
+                        "state": states.get(name, "unknown"),
+                        "shared": bool(others),
+                        "consumers": sorted(consumers)})
+        return out
+
+    def remove_project(self, pid: str, disposition: str, ctl, dry_run: bool = False,
+                       removed_by: str = "user") -> dict:
+        """V2.2：逐成员按 V2.1 处置；任一成员停止/预检失败 → 整体中止，全部登记保留。"""
+        if disposition not in DISPOSITIONS:
+            raise RegistryError(f"disposition 必须是 {'/'.join(DISPOSITIONS)}")
+        with _file_lock():
+            data = self._load()
+            proj = _find(data, pid)
+            if proj is None:
+                raise RegistryError(f"未知项目 {pid}", status=404)
+            try:
+                loaded = manifest.load_all()
+            except Exception as e:
+                raise RegistryError(f"无法加载现有清单：{e}", status=500)
+            if dry_run:
+                return self._project_remove_preview(proj, loaded, ctl)
+
+            members = [sid for sid in proj.get("services", []) if sid in loaded]
+            if disposition == "stop" and members and ctl is None:
+                raise RegistryError("controller unavailable", status=503)
+
+            # 1) 停止/预检阶段：任一失败 → 整体中止（已停止进程不回拉，登记全保留）
+            stopped: list[str] = []
+            remaining: list[dict] = []
+            for sid in members:
+                try:
+                    if disposition == "stop":
+                        self._stop_via_controller(ctl, sid)
+                    else:
+                        alive = self._launchd_alive(ctl, sid)
+                        if alive:
+                            raise RegistryError(
+                                "无法保留为外部实例：仍由本工具 launchd 保活，请选择停止后移除"
+                                f"（组件 {', '.join(alive)}）", status=409)
+                    stopped.append(sid)
+                except RegistryError as e:
+                    remaining.append({"id": sid, "reason": str(e)})
+            if remaining:
+                return {"ok": False, "project_id": pid, "stopped": stopped, "remaining": remaining}
+
+            # 2) 释放运行期对象（失败 → 整体中止；此时尚未写盘，登记全保留）
+            released: dict[str, list] = {}
+            for sid in members:
+                try:
+                    released[sid] = self._release_via_controller(ctl, sid)
+                except RegistryError as e:
+                    return {"ok": False, "project_id": pid, "stopped": stopped,
+                            "remaining": [{"id": sid, "reason": str(e)}]}
+
+            # 3) 全部成员通过 → 归档 + tombstone + 项目删除（多文件事务）
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            removed_at = _now()
+            writes: list[tuple[Path, bytes]] = []
+            rm_data = tombstones.base()
+            services_out: list[dict] = []
+            for sid in members:
+                p = loaded[sid]
+                archive_name = f"{sid}-{ts}.json"
+                archive_doc = {"sid": sid, "project_id": pid, "removed_at": removed_at,
+                               "disposition": disposition,
+                               "toml": (Path(p.file).read_text(encoding="utf-8", errors="replace")
+                                        if p.file else ""),
+                               "state": self._state_snapshot(sid),
+                               "overrides": overrides.snapshot(sid)}
+                entry = {"removed_at": removed_at, "removed_by": removed_by,
+                         "disposition": disposition, "project_id": pid, "archive": archive_name}
+                writes.append((paths.removed_dir() / archive_name,
+                               json.dumps(archive_doc, ensure_ascii=False, indent=1).encode("utf-8")))
+                tombstones.apply_add_service(rm_data, sid, entry)
+                services_out.append({"id": sid, "archive": archive_name,
+                                     "released": released.get(sid, []),
+                                     "builtin": bool(p.file and _inside(
+                                         Path(p.file).resolve(), paths.services_dir().resolve()))})
+            proj_entry = {"removed_at": removed_at, "removed_by": removed_by,
+                          "disposition": disposition,
+                          "services": list(proj.get("services", [])),
+                          "project": copy.deepcopy(proj)}
+            writes.append((paths.removed_file(),
+                           tombstones.apply_add_project(rm_data, pid, proj_entry)))
+            ov_bytes = overrides.plan_drop_many(members)
+            if ov_bytes is not None:
+                writes.append((paths.overrides_file(), ov_bytes))
+
+            data["projects"].remove(proj)
+            data["revision"] = data.get("revision", 0) + 1
+            _atomic_commit(writes, after=lambda: self._save(data))
+
+            # 4) 删除用户层 TOML（builtin 模板永不触碰）
+            for sid in members:
+                p = loaded[sid]
+                builtin = bool(p.file and _inside(Path(p.file).resolve(),
+                                                  paths.services_dir().resolve()))
+                if not builtin and p.file and Path(p.file).exists():
+                    try:
+                        Path(p.file).unlink()
+                    except OSError as e:
+                        raise RegistryError(f"登记已移除但清单文件删除失败：{e}", status=500) from e
+            return {"ok": True, "project_id": pid, "disposition": disposition,
+                    "stopped": stopped, "services": services_out,
+                    "directories": copy.deepcopy(proj.get("directories", []))}
+
+    def removed_list(self) -> dict:
+        """V2.2 GET /api/removed：只列当前未登记（load_all 不含该 id）的移除条目。"""
+        rm = tombstones._load_full()
+        try:
+            loaded = manifest.load_all()
+        except Exception:  # noqa: BLE001
+            loaded = {}
+        services = [{"sid": sid, "project_id": e.get("project_id"),
+                     "removed_at": e.get("removed_at"), "disposition": e.get("disposition"),
+                     "archive": e.get("archive")}
+                    for sid, e in rm.get("services", {}).items() if sid not in loaded]
+        projects = [{"pid": pid, "removed_at": e.get("removed_at"),
+                     "disposition": e.get("disposition"),
+                     "services": list(e.get("services", []))}
+                    for pid, e in rm.get("projects", {}).items()]
+        return {"ok": True, "services": services, "projects": projects}
+
+    def restore_service(self, sid: str, body: dict, ctl) -> dict:
+        """V2.2：归档 TOML 写回 user_services_dir（即使原是 builtin）+ 恢复登记 +
+        state intent 显式设为所选值（缺省 stopped，绝不自动启动）。"""
+        body = body if isinstance(body, dict) else {}
+        with _file_lock():
+            rm = tombstones._load_full()
+            entry = rm.get("services", {}).get(sid)
+            if not isinstance(entry, dict):
+                raise RegistryError(f"未找到服务 {sid} 的移除记录", status=404)
+            try:
+                loaded = manifest.load_all()
+            except Exception as e:
+                raise RegistryError(f"无法加载现有清单：{e}", status=500)
+            if sid in loaded:
+                raise RegistryError(f"服务 id {sid} 已登记（先移除再恢复）", status=409)
+            archive_path = paths.removed_dir() / str(entry.get("archive") or "")
+            if not archive_path.is_file():
+                cands = sorted(paths.removed_dir().glob(f"{sid}-*.json"))
+                if not cands:
+                    raise RegistryError(f"服务 {sid} 的归档文件缺失", status=404)
+                archive_path = cands[-1]
+            try:
+                doc = json.loads(archive_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                raise RegistryError(f"归档 {archive_path.name} 无法读取：{e}", status=500) from e
+            toml_text = str(doc.get("toml") or "")
+            try:
+                parsed = tomllib.loads(toml_text)
+            except ValueError as e:
+                raise RegistryError(f"归档 TOML 无法解析：{e}", status=500) from e
+
+            intent = body.get("intent") or "stopped"
+            if intent not in INTENTS:
+                raise RegistryError("intent 必须是 stopped/running")
+            # 端口冲突预检（写盘前，失败不动任何文件）
+            owners: dict[int, str] = {}
+            for lp in loaded.values():
+                for lc in lp.managed_components():
+                    if lc.port:
+                        owners[lc.port] = f"{lp.id}.{lc.id}"
+            for c in parsed.get("components", []) or []:
+                port = c.get("port") if isinstance(c, dict) else None
+                if port and owners.get(port, "").split(".", 1)[0] not in ("", sid):
+                    raise RegistryError(f"端口 {port} 已被占用", status=409,
+                                        details=[f"{owners[port]} 与 {sid}.{c.get('id')}"])
+
+            target_pid = body.get("project_id") or doc.get("project_id") or sid
+            if not isinstance(target_pid, str) or not ID_RE.fullmatch(target_pid or ""):
+                raise RegistryError(f"project_id 非法：{target_pid!r}")
+            data = self._load()
+            proj = _find(data, target_pid)
+            recreated = False
+            if proj is None:
+                archived_proj = ((rm.get("projects", {}).get(target_pid) or {}).get("project")
+                                 or {})
+                name = archived_proj.get("name") or parsed.get("name") or target_pid
+                proj = _new_project(target_pid, name,
+                                    origin=archived_proj.get("origin") or "user")
+                for key in ("directories", "agent"):
+                    if archived_proj.get(key):
+                        proj[key] = copy.deepcopy(archived_proj[key])
+                for key in ("favorite", "autostart"):
+                    if isinstance(archived_proj.get(key), bool):
+                        proj[key] = archived_proj[key]
+                data["projects"].append(proj)
+                recreated = True
+            else:
+                rev = body.get("revision")
+                if isinstance(rev, int) and not isinstance(rev, bool) and rev != proj.get("revision", 0):
+                    raise RegistryError("revision conflict", status=409,
+                                        current_revision=proj.get("revision", 0))
+            if sid not in proj.get("services", []):
+                proj.setdefault("services", []).append(sid)
+            proj["revision"] = proj.get("revision", 0) + 1
+            proj["updated_at"] = _now()
+            data["revision"] = data.get("revision", 0) + 1
+
+            writes: list[tuple[Path, bytes]] = [
+                (paths.user_services_dir() / f"{sid}.toml", toml_text.encode("utf-8"))]
+            # tombstone：有内置模板 → 保留条目（持续遮蔽 builtin）；纯用户层 id → 解除
+            builtin_shadow = (paths.services_dir() / f"{sid}.toml").exists()
+            if not builtin_shadow:
+                rm_bytes = tombstones.plan_remove_service(sid)
+                if rm_bytes is not None:
+                    writes.append((paths.removed_file(), rm_bytes))
+            ov_bytes = overrides.plan_restore(sid, doc.get("overrides") or {})
+            if ov_bytes is not None:
+                writes.append((paths.overrides_file(), ov_bytes))
+            _atomic_commit(writes, after=lambda: self._save(data))
+            self._set_state_intent(sid, intent, by="restore")  # 绝不自动启动
+            return {"ok": True, "service_id": sid, "project_id": target_pid, "intent": intent,
+                    "archive": archive_path.name, "builtin_shadow": builtin_shadow,
+                    "project_recreated": recreated}
+
+    def restore_project(self, pid: str, body: dict, ctl) -> dict:
+        """V2.2：恢复项目条目（归档的原 project 对象）+ 全部成员服务。"""
+        body = body if isinstance(body, dict) else {}
+        with _file_lock():
+            rm = tombstones._load_full()
+            entry = rm.get("projects", {}).get(pid)
+            if not isinstance(entry, dict):
+                raise RegistryError(f"未找到项目 {pid} 的移除记录", status=404)
+            try:
+                loaded = manifest.load_all()
+            except Exception as e:
+                raise RegistryError(f"无法加载现有清单：{e}", status=500)
+            if _find(self._load(), pid) is not None:
+                raise RegistryError(f"项目 id {pid} 已存在（先移除再恢复）", status=409)
+            members = [s for s in entry.get("services", []) if isinstance(s, str)]
+            intent = body.get("intent") or "stopped"
+            if intent not in INTENTS:
+                raise RegistryError("intent 必须是 stopped/running")
+            # 预检：同 id 已登记 → 409；归档缺失 → 404（写盘前失败 = 无变化）
+            conflicts = [s for s in members if s in loaded]
+            if conflicts:
+                raise RegistryError(f"成员 {', '.join(conflicts)} 已登记，无法整项目恢复",
+                                    status=409, details=conflicts)
+            archives: dict[str, dict] = {}
+            for sid in members:
+                svc_entry = rm.get("services", {}).get(sid)
+                path = (paths.removed_dir() / str((svc_entry or {}).get("archive") or "")
+                        if svc_entry else None)
+                if path is None or not path.is_file():
+                    cands = sorted(paths.removed_dir().glob(f"{sid}-*.json"))
+                    if not cands:
+                        raise RegistryError(f"服务 {sid} 的归档文件缺失", status=404)
+                    path = cands[-1]
+                try:
+                    archives[sid] = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as e:
+                    raise RegistryError(f"归档无法读取（{sid}）：{e}", status=500) from e
+
+            data = self._load()
+            archived_proj = entry.get("project") or {}
+            proj = _new_project(pid, archived_proj.get("name") or pid,
+                                origin=archived_proj.get("origin") or "user")
+            for key in ("directories", "agent"):
+                if archived_proj.get(key):
+                    proj[key] = copy.deepcopy(archived_proj[key])
+            for key in ("favorite", "autostart"):
+                if isinstance(archived_proj.get(key), bool):
+                    proj[key] = archived_proj[key]
+            proj["services"] = list(members)
+            proj["revision"] = (archived_proj.get("revision") or 0) + 1
+            proj["updated_at"] = _now()
+            data["projects"].append(proj)
+            data["revision"] = data.get("revision", 0) + 1
+
+            rm_data = tombstones.base()
+            rm_bytes = tombstones.apply_remove_project(rm_data, pid)
+            for sid in members:
+                if (paths.services_dir() / f"{sid}.toml").exists():
+                    continue  # 内置遮蔽语义：保留条目
+                b = tombstones.apply_remove_service(rm_data, sid)
+                if b is not None:
+                    rm_bytes = b
+            writes: list[tuple[Path, bytes]] = []
+            if rm_bytes is not None:
+                writes.append((paths.removed_file(), rm_bytes))
+            for sid in members:
+                writes.append((paths.user_services_dir() / f"{sid}.toml",
+                               str(archives[sid].get("toml") or "").encode("utf-8")))
+                ov_bytes = overrides.plan_restore(sid, archives[sid].get("overrides") or {})
+                if ov_bytes is not None:
+                    writes.append((paths.overrides_file(), ov_bytes))
+            _atomic_commit(writes, after=lambda: self._save(data))
+            for sid in members:
+                self._set_state_intent(sid, intent, by="restore")
+            return {"ok": True, "project_id": pid, "intent": intent, "services": members,
+                    "project": copy.deepcopy(proj)}
+
     # ---------- 迁移（CONTRACTS §7，一次性且幂等） ----------
 
     def migrate_from_manifests(self) -> dict:
@@ -775,9 +1445,18 @@ class Registry:
             except Exception as e:
                 return {"ok": False, "error": f"无法加载清单：{e}"}
 
+            notes: list[str] = []
+            # V2.5：tombstone 服务完全跳过 = 标记存在且当前未登记（load_all 不含）。
+            # load_all 已按 V2.0 修订过滤（遮蔽的 builtin 不出现；用户层同 id 文件正常加载
+            # → 属"已登记"，正常迁移）。
+            tombstoned = {sid for sid in tombstones.services() if sid not in loaded}
+
             groups: dict[str, list] = {}
             desired: list[dict] = []
             for p in loaded.values():
+                if p.id in tombstoned:
+                    notes.append(f"{p.id}: 已在移除标记中，迁移跳过")
+                    continue
                 if p.group:
                     groups.setdefault(p.group, []).append(p)
                 else:
@@ -788,24 +1467,57 @@ class Registry:
                                 "services": [m.id for m in members], "sources": [m.source for m in members]})
             desired.sort(key=lambda d: d["id"])
 
-            # 1) 需要追加 project= 的 TOML（内置 services/ 与用户目录一视同仁）
+            # registry 现状先读：V2.5 判定"sid 已属其他项目"要在 TOML 插键之前完成
+            reg_path = paths.registry_file()
+            old_bytes = reg_path.read_bytes() if reg_path.exists() else None
+            data = self._load()
+            assigned: dict[str, str] = {}
+            for x in data.get("projects", []):
+                for sid in x.get("services", []):
+                    assigned.setdefault(sid, x["id"])
+
+            # 1) 需要追加 project= 的 TOML（内置 services/ 与用户目录一视同仁）。
+            #    V2.5：TOML 已声明**不同** project 值 → 跳过写入并记 note（绝不插第二个顶层键）；
+            #    registry 已把 sid 指派给其他项目 → 同样不写映射键（不挪归属）。
             toml_writes: list[tuple[Path, bytes, bytes]] = []
+            declared: dict[str, str | None] = {}  # sid → TOML 声明的 project（无键=None）
             for spec in desired:
                 for sid in spec["services"]:
                     file = Path(loaded[sid].file)
                     orig = file.read_bytes()
                     parsed = tomllib.loads(orig.decode("utf-8"))
+                    declared[sid] = parsed.get("project")
                     if parsed.get("project") == spec["id"]:
+                        continue
+                    if "project" in parsed:
+                        notes.append(f"{sid}: TOML 已声明 project={parsed['project']!r}"
+                                     f"（迁移映射为 {spec['id']!r}），不插入第二键、不挪归属")
+                        continue
+                    if assigned.get(sid) not in (None, spec["id"]):
+                        notes.append(f"{sid}: registry 已指派给项目 {assigned[sid]}，"
+                                     f"不写入 project={spec['id']!r}、不挪归属")
                         continue
                     new = _insert_project_line(orig.decode("utf-8"), spec["id"]).encode("utf-8")
                     toml_writes.append((file, orig, new))
 
-            # 2) registry 合并（保留用户已有的项目与目录，仅补齐迁移映射）
-            reg_path = paths.registry_file()
-            old_bytes = reg_path.read_bytes() if reg_path.exists() else None
-            data = self._load()
+            # 2) registry 合并（保留用户已有的项目与目录，仅补齐迁移映射）。
+            #    V2.5：sid 已属其他项目（TOML 声明或 registry 指派）→ 不挪归属、不双写成员。
             registry_changed = False
             for spec in desired:
+                homed: list[tuple[str, object]] = []  # (sid, source) 本项目实际接纳的成员
+                for sid in spec["services"]:
+                    decl = declared.get(sid)
+                    if decl is not None and decl != spec["id"]:
+                        continue  # note 已在上一轮记录
+                    assigned = next((x["id"] for x in data.get("projects", [])
+                                     if sid in x.get("services", [])), None)
+                    if assigned is not None and assigned != spec["id"]:
+                        notes.append(f"{sid}: 已属于项目 {assigned}（registry 指派），"
+                                     f"不加入 {spec['id']}、不双写成员")
+                        continue
+                    homed.append((sid, loaded[sid].source))
+                if not homed and not any(x["id"] == spec["id"] for x in data["projects"]):
+                    continue  # 全员归属他处且项目尚不存在：不为空壳建项目
                 proj = _find(data, spec["id"])
                 if proj is None:
                     proj = _new_project(spec["id"], spec["name"], origin="migrated")
@@ -814,13 +1526,12 @@ class Registry:
                 if proj.get("origin") == "migrated" and proj.get("name") != spec["name"]:
                     proj["name"] = spec["name"]
                     registry_changed = True
-                for src in spec["sources"]:
+                for sid, src in homed:
                     rp = str(Path(src).resolve())
                     if not any(d.get("path") == rp for d in proj.get("directories", [])):
                         proj.setdefault("directories", []).append(
                             {"id": _dir_id(rp), "path": rp, "role": "source"})
                         registry_changed = True
-                for sid in spec["services"]:
                     if sid not in proj.get("services", []):
                         proj.setdefault("services", []).append(sid)
                         registry_changed = True
@@ -831,15 +1542,17 @@ class Registry:
                        for x in sorted(data["projects"], key=lambda p: p["id"])]
 
             if not toml_writes and not registry_changed:
-                return {"ok": True, "changed": False, "projects": mapping}
+                return {"ok": True, "changed": False, "notes": notes, "projects": mapping}
 
-            # 3) 备份 + 写入；任何失败恢复原字节
+            # 3) 备份 + 写入；任何失败经原地写回恢复原字节（与 _atomic_commit 同一恢复机制）
             artifacts: list[Path] = []  # 备份/标记文件（失败时删除）
+            replaced: list[tuple[Path, bytes | None]] = []  # 已写文件及其原字节
             new_reg = (json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8")
                        if registry_changed else None)
             try:
-                for file, _, new in toml_writes:
+                for file, orig, new in toml_writes:
                     _write_bytes_atomic(file, new)
+                    replaced.append((file, orig))
                 if old_bytes is not None:
                     bak = reg_path.with_name(f"registry.json.bak-{ts}")
                     bak.write_bytes(old_bytes)
@@ -851,26 +1564,21 @@ class Registry:
                         artifacts.append(marker)
                 if new_reg is not None:
                     _write_bytes_atomic(reg_path, new_reg)
+                    replaced.append((reg_path, old_bytes))
             except Exception as e:
-                for file, orig, _ in toml_writes:
-                    try:
-                        file.write_bytes(orig)  # 已写/未写文件一律恢复原字节
-                    except OSError:
-                        pass
+                for path, orig in replaced:
+                    if orig is None:
+                        _quiet_unlink(path)
+                    else:
+                        _restore_inplace(path, orig)
                 for path in artifacts:
-                    try:
-                        path.unlink()
-                    except OSError:
-                        pass
-                try:
-                    if old_bytes is None and reg_path.exists():
-                        reg_path.unlink()
-                    elif old_bytes is not None:
-                        reg_path.write_bytes(old_bytes)
-                except OSError:
-                    pass
+                    _quiet_unlink(path)
+                if old_bytes is None and reg_path.exists() and (reg_path, old_bytes) not in replaced:
+                    _quiet_unlink(reg_path)
+                elif old_bytes is not None and (reg_path, old_bytes) not in replaced:
+                    _restore_inplace(reg_path, old_bytes)
                 return {"ok": False, "error": f"迁移失败，已恢复原状：{e}"}
-            return {"ok": True, "changed": True, "projects": mapping}
+            return {"ok": True, "changed": True, "notes": notes, "projects": mapping}
 
     # ---------- 校验辅助 ----------
 
@@ -906,6 +1614,7 @@ class Registry:
         hint = svc.get("project_hint")
         if hint is not None and (not isinstance(hint, str) or not ID_RE.fullmatch(hint)):
             details.append(f"service.project_hint 非法：{hint!r}")
+        confirmed = svc.get("confirmed_provision")
 
         src = _resolved(svc["source"])
         if not src.is_dir():
@@ -937,6 +1646,9 @@ class Registry:
                 details.append(f"组件 id 重复：{nc['id']}")
                 continue
             seen_ids.add(nc["id"])
+            if nc.get("provision") == "up" and not confirmed:
+                details.append(f"组件 {nc['id']} provision=up 需要显式确认"
+                               "（service.confirmed_provision=true，允许 compose 创建容器/拉取镜像）")
             cwd = Path(nc.get("cwd", "."))
             cwd_abs = (cwd if cwd.is_absolute() else src / cwd).resolve()
             if not cwd_abs.is_dir():
@@ -964,8 +1676,11 @@ class Registry:
         comp_objs = [manifest._component(dict(c)) for c in comps]
         toml = {"id": sid, "name": svc["name"], "source": str(src)}
         for key in ("description", "open", "adapter"):
-            if svc.get(key) is not None:
-                toml[key] = svc[key]
+            v = svc.get(key)
+            # 空 description 视为"未提供"：更新时经 merge 保留用户手写的旧描述
+            # （GUI 恒携带该字段，重新识别没有描述时发 ""——不能借此清空人工描述）
+            if v is not None and (key != "description" or v != ""):
+                toml[key] = v
         for key in ("autostart", "observe_only"):
             if svc.get(key) is not None:
                 toml[key] = svc[key]
@@ -1003,7 +1718,31 @@ def _component_complete(c) -> bool:
     cmd = c.get("cmd")
     has_cmd = isinstance(cmd, list) and bool(cmd) and all(isinstance(x, str) for x in cmd)
     has_script = isinstance(c.get("shell_script"), str) and bool(c.get("shell_script"))
-    return has_cmd or has_script
+    if has_cmd or has_script:
+        return True
+    # V2.7：run=compose 组件无本地 cmd；缺 compose_service 由 _validate 给出精确错误
+    return c.get("run") == "compose"
+
+
+def _missing_fields(svc: dict, comps_in: list) -> list[str]:
+    """不完整 payload 的缺项清单（dry_run action=incomplete 用）。"""
+    missing: list[str] = []
+    if bool(svc.get("draft")):
+        missing.append("service.draft")
+    if not isinstance(svc.get("name"), str) or not svc.get("name", "").strip():
+        missing.append("service.name")
+    if not isinstance(svc.get("source"), str) or not svc.get("source", "").strip():
+        missing.append("service.source")
+    if not comps_in:
+        missing.append("service.components")
+    for c in comps_in:
+        cid = c.get("id") if isinstance(c, dict) else None
+        label = cid if isinstance(cid, str) and cid else "<缺失 id>"
+        if not isinstance(cid, str) or not cid:
+            missing.append(f"components[{label}].id")
+        elif not _component_complete(c):
+            missing.append(f"components[{label}].cmd")
+    return missing
 
 
 def _norm_directories(raw, details: list[str] | None = None) -> list[tuple[str, str]]:
@@ -1067,13 +1806,19 @@ def _norm_component(c: dict, details: list[str]) -> dict | None:
             return None
         out["cwd"] = c["cwd"]
     cmd = c.get("cmd")
+    run = c.get("run")
+    if run not in (None, "local", "compose"):
+        details.append(f"组件 {cid} run 必须是 local/compose：{run!r}")
+        return None
+    if run is not None:
+        out["run"] = run
     if isinstance(cmd, list) and cmd and all(isinstance(x, str) for x in cmd):
         out["cmd"] = list(cmd)
     elif isinstance(c.get("shell_script"), str) and c["shell_script"]:
         # shell 入口必须指向工程内已存在脚本（禁止字符串拼接隐式 shell）
         out["cmd"] = ["/bin/sh", c["shell_script"]]
         out["_shell_script"] = c["shell_script"]
-    else:
+    elif run != "compose":
         details.append(f"组件 {cid} 缺少 cmd 或 shell_script")
         return None
     if c.get("port") is not None:
@@ -1131,6 +1876,27 @@ def _norm_component(c: dict, details: list[str]) -> dict | None:
                 details.append(f"组件 {cid} {key} 必须是字符串")
                 return None
             out[key] = c[key]
+    # V2.7 运行适配字段（run=compose 无本地 cmd；manifest v2 向后兼容）
+    if run == "compose":
+        if not isinstance(c.get("compose_service"), str) or not c.get("compose_service"):
+            details.append(f"组件 {cid} run=compose 需要 compose_service")
+            return None
+    for key in ("compose_service", "compose_project"):
+        if c.get(key) is not None:
+            if not isinstance(c[key], str):
+                details.append(f"组件 {cid} {key} 必须是字符串")
+                return None
+            out[key] = c[key]
+    if c.get("compose_files") is not None:
+        if not _is_str_list(c["compose_files"]):
+            details.append(f"组件 {cid} compose_files 必须是字符串数组")
+            return None
+        out["compose_files"] = list(c["compose_files"])
+    if c.get("provision") is not None:
+        if c["provision"] not in ("existing", "up"):
+            details.append(f"组件 {cid} provision 必须是 existing/up")
+            return None
+        out["provision"] = c["provision"]
     return out
 
 
@@ -1209,6 +1975,8 @@ def _check_resource_ref(dep_name: str, ref: str, name: str, details: list[str], 
 
 def _check_cmd(nc: dict, src: Path, details: list[str], warnings: list[str]) -> None:
     cid = nc["id"]
+    if nc.get("run") == "compose":
+        return  # V2.7：compose 组件由 docker compose 启动，无本地 cmd 可解析
     script = nc.get("_shell_script")
     if script is not None:
         p = (src / script).resolve()

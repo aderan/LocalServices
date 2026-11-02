@@ -106,6 +106,33 @@
   .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
   .muted { color: var(--mute); }
   .empty { color: var(--mute); padding: 22px 4px; text-align: center; }
+  /* V2.11 溢出菜单（⋯）与自绘模态 */
+  .kebab { border: 0; background: none; color: var(--mute); font-size: 15px; line-height: 1;
+           padding: 2px 7px; border-radius: 6px; cursor: pointer; }
+  .kebab:hover { background: var(--soft); color: var(--fg); }
+  .menu-backdrop { position: fixed; inset: 0; z-index: 60; }
+  .menu { position: absolute; z-index: 61; min-width: 168px; background: var(--card);
+          border: 1px solid var(--line); border-radius: 9px; padding: 4px;
+          box-shadow: 0 8px 26px rgba(0,0,0,.18); }
+  .menu-item { display: block; width: 100%; text-align: left; font: inherit; font-size: 13px;
+               padding: 6px 10px; border: 0; border-radius: 6px; background: none;
+               color: var(--fg); cursor: pointer; }
+  .menu-item:hover, .menu-item:focus-visible { background: var(--soft); }
+  .menu-item.danger { color: var(--bad); }
+  .menu-sep { border-top: 1px solid var(--line); margin: 4px 2px; }
+  .modal-overlay { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.34);
+                   display: flex; align-items: flex-start; justify-content: center;
+                   padding: 9vh 16px 16px; }
+  .modal { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+           box-shadow: 0 18px 48px rgba(0,0,0,.28); width: min(560px, 100%);
+           max-height: 82vh; display: flex; flex-direction: column; }
+  .modal h3 { font-size: 15px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .modal-body { padding: 12px 16px; overflow-y: auto; }
+  .modal-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 16px 14px;
+                border-top: 1px solid var(--line); }
+  .modal-line { margin: 6px 0; }
+  .modal-line.muted { color: var(--mute); font-size: 12px; }
+  .radio { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; font-size: 13px; }
   @media (max-width: 860px) {
     .shell { grid-template-columns: 1fr; }
     nav { position: static; max-height: none; flex-direction: row; flex-wrap: wrap; border-right: 0;
@@ -129,6 +156,7 @@
   <div class="navlabel" id="navProjectsLabel">项目</div>
   <div id="navProjects"></div>
   <button class="navitem" id="nav-attention" onclick="setView('attention')">需要处理<span id="attentionBadge" class="badge" hidden></span></button>
+  <button class="navitem" id="nav-removed" onclick="setView('removed')">已移除登记</button>
   <button class="navitem" id="nav-resources" onclick="setView('resources')">共享资源</button>
   <button class="navitem" id="nav-agents" onclick="setView('agents')">Agent 连接</button>
   <button class="navitem" id="nav-drafts" onclick="setView('drafts')">设置 / 草稿<span id="draftBadge" class="badge mut" hidden></span></button>
@@ -155,12 +183,18 @@ const logs = {};      // service id -> log text
 let snap = null;      // /api/status
 let registry = null;  // /api/registry
 let agentCandidates = null;  // /api/agents/candidates（连接页候选，按需加载）
-let agentsData = null, resourcesData = null, draftsData = null;
-let view = "all";     // all | project:<id> | attention | resources | agents | drafts | new-project
+let agentsData = null, resourcesData = null, draftsData = null, removedData = null;
+let view = "all";     // all | project:<id> | attention | removed | resources | agents | drafts | new-project
 let connOk = null;
-let confirmRemove = null;   // service id -> 等待处置选择
 let draftEdit = {};         // draft id -> 编辑中的 service 字段
 let wiz = newWizard();
+// V2.11 自绘交互状态
+let modalState = null;      // 打开中的模态（{overlay, dialog, okBtn}）；轮询刷新期间不重建内容区
+let menuState = null;       // 打开中的 ⋯ 菜单
+let __rmDisp = "keep-external";   // 移除对话框的处置选择（radio 回写）
+let __modalInput = "";            // 模态内单行输入（重命名等）
+let editState = null;             // 编辑对话框状态（两步：dry_run diff → 确认注册）
+const removedIntents = {};        // 恢复目标 -> "stopped" | "running"（缺省 stopped）
 
 function newWizard() {
   return {step: "dir", dir: "", name: "", agent: "", project: null,
@@ -249,7 +283,7 @@ function attentionServices() {
 
 // ------------------------------------------------------------ 渲染
 
-const VIEW_TITLES = {all: "全部服务", attention: "需要处理", resources: "共享资源",
+const VIEW_TITLES = {all: "全部服务", attention: "需要处理", removed: "已移除登记", resources: "共享资源",
                      agents: "Agent 连接", drafts: "设置 / 草稿", "new-project": "添加项目"};
 
 function render() {
@@ -258,6 +292,8 @@ function render() {
   // 用户正在输入时不整刷内容区（导航/徽标照常更新），避免打断
   const a = document.activeElement;
   if (a && main.contains(a) && ["INPUT", "SELECT", "TEXTAREA"].includes(a.tagName)) return;
+  // V2.11：模态/菜单打开时轮询刷新只更新内部状态，绝不重建内容区 DOM
+  if (uiLocked()) return;
   document.getElementById("viewTitle").textContent =
       view.startsWith("project:") ? (projectGroups().find(g => g.pj.id === view.slice(8))?.pj.name || "项目")
                                   : (VIEW_TITLES[view] || "全部服务");
@@ -265,6 +301,7 @@ function render() {
   if (view === "all") html = viewAll();
   else if (view.startsWith("project:")) html = viewProject(view.slice(8));
   else if (view === "attention") html = viewAttention();
+  else if (view === "removed") html = viewRemoved();
   else if (view === "resources") html = viewResources();
   else if (view === "agents") html = viewAgents();
   else if (view === "drafts") html = viewDrafts();
@@ -278,8 +315,8 @@ function render() {
 
 function renderNav() {
   document.querySelectorAll("nav .navitem").forEach(b => b.classList.remove("active"));
-  const map = {"all": "nav-all", "attention": "nav-attention", "resources": "nav-resources",
-               "agents": "nav-agents", "drafts": "nav-drafts", "new-project": "nav-new-project"};
+  const map = {"all": "nav-all", "attention": "nav-attention", "removed": "nav-removed",
+               "resources": "nav-resources", "agents": "nav-agents", "drafts": "nav-drafts", "new-project": "nav-new-project"};
   (map[view] ? [map[view]] : []).forEach(id => document.getElementById(id)?.classList.add("active"));
   const projNav = document.getElementById("navProjects");
   const groups = projectGroups().filter(g => !g.orphan && projectMatchesSearch(g.pj, g.members));
@@ -333,17 +370,8 @@ function secondary(p) {
   return b.join("");
 }
 
-function removeBlock(p) {
-  if (confirmRemove !== p.id) return "";
-  const running = p.intent === "running" && p.state !== "external" && !p.observe_only;
-  if (!running) return "";
-  return `<div class="field" role="group" aria-label="移除时的处置">
-    <span class="inline-note">该服务运行中，移除登记前请选择处置：</span>
-    <button class="danger" onclick="doRemove('${p.id}','stop')">停止并移除</button>
-    <button onclick="doRemove('${p.id}','keep-external')">保留为外部实例并移除</button>
-    <button onclick="confirmRemove=null;render()">取消</button></div>`;
-}
-
+// V2.11：折叠区只保留技术明细；移除登记动作已上移到服务行的 ⋯ 菜单（见 serviceMenuItems）
+// <!-- 移除入口已移至服务 ⋯ 菜单（V2.11） -->
 function detailsHtml(p) {
   const componentAction = c => p.group && c.kind === "server" && c.running && p.state !== "external"
     ? `<button ${p.op || busy(p.id) || busy("g-" + p.group) ? "disabled" : ""} onclick="act('${p.id}','restart',{components:['${c.id}']})">仅重启${c.id === "api" ? " API" : c.id === "web" ? "前端" : " " + esc(c.name)}</button>` : "";
@@ -357,11 +385,9 @@ function detailsHtml(p) {
   const src = `<tr><td class="k">源码</td><td colspan="3">${esc(p.source)}${p.code && p.code.process_started ? " · 进程启动于 " + t(p.code.process_started) : ""}${p.code && p.code.newest_change ? " · 最近源码修改 " + t(p.code.newest_change) : ""}</td></tr>`;
   const reasonRow = p.reason ? `<tr><td class="k">诊断</td><td colspan="3" class="${["failed","conflict"].includes(p.state) ? "" : "muted"}" style="white-space:pre-wrap">${esc(p.reason)}</td></tr>` : "";
   const lg = logs[p.id] !== undefined ? `<pre id="logs-${p.id}">${esc(logs[p.id] || "(无日志)")}</pre>` : "";
-  const canRemove = !p.observe_only;
   return `<details ${open[p.id] ? "open" : ""} ontoggle="if(this.isConnected)open['${p.id}']=this.open">
-    <summary>命令 / 端口 / 组件明细与移除</summary>
+    <summary>命令 / 端口 / 组件明细</summary>
     <div class="table-scroll"><table>${extra}${rows}${deps}${src}${reasonRow}</table></div>
-    ${canRemove ? `<div class="acts" style="justify-content:flex-start">${confirmRemove === p.id ? "" : `<button class="danger" onclick="askRemove('${p.id}')">移除登记…</button>`}</div>${removeBlock(p)}` : ""}
     ${lg}</details>`;
 }
 
@@ -376,7 +402,7 @@ function serviceRow(p, showProject) {
       <div class="name">${pjName ? `<small>项目：${esc(projectName(pjName))}</small>` : ""}${esc(p.name)}<small>${esc(p.id)} · ${esc(p.description || "")}</small></div>
       <div class="state s-${p.state}">${esc(p.label)}</div>
       <div class="code ${code.state}">${esc(code.label || "")}${["pending", "failed"].includes(code.state) ? "：" + esc((code.detail || "").split("\n")[0]) : ""}</div>
-      <div class="acts">${primary(p)}${secondary(p)}</div>
+      <div class="acts">${primary(p)}${secondary(p)}<button class="kebab" aria-haspopup="menu" aria-label="服务菜单（编辑 / 日志 / 打开目录 / 移除登记）" onclick="toggleMenu(event,'svc:${esc(p.id)}')">⋯</button></div>
     </div>${reason}${msg}${detailsHtml(p)}</section>`;
 }
 
@@ -413,7 +439,7 @@ function viewAll() {
         ${orphan ? "" : `<button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${pj.id}')" aria-label="收藏">${pj.favorite ? "★" : "☆"}</button>`}
         <h3>${esc(pj.name)}</h3>
         <span class="note">${members.length} 个服务${pj.agent && pj.agent !== "none" ? " · Agent " + esc(pj.agent) : ""}</span>
-        ${orphan ? "" : `<div class="acts"><button onclick="setView('project:${esc(pj.id)}')">项目详情</button></div>`}
+        ${orphan ? "" : `<div class="acts"><button onclick="setView('project:${esc(pj.id)}')">项目详情</button><button class="kebab" aria-haspopup="menu" aria-label="项目菜单（添加服务 / 重新识别 / 重命名 / 移除项目）" onclick="toggleMenu(event,'proj:${esc(pj.id)}')">⋯</button></div>`}
       </div>
       ${groupIds.map(gid => groupToolbar(gid, shown.filter(m => m.group === gid))).join("")}
       ${shown.map(p => serviceRow(p, false)).join("") || `<div class="empty">无匹配服务</div>`}
@@ -435,9 +461,7 @@ function viewProject(pid) {
       <h3>${esc(pj.name)}</h3>
       <span class="note">id ${esc(pj.id)} · 修订 ${pj.revision ?? 0}</span>
       <div class="acts">
-        <button onclick="wizPresetFor('${esc(pj.id)}','add')">添加服务…</button>
-        <button onclick="wizPresetFor('${esc(pj.id)}','reanalyze')">重新识别</button>
-        <button onclick="renameProject('${esc(pj.id)}', '${esc(pj.name).replace(/'/g, "&#39;")}')">重命名</button>
+        <button class="kebab" aria-haspopup="menu" aria-label="项目菜单（添加服务 / 重新识别 / 重命名 / 移除项目）" onclick="toggleMenu(event,'proj:${esc(pj.id)}')">⋯</button>
       </div>
     </div>
     <p class="note">默认 Agent：${pj.agent ? esc(pj.agent) : "未设置"} · 创建于 ${t(Date.parse(pj.created_at || "") / 1000) || "—"}</p>
@@ -664,8 +688,10 @@ function viewNewProject() {
     const advKeys = c.components?.flatMap(k => COMP_FWD_KEYS.filter(f => k[f] !== null && k[f] !== undefined && !(Array.isArray(k[f]) && !k[f].length))) || [];
     const diffBox = d && d.action === "diff"
       ? (d.diff?.length
-          ? `<details class="diffbox"><summary>与已登记服务 ${esc(d.service_id)} 匹配：${d.diff.length} 项差异（你的修改优先生效）</summary>
-             <table>${d.diff.map(x => `<tr><td class="k">${esc(x.field)}</td><td>${esc(JSON.stringify(x.old) ?? "")}</td><td>→</td><td>${esc(JSON.stringify(x.new) ?? "")}</td></tr>`).join("")}</table></details>`
+          ? `<details class="diffbox"><summary>与已登记服务 ${esc(d.service_id)} 匹配：${d.diff.length} 项差异（你的修改优先生效 / 你的覆盖优先生效）</summary>
+             <table>${d.diff.map(x => `<tr><td class="k">${esc(x.field)}</td><td>${esc(JSON.stringify(x.old) ?? "")}</td><td>→</td><td>${esc(JSON.stringify(x.new) ?? "")}</td>
+               <td>${d.overrideFields && d.overrideFields.includes(x.field) ? `<button onclick="wizAcceptNew(${i}, '${esc(x.field)}')">采用新值</button>` : ""}</td></tr>`).join("")}</table>
+             ${d.overrideFields?.length ? `<p class="inline-note">你的覆盖优先生效：命中覆盖的字段可点「采用新值」（注册时随 accept_new 清除该覆盖）</p>` : ""}</details>`
           : `<p class="inline-note">与已登记服务 ${esc(d.service_id)} 内容一致（将返回 unchanged/duplicate，不产生重复登记）</p>`)
       : "";
     const res = r
@@ -721,6 +747,7 @@ function viewNewProject() {
     ${w.candidates.length ? `<section class="card"><div class="card-head"><h3>3 · 候选服务（${w.candidates.length}）</h3>
       <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || busy("wiz-reg") ? "disabled" : ""}>${w.registering || busy("wiz-reg") ? "注册中…" : "注册所选"}</button></div></div>
       ${w.unresolved.length ? `<p class="reason warn">未解决项（不会静默丢弃）：${w.unresolved.map(esc).join("；")}</p>` : ""}
+      ${w.dupIds ? `<p class="inline-note">多目录同名服务已分配稳定 ID，可修改</p>` : ""}
       ${candCards}
     </section>` : `<section class="card"><p class="note">识别完成，但没有可用的候选。可重试、换 agent，或手动添加。</p>
       <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()">重试识别</button>
@@ -785,25 +812,481 @@ async function loadLogs(id) {
   requestAnimationFrame(() => document.getElementById(`logs-${id}`)?.scrollIntoView({block: "nearest"}));
 }
 
-function askRemove(id) {
-  const p = servicesById()[id];
-  if (!p) return;
-  const running = p.intent === "running" && p.state !== "external" && !p.observe_only;
-  if (running) { confirmRemove = id; render(); return; }
-  if (confirm(`移除 ${p.name} 的登记？只解除登记，不删除任何文件。`)) doRemove(id, "keep-external");
-}
+function askRemove(id) { askRemoveService(id); }  // 兼容旧入口名；实际逻辑见 V2.11 菜单与模态区
 
 async function doRemove(id, disposition) {
-  confirmRemove = null;
   pending["rm-" + id] = true;
-  render();
   try {
     const [code, res] = await api("DELETE", `/api/services/${id}?disposition=${disposition}`);
-    msgs[id] = code === 200 ? "已移除登记（文件未动）" : (res?.error || "移除失败");
-    if (code !== 200) msgs[id] += "";
-  } catch (e) { msgs[id] = "无法连接控制服务"; setConn(false); }
-  pending["rm-" + id] = null;
+    if (code === 200 && res && res.ok) {
+      msgs[id] = `已移除登记（处置 ${res.disposition || disposition}；文件与数据未动。恢复：lsctl restore ${id}）`;
+    } else {
+      msgs[id] = (res && res.error) || `移除失败（HTTP ${code}，登记未变）`;
+    }
+    return {code, res};
+  } catch (e) { msgs[id] = "无法连接控制服务"; setConn(false); return {code: 0, res: {error: "无法连接控制服务"}}; }
+  finally { pending["rm-" + id] = null; await refresh(); }
+}
+
+// ------------------------------------------------------------ V2.11 菜单与自绘模态
+
+function uiLocked() { return !!(modalState || menuState); }
+function modalOpen() { return !!modalState; }
+function menuOpen() { return !!menuState; }
+
+function projectMenuItems(pid) {
+  return [
+    {label: "添加服务…", run: () => wizPresetFor(pid, "add")},
+    {label: "重新识别", run: () => wizPresetFor(pid, "reanalyze")},
+    {label: "重命名", run: () => renameProject(pid)},
+    {sep: true},
+    {label: "移除项目…", danger: true, run: () => askProjectRemove(pid)},
+  ];
+}
+
+function serviceMenuItems(sid) {
+  return [
+    {label: "编辑", run: () => editService(sid)},
+    {label: "日志", run: () => loadLogs(sid)},
+    {label: "打开目录", run: () => act(sid, "open-source")},
+    {sep: true},
+    {label: "移除登记…", danger: true, run: () => askRemoveService(sid)},
+  ];
+}
+
+function menuItems(key) {
+  if (typeof key === "string" && key.startsWith("proj:")) return projectMenuItems(key.slice(5));
+  if (typeof key === "string" && key.startsWith("svc:")) return serviceMenuItems(key.slice(4));
+  return [];
+}
+
+function openMenu(anchor, items) {
+  closeMenu();
+  const backdrop = document.createElement("div");
+  backdrop.className = "menu-backdrop";
+  const el = document.createElement("div");
+  el.className = "menu";
+  el.setAttribute("role", "menu");
+  el.style.position = "absolute";
+  (items || []).forEach(it => {
+    if (it.sep) { const s = document.createElement("div"); s.className = "menu-sep"; el.appendChild(s); return; }
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "menu-item" + (it.danger ? " danger" : "");
+    b.setAttribute("role", "menuitem");
+    b.textContent = it.label;
+    b.onclick = () => { closeMenu(); if (it.run) it.run(); };
+    el.appendChild(b);
+  });
+  backdrop.onclick = () => closeMenu();
+  document.body.appendChild(backdrop);
+  document.body.appendChild(el);
+  try {  // 锚点旁定位；无布局信息的无头环境退化为固定左上
+    const r = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+    const x = r ? Math.max(8, Math.min(r.left, (window.innerWidth || 1024) - 190)) : 16;
+    const y = r ? r.bottom + 6 : 16;
+    el.style.left = x + "px";
+    el.style.top = y + "px";
+  } catch (e) { el.style.left = "16px"; el.style.top = "16px"; }
+  menuState = {backdrop, el, anchor};
+  try {
+    const btns = el.querySelectorAll("button");
+    if (btns && btns[0] && btns[0].focus) btns[0].focus();
+  } catch (e) { /* 无头环境无焦点 */ }
+}
+
+function closeMenu() {
+  if (!menuState) return;
+  try { menuState.backdrop.remove(); menuState.el.remove(); } catch (e) { /* 已不在树上 */ }
+  menuState = null;
+}
+
+function toggleMenu(ev, key) {
+  const anchor = ev && ev.target;
+  if (menuState && anchor && menuState.anchor === anchor) { closeMenu(); return; }
+  openMenu(anchor, menuItems(key));
+}
+
+// showModal：自绘模态（替代 confirm/prompt）。Esc=取消、Enter=主操作（textarea 除外）、
+// Tab 焦点陷阱、aria-modal；onOk 返回 "keep" 时留在同一模态（两步流程复用）。
+function showModal(opts) {
+  closeMenu();
+  return new Promise(resolve => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const dialog = document.createElement("div");
+    dialog.className = "modal";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", opts.title || "");
+    const head = document.createElement("h3");
+    head.textContent = opts.title || "";
+    const body = document.createElement("div");
+    body.className = "modal-body";
+    body.innerHTML = opts.bodyHtml || "";
+    const foot = document.createElement("div");
+    foot.className = "modal-foot";
+    const finish = v => {
+      document.removeEventListener("keydown", onKey, true);
+      try { overlay.remove(); } catch (e) { /* 已移除 */ }
+      if (modalState && modalState.overlay === overlay) modalState = null;
+      resolve(v);
+      render();
+    };
+    const okBtn = document.createElement("button");
+    const handle = {
+      setBody(html) { body.innerHTML = html; try { focusFirst(); } catch (e) { /* 无头 */ } },
+      setOkText(t) { okBtn.textContent = t; },
+      setOkDanger(d) { okBtn.className = d ? "danger" : "primary"; },
+    };
+    okBtn.type = "button";
+    okBtn.className = opts.danger ? "danger" : "primary";
+    okBtn.textContent = opts.okText || "确定";
+    okBtn.onclick = async () => {
+      try {
+        const r = opts.onOk ? await opts.onOk(body, handle) : true;
+        if (r === "keep") return;
+        finish(true);
+      } catch (e) { finish(true); }
+    };
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.textContent = opts.cancelText || "取消";
+    cancelBtn.onclick = () => finish(false);
+    if (!opts.noCancel) foot.appendChild(cancelBtn);
+    foot.appendChild(okBtn);
+    dialog.appendChild(head); dialog.appendChild(body); dialog.appendChild(foot);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    modalState = {overlay, dialog, okBtn, cancelBtn};
+
+    function focusables() {
+      try {
+        return Array.from(dialog.querySelectorAll("button, input, select, textarea"))
+          .filter(x => !x.disabled);
+      } catch (e) { return []; }
+    }
+    function focusFirst() {
+      const f = focusables();
+      const t = f.find(x => x.tagName === "INPUT" || x.tagName === "TEXTAREA") || f[0];
+      if (t && t.focus) t.focus();
+    }
+    function onKey(e) {
+      if (!modalState || modalState.overlay !== overlay) return;
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+      else if (e.key === "Enter") {
+        const t = e.target;
+        if (t && (t.tagName === "TEXTAREA" || t.tagName === "BUTTON")) return;  // 多行输入/按钮默认行为
+        e.preventDefault(); e.stopPropagation(); okBtn.click();
+      } else if (e.key === "Tab") {  // 焦点陷阱：Tab 在模态内循环
+        const f = focusables();
+        if (!f.length) return;
+        e.preventDefault();
+        const i = f.indexOf(document.activeElement);
+        const next = e.shiftKey ? (i <= 0 ? f.length - 1 : i - 1) : (i === f.length - 1 ? 0 : i + 1);
+        if (f[next] && f[next].focus) f[next].focus();
+      }
+    }
+    document.addEventListener("keydown", onKey, true);
+    try { focusFirst(); } catch (e) { /* 无头环境无焦点 */ }
+  });
+}
+
+// ---------- 移除对话框（先 remove-preview，取消零副作用） ----------
+
+async function askRemoveService(sid) {
+  const p = servicesById()[sid];
+  if (!p) return;
+  if (p.observe_only) return;
+  let prev = null;
+  try {  // 预览端点未就绪（501）时静默降级为已知状态展示
+    const [code, res] = await api("GET", `/api/services/${sid}/remove-preview`);
+    if (code === 200 && res && res.ok) prev = res;
+  } catch (e) { /* 网络异常走降级 */ }
+  const pjEntry = (registry?.services || []).find(s => s.id === sid);
+  const pjName = pjEntry && pjEntry.project ? projectName(pjEntry.project) : "";
+  const running = prev && prev.running_components && prev.running_components.length
+      ? prev.running_components
+      : (p.intent === "running" && p.state !== "external"
+         ? (p.components || []).filter(c => c.kind !== "generator").map(c => c.id) : []);
+  const ext = (prev && prev.external_instances) || [];
+  const keepDisp = prev && prev.dispositions ? prev.dispositions["keep-external"] : null;
+  const keepOff = !!(keepDisp && keepDisp.enabled === false);
+  __rmDisp = keepOff ? "stop" : "keep-external";
+  const bodyHtml = `
+    <p class="modal-line">对象：<b>${esc(p.name)}</b>（${esc(sid)}）</p>
+    ${pjName ? `<p class="modal-line">受影响项目：${esc(pjName)}</p>` : ""}
+    <p class="modal-line">将停止的实例：${running.length ? esc(running.join("、")) : "（无）"}</p>
+    ${ext.length ? `<p class="modal-line">外部实例（照常保留运行）：${esc(ext.join("、"))}</p>` : ""}
+    <p class="modal-line">保留内容：${prev && prev.keep && prev.keep.length ? esc(prev.keep.join("、")) : "源码目录、数据库、容器与卷（一律不删除）"}</p>
+    <p class="modal-line muted">恢复方式：${esc((prev && prev.restore_hint) || `lsctl restore ${sid}，或本页「已移除登记」视图恢复`)}</p>
+    ${prev ? "" : `<p class="modal-line muted">（移除预览暂不可用，以上按已知状态展示）</p>`}
+    <div class="field"><label>处置方式</label>
+      <label class="radio"><input type="radio" name="rmDisp" value="stop" ${__rmDisp === "stop" ? "checked" : ""} onchange="__rmDisp='stop'"> 停止后移除</label>
+      <label class="radio"><input type="radio" name="rmDisp" value="keep-external" ${keepOff ? "disabled" : ""} ${__rmDisp === "keep-external" ? "checked" : ""} onchange="__rmDisp='keep-external'"> 保留为外部实例</label>
+    </div>
+    ${keepOff ? `<p class="reason warn">无法保留为外部实例：${esc(keepDisp.reason || "仍由本工具 launchd 保活，请选择停止后移除")}</p>` : ""}`;
+  let outcome = null;
+  const ok = await showModal({title: "移除登记…", bodyHtml, okText: "移除", danger: true,
+    onOk: async () => { outcome = await doRemove(sid, __rmDisp); return true; }});
+  if (ok && outcome && !(outcome.res && outcome.res.ok)) {
+    await showModal({title: "移除失败", okText: "关闭", noCancel: true,
+      bodyHtml: `<p class="modal-line">${esc(msgs[sid] || "移除失败")}</p>
+                 <p class="modal-line muted">登记保持不变，可重试或改用 lsctl service-remove。</p>`});
+  }
+}
+
+async function askProjectRemove(pid) {
+  const g = projectGroups().find(x => x.pj.id === pid);
+  const pj = (g && g.pj) || {id: pid, name: pid};
+  let prev = null;
+  try {  // 预览端点未就绪（501）时降级为本地已知信息
+    const [code, res] = await api("GET", `/api/projects/${pid}/remove-preview`);
+    if (code === 200 && res && res.ok) prev = res;
+  } catch (e) { /* 网络异常走降级 */ }
+  const members = prev && prev.services ? prev.services
+      : (g ? g.members : []).map(m => ({id: m.id, name: m.name, state: m.state, external_instances: []}));
+  let keepOff = false, keepReason = "";
+  if (prev) {
+    for (const s of prev.services || []) {
+      const d = s.dispositions ? s.dispositions["keep-external"] : null;
+      if (d && d.enabled === false) { keepOff = true; keepReason = d.reason || `成员 ${s.id} 仍由本工具 launchd 保活`; }
+    }
+  }
+  __rmDisp = keepOff ? "stop" : "keep-external";
+  const memberRows = members.map(s =>
+    `<tr><td>${esc(s.id)}</td><td>${esc(s.name || "")}</td><td>${esc(s.state || "—")}</td>
+     <td>${(s.external_instances || []).length ? esc(s.external_instances.join("、")) : "—"}</td></tr>`).join("");
+  const resRows = ((prev && prev.resources_referenced) || []).map(r =>
+    `<tr><td>${esc(r.name)}</td><td>${esc(r.state || "—")}</td><td>${r.shared ? "共享（不动）" : "独占"}</td>
+     <td>${esc((r.consumers || []).join("、") || "—")}</td></tr>`).join("");
+  const warns = ((prev && prev.warnings) || []).map(w => `<p class="reason warn">⚠︎ ${esc(w)}</p>`).join("");
+  const bodyHtml = `
+    <p class="modal-line">对象：项目 <b>${esc(pj.name)}</b>（${esc(pid)}，${members.length} 个服务成员）</p>
+    ${members.length ? `<p class="modal-line">将按所选处置逐成员移除登记：</p>
+      <div class="table-scroll"><table><tr><td class="k">服务</td><td class="k">名称</td><td class="k">状态</td><td class="k">外部实例</td></tr>${memberRows}</table></div>` : `<p class="modal-line">（空项目，直接移除登记）</p>`}
+    ${resRows ? `<p class="modal-line">引用的共享资源（一律不动）：</p>
+      <div class="table-scroll"><table><tr><td class="k">资源</td><td class="k">状态</td><td class="k">共享</td><td class="k">其他使用方</td></tr>${resRows}</table></div>` : ""}
+    <p class="modal-line">保留内容：${prev && prev.kept && prev.kept.length ? esc(prev.kept.join("、")) : "源码目录、数据库、容器与卷（一律不删除）"}</p>
+    ${warns}
+    <p class="modal-line muted">恢复方式：lsctl project-restore ${esc(pid)}，或本页「已移除登记」视图恢复</p>
+    ${prev ? "" : `<p class="modal-line muted">（项目移除预览暂不可用，以上按已知状态展示）</p>`}
+    <div class="field"><label>处置方式</label>
+      <label class="radio"><input type="radio" name="rmDisp" value="stop" ${__rmDisp === "stop" ? "checked" : ""} onchange="__rmDisp='stop'"> 停止全部后移除</label>
+      <label class="radio"><input type="radio" name="rmDisp" value="keep-external" ${keepOff ? "disabled" : ""} ${__rmDisp === "keep-external" ? "checked" : ""} onchange="__rmDisp='keep-external'"> 保留为外部实例</label>
+    </div>
+    ${keepOff ? `<p class="reason warn">无法保留为外部实例：${esc(keepReason)}</p>` : ""}`;
+  let outcome = null;
+  const ok = await showModal({title: "移除项目…", bodyHtml, okText: "移除项目", danger: true,
+    onOk: async () => { outcome = await execProjectRemove(pid, __rmDisp); return true; }});
+  if (!ok) return;
+  const res = outcome.res || {};
+  if (outcome.code === 200 && res.ok) {
+    await showModal({title: "项目已移除", okText: "关闭", noCancel: true,
+      bodyHtml: `<p class="modal-line">已移除项目 ${esc(pj.name)}（处置 ${esc(res.disposition || __rmDisp)}）。</p>
+        <p class="modal-line muted">成员已归档；源码/数据/共享容器未动。恢复：lsctl project-restore ${esc(pid)}。</p>`});
+    return;
+  }
+  const stopped = (res.stopped || []).join("、") || "—";
+  const remaining = (res.remaining || []).map(m => `${m.id}：${m.reason || "未知原因"}`).join("；") || "—";
+  await showModal({title: "移除中止", okText: "关闭", noCancel: true,
+    bodyHtml: `<p class="modal-line">${esc(res.error || `移除失败（HTTP ${outcome.code}）`)}</p>
+      <p class="modal-line">已停止：${esc(stopped)}</p>
+      <p class="modal-line">未处理（登记保留）：${esc(remaining)}</p>
+      <p class="modal-line muted">已停止的进程不会自动拉起；可重试移除。</p>`});
+}
+
+async function execProjectRemove(pid, disposition) {
+  try {
+    const [code, res] = await api("DELETE", `/api/projects/${pid}?disposition=${disposition}`, undefined);
+    return {code, res: res || {}};
+  } catch (e) { setConn(false); return {code: 0, res: {error: "无法连接控制服务"}}; }
+}
+
+// ---------- 编辑对话框（dry_run diff → 确认注册，edited 路径入覆盖层） ----------
+
+function editBodyHtml(extra) {
+  const e = editState;
+  return `
+    <p class="modal-line muted">保存流程：先 dry_run 预览与已登记定义的差异，确认后才真正注册；改过的字段将记入覆盖层（edited）。GUI 看不到当前命令/端口时请按实际定义填写。</p>
+    <div class="field"><label>名称</label><input value="${esc(e.fields.name)}" oninput="editField('name', this.value)"></div>
+    <div class="field"><label>描述</label><input value="${esc(e.fields.description)}" oninput="editField('description', this.value)"></div>
+    <div class="field"><label>入口 URL</label><input value="${esc(e.fields.open)}" placeholder="http://127.0.0.1:<端口>/" oninput="editField('open', this.value)"></div>
+    ${e.comps.map((c, i) => `<div class="comp-edit">
+      <div class="field"><label>组件 ${esc(c.id)}</label>
+        <textarea rows="2" placeholder="命令 argv（空格分隔，如 make serve-api）" oninput="editComp(${i}, 'cmd', this.value)">${esc(c.cmd.join(" "))}</textarea></div>
+      <div class="field"><label></label>
+        <input style="min-width:80px;max-width:110px" placeholder="端口" value="${c.port ?? ""}" oninput="editComp(${i}, 'port', this.value)">
+        <input placeholder="探针 http 路径" value="${esc(c.probe)}" oninput="editComp(${i}, 'probe', this.value)"></div>
+    </div>`).join("")}
+    ${extra || ""}`;
+}
+
+function editField(key, value) { if (editState) editState.fields[key] = value; }
+function editComp(i, key, value) {
+  if (!editState || !editState.comps[i]) return;
+  const c = editState.comps[i];
+  if (key === "cmd") c.cmd = String(value).split(/\s+/).filter(Boolean);
+  if (key === "port") c.port = value ? parseInt(value, 10) || null : null;
+  if (key === "probe") c.probe = value;
+}
+
+function editedPaths(e) {
+  // 与初始值对比生成 dotted paths（V2.3 service.edited：name / components[api].port …）
+  const out = [];
+  for (const k of ["name", "description", "open"])
+    if ((e.fields[k] || "") !== (e.initial.fields[k] || "")) out.push(k);
+  e.comps.forEach((c, i) => {
+    const init = e.initial.comps[i] || {cmd: [], port: null, probe: ""};
+    const prefix = "components[" + c.id + "]";
+    if ((c.cmd || []).join(" ") !== (init.cmd || []).join(" ")) out.push(prefix + ".cmd");
+    if ((c.port ?? null) !== (init.port ?? null)) out.push(prefix + ".port");
+    if ((c.probe || "") !== (init.probe || "")) out.push(prefix + ".ready.http");
+  });
+  return out;
+}
+
+function editPayload(dryRun) {
+  const e = editState;
+  const regsvc = (registry?.services || []).find(s => s.id === e.sid);
+  const pid = (regsvc && regsvc.project) || "";
+  const proj = (registry?.registry?.projects || []).find(x => x.id === pid)
+               || {id: pid || e.sid, name: pid || e.sid, revision: 0};
+  const source = (regsvc && regsvc.source) || (servicesById()[e.sid] || {}).source || "";
+  const cand = {id: e.sid, name: e.fields.name, description: e.fields.description,
+                open: e.fields.open || null, source_dir: null, _root: source,
+                components: e.comps.map(c => ({id: c.id, kind: "server", name: c.name,
+                  cmd: c.cmd, cwd: ".", port: c.port || null,
+                  ready: c.probe ? {http: c.probe} : null}))};
+  const payload = candPayload(cand, proj);
+  payload.revision = proj.revision ?? 0;
+  if (!dryRun) payload.service.edited = editedPaths(e);
+  return payload;
+}
+
+async function editOnOk(body, handle) {
+  const e = editState;
+  if (!e) return true;
+  if (!e.confirmed) {
+    if (e.comps.some(c => !c.cmd.length)) {
+      handle.setBody(editBodyHtml(`<p class="reason warn">组件命令为必填（当前值 GUI 不可见，请按实际定义填写后再预览）。</p>`));
+      return "keep";
+    }
+    let code = 0, res = null;
+    try { [code, res] = await api("POST", "/api/register", Object.assign(editPayload(true), {dry_run: true})); }
+    catch (err) { setConn(false); }
+    if (code !== 200 || !res || !res.ok) {
+      handle.setBody(editBodyHtml(`<p class="reason warn">dry_run 失败：${esc((res && res.error) || code || "无法连接控制服务")}</p>`));
+      return "keep";
+    }
+    let extra = "";
+    if (res.action === "incomplete") {
+      extra = `<p class="reason warn">payload 不完整：${esc((res.missing || []).join("、"))}（dry_run 不写草稿）</p>`;
+    } else if (res.action === "diff") {
+      const rows = (res.diff || []).map(x =>
+        `<tr><td class="k">${esc(x.field)}</td><td>${esc(JSON.stringify(x.old) ?? "")}</td><td>→</td><td>${esc(JSON.stringify(x.new) ?? "")}</td></tr>`).join("");
+      extra = `<p class="inline-note">与已登记服务 ${esc(res.service_id)} 的差异（你的覆盖优先生效）：</p>
+        <div class="table-scroll"><table>${rows || `<tr><td class="muted">（无差异，注册将返回 unchanged）</td></tr>`}</table></div>`;
+    } else {
+      extra = `<p class="inline-note">dry_run 结果：${esc(res.action || "?")}</p>`;
+    }
+    e.confirmed = true;
+    handle.setOkDanger(true);
+    handle.setOkText("确认注册");
+    handle.setBody(editBodyHtml(extra));
+    return "keep";
+  }
+  // 第二步：真正注册（service.edited = 用户改过的 dotted paths → 注册成功后写入覆盖层）
+  let code = 0, res = null;
+  try { [code, res] = await api("POST", "/api/register", editPayload(false)); }
+  catch (err) { setConn(false); res = {error: "无法连接控制服务"}; }
+  if (code === 409 && res && res.current_revision != null) {
+    await refresh();  // 修订号过期：取最新 revision 重试一次
+    try { [code, res] = await api("POST", "/api/register", editPayload(false)); } catch (err) { /* 如实报告 */ }
+  }
+  msgs[e.sid] = code === 200 && res && res.ok
+      ? `已更新（${res.action}；编辑字段已记入覆盖层）` : ((res && res.error) || "注册失败");
   await refresh();
+  editState = null;
+  return true;
+}
+
+function editService(sid) {
+  const p = servicesById()[sid];
+  if (!p) return;
+  const comps = (p.components || []).filter(c => c.kind !== "generator")
+      .map(c => ({id: c.id, name: c.name || c.id, cmd: [], port: null, probe: ""}));
+  editState = {sid, confirmed: false,
+               fields: {name: p.name || sid, description: p.description || "", open: ""},
+               comps: comps.length ? comps : [{id: "main", name: "main", cmd: [], port: null, probe: ""}]};
+  editState.initial = {fields: Object.assign({}, editState.fields),
+                       comps: editState.comps.map(c => Object.assign({}, c))};
+  return showModal({title: "编辑服务 " + sid, okText: "预览修改（dry_run）",
+                    bodyHtml: editBodyHtml(), onOk: editOnOk});
+}
+
+// ---------- 已移除登记视图（V2.2 恢复入口） ----------
+
+async function loadRemoved() {
+  try {
+    const [c, d] = await api("GET", "/api/removed");
+    removedData = c === 200 && d && d.ok ? d : {ok: false, error: (d && d.error) || `HTTP ${c}`};
+    setConn(true);
+  } catch (e) { removedData = {ok: false, error: "无法连接控制服务"}; setConn(false); }
+  render();
+}
+
+function viewRemoved() {
+  if (!removedData) return `<div class="empty">加载中…</div>`;
+  if (!removedData.ok) return `<section class="card"><div class="card-head"><h3>已移除登记</h3></div>
+    <p class="reason warn" style="margin:0 0 6px">${esc(removedData.error || "不可用")}</p>
+    <p class="note">后台可能尚未提供该端点（501）；稍后重试。</p>
+    <div class="acts" style="justify-content:flex-start"><button onclick="loadRemoved()">重新加载</button></div></section>`;
+  const svcs = (removedData.services || []).map(s => `
+    <tr><td style="font-weight:600">${esc(s.sid)}</td><td>${esc(s.project_id || "—")}</td>
+        <td>${esc(s.disposition || "")}</td><td>${esc(s.removed_at || "—")}</td>
+        <td><label class="radio"><input type="radio" name="ri-${esc(s.sid)}" checked onchange="removedIntents['${esc(s.sid)}']='stopped'">停止</label>
+            <label class="radio"><input type="radio" name="ri-${esc(s.sid)}" onchange="removedIntents['${esc(s.sid)}']='running'">运行意图</label></td>
+        <td><button class="primary" onclick="restoreService('${esc(s.sid)}')" ${busy("rst-" + s.sid) ? "disabled" : ""}>${busy("rst-" + s.sid) ? "恢复中…" : "恢复"}</button></td></tr>`).join("");
+  const projs = (removedData.projects || []).map(p => `
+    <tr><td style="font-weight:600">${esc(p.pid)}</td><td>${esc((p.services || []).join(", ") || "—")}</td><td>${esc(p.removed_at || "—")}</td>
+        <td><label class="radio"><input type="radio" name="ri-p-${esc(p.pid)}" checked onchange="removedIntents['p:${esc(p.pid)}']='stopped'">停止</label>
+            <label class="radio"><input type="radio" name="ri-p-${esc(p.pid)}" onchange="removedIntents['p:${esc(p.pid)}']='running'">运行意图</label></td>
+        <td><button class="primary" onclick="restoreProject('${esc(p.pid)}')" ${busy("rst-p-" + p.pid) ? "disabled" : ""}>${busy("rst-p-" + p.pid) ? "恢复中…" : "恢复项目"}</button></td></tr>`).join("");
+  const svcTable = svcs ? `<div class="table-scroll"><table>
+    <tr><td class="k">服务</td><td class="k">原项目</td><td class="k">处置</td><td class="k">移除时间</td><td class="k">恢复后意图</td><td class="k"></td></tr>${svcs}</table></div>` : "";
+  const projTable = projs ? `<div class="table-scroll"><table>
+    <tr><td class="k">项目</td><td class="k">成员</td><td class="k">移除时间</td><td class="k">恢复后意图</td><td class="k"></td></tr>${projs}</table></div>` : "";
+  return `<section class="card">
+    <div class="card-head"><h3>已移除登记</h3><span class="note">恢复绝不自动启动；「运行意图」仅恢复意图，不立即拉起</span></div>
+    ${svcTable || projTable ? svcTable + projTable : `<div class="empty">当前没有已移除的登记。</div>`}
+  </section>`;
+}
+
+async function restoreService(sid) {
+  const intent = removedIntents[sid] || "stopped";
+  pending["rst-" + sid] = true; render();
+  try {
+    const [code, res] = await api("POST", `/api/removed/services/${sid}/restore`, {intent});
+    msgs[sid] = code === 200 && res && res.ok
+        ? `已恢复 ${sid}（意图 ${intent}，未自动启动）` : ((res && res.error) || `恢复失败（HTTP ${code}）`);
+  } catch (e) { msgs[sid] = "无法连接控制服务"; setConn(false); }
+  pending["rst-" + sid] = null;
+  await refresh();
+  await loadRemoved();
+}
+
+async function restoreProject(pid) {
+  const intent = removedIntents["p:" + pid] || "stopped";
+  pending["rst-p-" + pid] = true; render();
+  try {
+    const [code, res] = await api("POST", `/api/removed/projects/${pid}/restore`, {intent});
+    msgs["p:" + pid] = code === 200 && res && res.ok
+        ? `已恢复项目 ${pid}（意图 ${intent}，未自动启动）` : ((res && res.error) || `恢复失败（HTTP ${code}）`);
+  } catch (e) { msgs["p:" + pid] = "无法连接控制服务"; setConn(false); }
+  pending["rst-p-" + pid] = null;
+  await refresh();
+  await loadRemoved();
 }
 
 // ------------------------------------------------------------ 动作：项目 / 目录
@@ -817,20 +1300,30 @@ async function toggleFav(pid) {
 
 async function toggleAutostart(pid, value) {
   try {
-    const [code, res] = await api("POST", "/api/projects", {id: pid, autostart: value});
+    // V2.9 专用端点（不再走通用 /api/projects upsert）
+    const [code, res] = await api("POST", `/api/projects/${pid}/autostart`, {value});
     if (code !== 200) alert(res?.error || "设置失败");
   } catch (e) { setConn(false); }
   await refresh();
 }
 
-async function renameProject(pid, current) {
-  const name = prompt("项目新名称（id 保持不变）：", current);
-  if (!name || !name.trim() || name.trim() === current) return;
-  try {
-    const [code, res] = await api("POST", "/api/projects", {id: pid, name: name.trim()});
-    if (code !== 200) alert(res?.error || "重命名失败");
-  } catch (e) { setConn(false); }
-  await refresh();
+async function renameProject(pid) {
+  const g = projectGroups().find(x => x.pj.id === pid);
+  const current = (g && g.pj && g.pj.name) || pid;
+  __modalInput = current;
+  await showModal({title: "重命名项目", okText: "重命名", bodyHtml: `
+    <div class="field"><label>新名称</label><input value="${esc(current)}" oninput="__modalInput=this.value"></div>
+    <p class="modal-line muted">id（${esc(pid)}）保持不变。</p>`,
+    onOk: async () => {
+      const name = (__modalInput || "").trim();
+      if (!name || name === current) return "keep";
+      try {
+        const [code, res] = await api("POST", "/api/projects", {id: pid, name});
+        if (code !== 200) alert(res?.error || "重命名失败");
+      } catch (e) { setConn(false); }
+      await refresh();
+      return true;
+    }});
 }
 
 async function addDir(pid) {
@@ -1066,6 +1559,8 @@ async function wizPoll() {
         wizStartAnalyze(null, next);
         return;
       }
+      // V2.10 多目录消歧：同 id 候选按目录出现顺序分配稳定后缀，杜绝第二次注册覆盖第一次
+      if (disambiguateIds(wiz.candidates)) wiz.dupIds = true;
       wiz.step = "review";
       await refresh();  // 刷新 registry 拿到最新 revision
       const g = registry?.registry?.projects?.find(p => p.id === wiz.project?.id);
@@ -1088,6 +1583,19 @@ function wizCompField(i, ci, key, value) {
   if (key === "cmd") c.cmd = value.split(/\s+/).filter(Boolean);
   if (key === "port") c.port = value ? parseInt(value, 10) || null : null;
   if (key === "ready") c.ready = value ? {http: value} : null;
+}
+
+// V2.10 多目录候选消歧：批内同 id 冲突时，按目录出现顺序确定性分配 -2/-3 后缀
+// （首个保持原 id；改过的 id 仍可在候选卡中人工再改）。返回是否发生调整。
+function disambiguateIds(cands) {
+  const seen = {};
+  let adjusted = false;
+  for (const c of (cands || [])) {
+    if (!c || typeof c.id !== "string" || !c.id) continue;
+    seen[c.id] = (seen[c.id] || 0) + 1;
+    if (seen[c.id] > 1) { c.id = c.id + "-" + seen[c.id]; adjusted = true; }
+  }
+  return adjusted;
 }
 
 function urlPort(u) { try { return new URL(u).port ? parseInt(new URL(u).port, 10) : null; } catch (e) { return null; } }
@@ -1146,6 +1654,7 @@ function candPayload(c, proj) {
                           files: c.evidence?.files || [], unresolved: c.unresolved || []},
                components: comps};
   if (deps.length) svc.dependencies = deps;
+  if (c._accept_new?.length) svc.accept_new = [...new Set(c._accept_new)];  // V2.3：显式清除指定覆盖
   return {schemaVersion: 1, revision: wiz.project?.revision || 0,
           project: {id: proj.id, name: proj.name, agent: wiz.agent || proj.agent || "none"},
           directories: [{path: root, role: "source"}],
@@ -1186,8 +1695,28 @@ async function wizPrefetchDiff(i) {
   try {
     const payload = candPayload(c, wiz.project);
     const [code, res] = await api("POST", "/api/register", {...payload, dry_run: true});
-    if (code === 200) { wiz.diffs[i] = res; render(); }
+    if (code === 200) {
+      // V2.3：diff 命中已登记服务时取其覆盖层（端点未就绪/404/501 → 静默降级）
+      if (res && res.action === "diff" && res.service_id) {
+        try {
+          const [oc, o] = await api("GET", `/api/services/${res.service_id}/overrides`);
+          if (oc === 200 && o && o.ok) res.overrideFields = Object.keys(o.fields || {});
+        } catch (e2) { /* 覆盖层获取失败不阻塞 diff */ }
+      }
+      wiz.diffs[i] = res;
+      render();
+    }
   } catch (e) { /* 差异预览失败不阻塞注册 */ }
+}
+
+// V2.3「采用新值」：把字段加入候选的 accept_new，刷新该候选的 dry_run diff
+function wizAcceptNew(i, field) {
+  const c = wiz.candidates && wiz.candidates[i];
+  if (!c || !field) return;
+  c._accept_new = [...new Set([...(c._accept_new || []), field])];
+  delete wiz.diffs[i];
+  wizPrefetchDiff(i);   // 重新预览（应用覆盖后的 diff = 实际）
+  render();
 }
 
 async function wizStartService(sid) {
@@ -1276,6 +1805,7 @@ function setView(v) {
   if (v === "resources") loadResources();
   if (v === "agents") loadAgents();
   if (v === "drafts") loadDrafts();
+  if (v === "removed") loadRemoved();
   if (v === "new-project" && !agentsData) loadAgents();
   render();
 }
@@ -1299,6 +1829,19 @@ async function refresh(manual) {
 }
 
 document.getElementById("globalSearch").addEventListener("input", render);
+// ⋯ 菜单键盘可达：Esc 关闭，↑/↓ 在菜单项间移动（V2.11）
+document.addEventListener("keydown", e => {
+  if (!menuState) return;
+  if (e.key === "Escape") { e.preventDefault(); closeMenu(); return; }
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  let btns = [];
+  try { btns = Array.from(menuState.el.querySelectorAll("button")); } catch (err) { return; }
+  if (!btns.length) return;
+  e.preventDefault();
+  const i = btns.indexOf(document.activeElement);
+  const next = e.key === "ArrowDown" ? (i + 1) % btns.length : (i <= 0 ? btns.length - 1 : i - 1);
+  if (btns[next] && btns[next].focus) btns[next].focus();
+});
 refresh();
 setInterval(() => { if (!document.querySelector("details[open] pre:hover")) refresh(); }, 3000);
 </script>

@@ -124,3 +124,23 @@ def loaded_labels() -> set[str]:
         if len(parts) == 3 and parts[2].startswith(prefix):
             out.add(parts[2])
     return out
+
+
+def plists_for(sid_prefix: str) -> list[Path]:
+    """本工具为某服务持有的全部 plist（agents/<prefix>.<sid>.*.plist），无论是否已加载。"""
+    return sorted(paths.agents_dir().glob(f"{paths.label_prefix()}.{sid_prefix}.*.plist"))
+
+
+def remove_plists(sid_prefix: str) -> tuple[list[Path], list[str]]:
+    """删除上述 plist 文件；返回 (removed, errors)。只删文件，bootout 由调用方编排（V2.1/V2.7）。"""
+    removed: list[Path] = []
+    errors: list[str] = []
+    for plist in plists_for(sid_prefix):
+        try:
+            plist.unlink()
+            removed.append(plist)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            errors.append(f"{plist}: {e}")
+    return removed, errors

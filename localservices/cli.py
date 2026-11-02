@@ -45,6 +45,49 @@ def _emit(res: dict, json_out: bool, human: str | None = None) -> int:
     return 0 if res.get("ok") else 1
 
 
+def _exit_code(code: int, res: dict) -> int:
+    """V2 §5：0 成功；1 拒绝；4 schema/请求错误；5 冲突(409)；3 连接失败在 main 捕获。"""
+    if res.get("ok"):
+        return 0
+    return 5 if code == 409 else (4 if code == 400 else 1)
+
+
+def _fmt_service_preview(p: dict) -> str:
+    """V2.1 remove-preview 的人类可读摘要。"""
+    lines = [f"移除预览：{p.get('name') or p.get('service_id')}（状态 {p.get('state', '—')}）"]
+    for label, key in (("将停止的实例", "running_components"), ("外部实例", "external_instances")):
+        vals = p.get(key) or []
+        if vals:
+            lines.append(f"  {label}：{'、'.join(str(v) for v in vals)}")
+    keep = p.get("keep") or []
+    lines.append(f"  保留内容：{'、'.join(str(k) for k in keep) if keep else '（无）'}")
+    disp = (p.get("dispositions") or {}).get("keep-external") or {}
+    if disp.get("enabled") is False:
+        lines.append(f"  不可保留为外部实例：{disp.get('reason') or '仍由本工具 launchd 保活'}")
+    lines.append(f"  恢复方式：{p.get('restore_hint') or 'lsctl restore <service-id>，或 GUI「已移除登记」视图'}")
+    return "\n".join(lines)
+
+
+def _fmt_project_preview(p: dict) -> str:
+    """V2.2 project remove-preview / dry_run 的人类可读摘要。"""
+    proj = p.get("project") or {}
+    lines = [f"项目移除预览：{proj.get('name') or proj.get('id')}"]
+    for s in p.get("services") or []:
+        ext = s.get("external_instances") or []
+        lines.append(f"  服务 {s.get('id')}（{s.get('name', '')}，状态 {s.get('state', '—')}"
+                     + (f"，外部实例 {'、'.join(str(e) for e in ext)}" if ext else "") + "）")
+    for r in p.get("resources_referenced") or []:
+        shared = "共享" if r.get("shared") else "独占"
+        consumers = ",".join(r.get("consumers") or []) or "—"
+        lines.append(f"  引用资源 {r.get('name')}（{r.get('state', '—')}，{shared}，使用方 {consumers}）")
+    kept = p.get("kept") or []
+    lines.append(f"  保留内容：{'、'.join(str(k) for k in kept) if kept else '（目录/数据库/容器/卷一律不动）'}")
+    for w in p.get("warnings") or []:
+        lines.append(f"  ⚠︎ {w}")
+    lines.append("  恢复方式：lsctl project-restore <pid>，或 GUI「已移除登记」视图")
+    return "\n".join(lines)
+
+
 def _read_payload(args) -> dict:
     if getattr(args, "stdin", False):
         return json.loads(sys.stdin.read())
@@ -115,6 +158,7 @@ def main(argv=None) -> int:
     sp = sub.add_parser("analyze", help="run agent recognition over a directory")
     sp.add_argument("directory")
     sp.add_argument("--agent", required=True, choices=["codex", "claude"])
+    sp.add_argument("--project", dest="project", help="target project id (V2.10 context)")
     sp.add_argument("--focus", help="e.g. 只识别 Admin 管理端")
     sp.add_argument("--wait", type=float, default=0, help="seconds to wait for the job")
     sp.add_argument("--json", action="store_true")
@@ -128,6 +172,38 @@ def main(argv=None) -> int:
     sp.add_argument("--stop", dest="disposition", action="store_const", const="stop")
     sp.add_argument("--keep-external", dest="disposition", action="store_const", const="keep-external",
                     help="deregister only; the running process becomes an external instance (default)")
+    sp.add_argument("--preview", action="store_true",
+                    help="show the removal preview (zero side effects) and exit")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("project-remove", help="remove a project and its member registrations (V2.2)")
+    sp.add_argument("project")
+    sp.add_argument("--stop", dest="disposition", action="store_const", const="stop")
+    sp.add_argument("--keep-external", dest="disposition", action="store_const", const="keep-external",
+                    help="deregister members only; running processes stay as external instances (default)")
+    sp.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="preview only (same shape as remove-preview, zero side effects)")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("removed", help="list removed (tombstoned) services/projects (V2.2)")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("restore", help="restore a removed service registration (V2.2)")
+    sp.add_argument("service")
+    sp.add_argument("--project", dest="project", help="target project id (default: original)")
+    sp.add_argument("--intent", choices=["stopped", "running"], help="restored intent (default: stopped)")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("project-restore", help="restore a removed project and its members (V2.2)")
+    sp.add_argument("project")
+    sp.add_argument("--intent", choices=["stopped", "running"], help="restored intent (default: stopped)")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("project-autostart", help="toggle project autostart (V2.9)")
+    sp.add_argument("project")
+    mg = sp.add_mutually_exclusive_group(required=True)
+    mg.add_argument("--on", dest="value", action="store_true")
+    mg.add_argument("--off", dest="value", action="store_false")
     sp.add_argument("--json", action="store_true")
 
     sp = sub.add_parser("resources", help="shared docker/compose resource inventory")
@@ -216,6 +292,8 @@ def main(argv=None) -> int:
             return _emit(res, a.json)
         if a.cmd == "analyze":
             body = {"directory": a.directory, "agent": a.agent}
+            if a.project:
+                body["project_id"] = a.project
             if a.focus:
                 body["focus"] = a.focus
             code, res = call("POST", "/api/analyze", body, timeout=30)
@@ -250,9 +328,90 @@ def main(argv=None) -> int:
             print(json.dumps(res, ensure_ascii=False, indent=1) if a.json else res)
             return 0 if res.get("ok") and res.get("state") == "done" else 1
         if a.cmd == "service-remove":
+            if a.preview:  # V2.1 预览：零副作用，只读
+                code, res = call("GET", f"/api/services/{a.service}/remove-preview", timeout=30)
+                if a.json:
+                    print(json.dumps(res, ensure_ascii=False, indent=1))
+                elif res.get("ok"):
+                    print(_fmt_service_preview(res))
+                else:
+                    print(res.get("error") or res)
+                return 0 if res.get("ok") else _exit_code(code, res)
             code, res = call("DELETE", f"/api/services/{a.service}?disposition={a.disposition or 'keep-external'}",
                              timeout=90)
-            return _emit(res, a.json)
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+            elif res.get("ok"):
+                rel = ",".join(res.get("released") or []) or "—"
+                print(f"已移除登记：{res.get('service_id', a.service)}"
+                      f"（处置 {res.get('disposition')}，已归档 {res.get('archive') or '—'}，"
+                      f"释放组件 {rel}；文件/数据未动）")
+            else:
+                print(res.get("error") or res)
+            return _exit_code(code, res)
+        if a.cmd == "project-remove":
+            disposition = a.disposition or "keep-external"
+            q = f"?disposition={disposition}" + ("&dry_run=true" if a.dry_run else "")
+            code, res = call("DELETE", f"/api/projects/{a.project}{q}", timeout=120)
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+            elif res.get("ok") and a.dry_run:
+                print(_fmt_project_preview(res))
+            elif res.get("ok"):
+                print(f"已移除项目 {a.project}（处置 {disposition}，成员与目录仅解除登记；源码/数据/共享容器未动）")
+            else:
+                stopped = ",".join(res.get("stopped") or []) or "—"
+                remaining = "；".join(f"{m.get('id')}：{m.get('reason')}" for m in res.get("remaining") or []) or "—"
+                print(f"移除中止：已停止 {stopped}；未处理 {remaining}（登记保留，可重试）")
+            return _exit_code(code, res)  # dry_run 成功同样 = 0
+        if a.cmd == "removed":
+            code, res = call("GET", "/api/removed", timeout=20)
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+                return 0 if res.get("ok") else 1
+            for s in res.get("services", []):
+                print(f"服务 {s.get('sid')}（原项目 {s.get('project_id') or '—'}，"
+                      f"{s.get('disposition')}，移除于 {s.get('removed_at')}）"
+                      f"  恢复：lsctl restore {s.get('sid')}")
+            for p in res.get("projects", []):
+                print(f"项目 {p.get('pid')}（成员 {','.join(p.get('services') or []) or '—'}）"
+                      f"  恢复：lsctl project-restore {p.get('pid')}")
+            return 0 if res.get("ok") else 1
+        if a.cmd == "restore":
+            body = {}
+            if a.project:
+                body["project_id"] = a.project
+            if a.intent:
+                body["intent"] = a.intent
+            code, res = call("POST", f"/api/removed/services/{a.service}/restore", body, timeout=60)
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+            elif res.get("ok"):
+                print(f"已恢复 {res.get('service_id', a.service)} 到项目 {res.get('project_id', a.project or '原项目')}"
+                      f"，意图 {res.get('intent', a.intent or 'stopped')}（未自动启动）")
+            else:
+                print(res.get("error") or res)
+            return _exit_code(code, res)
+        if a.cmd == "project-restore":
+            body = {"intent": a.intent} if a.intent else {}
+            code, res = call("POST", f"/api/removed/projects/{a.project}/restore", body, timeout=120)
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+            elif res.get("ok"):
+                members = ",".join(res.get("services") or []) or "—"
+                print(f"已恢复项目 {a.project}（成员 {members}，意图 {a.intent or 'stopped'}，未自动启动）")
+            else:
+                print(res.get("error") or res)
+            return _exit_code(code, res)
+        if a.cmd == "project-autostart":
+            code, res = call("POST", f"/api/projects/{a.project}/autostart", {"value": bool(a.value)})
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+            elif res.get("ok"):
+                print(f"项目 {a.project} 自动启动已{'开启' if a.value else '关闭'}（只影响登录/重启后的意图恢复）")
+            else:
+                print(res.get("error") or res)
+            return _exit_code(code, res)
         if a.cmd == "resources":
             code, res = call("GET", "/api/resources", timeout=20)
             print(json.dumps(res, ensure_ascii=False, indent=1) if a.json else

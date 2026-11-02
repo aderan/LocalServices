@@ -1,7 +1,11 @@
-"""Required dependency preflight, separate from the application's 30-second startup budget."""
+"""Required dependency preflight, separate from the application's 30-second startup budget.
+
+Docker 语义与 dockerctx 同源（V2.6）：显式 `--context <dockerctx.name()>`、子进程环境清除
+DOCKER_HOST/DOCKER_CONTEXT/DOCKER_CONFIG、endpoint 非本机 unix socket 一律拒绝操作。
+Colima default profile 的恢复行为保持 V1 不变（仅在 endpoint 确属本机 Colima 时）。
+"""
 
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -9,7 +13,7 @@ import subprocess
 import threading
 import time
 
-from . import procs
+from . import dockerctx, procs
 from .manifest import DEFAULT_PATH
 
 ENVIRONMENT_TIMEOUT = 120.0
@@ -35,9 +39,7 @@ class Infrastructure:
         executable = shutil.which(args[0], path=DEFAULT_PATH)
         if not executable:
             raise DependencyError(f"未找到本机 {args[0]}，无法恢复已有运行环境")
-        env = dict(os.environ, PATH=DEFAULT_PATH)
-        for key in ("DOCKER_HOST", "DOCKER_CONTEXT"):
-            env.pop(key, None)
+        env = dockerctx.scrub_env({"PATH": DEFAULT_PATH})
         try:
             return subprocess.run([executable, *args[1:]], capture_output=True, text=True,
                                   env=env, timeout=min(timeout, self._remaining(deadline)))
@@ -47,15 +49,29 @@ class Infrastructure:
             raise DependencyError(f"无法运行本机 {args[0]}：{exc}") from exc
 
     def _docker(self, args, deadline):
-        return self._command(["docker", "--context", "colima", *args], deadline)
+        # argv 来自 dockerctx（docker --context <name> …），执行仍走本模块 subprocess（测试接缝）。
+        return self._command(dockerctx.argv(args), deadline)
+
+    def _endpoint(self, deadline):
+        result = self._docker(
+            ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}", dockerctx.name()],
+            deadline)
+        if result.returncode:
+            raise DependencyError(f"无法解析 Docker 上下文 {dockerctx.name()} 的 endpoint，拒绝操作")
+        return result.stdout.strip()
 
     def _runtime(self, deadline, progress):
-        context = self._docker(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}", "colima"], deadline)
-        expected = {f"unix://{Path.home()}/.colima/default/docker.sock", f"unix://{Path.home()}/.colima/docker.sock"}
-        if context.returncode or context.stdout.strip() not in expected:
-            raise DependencyError("Docker colima 上下文未指向本机默认环境，拒绝接管其他 Docker 环境")
+        endpoint = self._endpoint(deadline)
+        if not dockerctx.is_local(endpoint):
+            # V2.6: 远程 engine 只允许只读盘点，恢复/接管一律拒绝。
+            raise DependencyError(
+                f"Docker {dockerctx.name()} 上下文未指向本机默认环境（{endpoint or 'endpoint 未知'}），"
+                f"{dockerctx.REMOTE_REFUSAL}，拒绝接管其他 Docker 环境")
         if self._docker(["info", "--format", "{{.ServerVersion}}"], deadline).returncode == 0:
             return
+        colima_root = f"unix://{Path.home()}/.colima/"
+        if not endpoint.startswith(colima_root):
+            raise DependencyError("本机 Docker 引擎不可达且该上下文非 Colima 管理，未自动恢复")
         profiles = self._command(["colima", "list", "--json"], deadline)
         try:
             records = [json.loads(line) for line in profiles.stdout.splitlines() if line.strip()]

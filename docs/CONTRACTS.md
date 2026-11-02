@@ -180,11 +180,15 @@ V1 §1–§8 继续有效；与之冲突的地方以本节为准。变更必须�
   `paths.overrides_file()` = `home()/overrides.json`（paths.py 已接线）。
 - `removed.json`：`{"schemaVersion":1,"services":{<sid>:{"removed_at","removed_by","disposition","project_id","archive"}},"projects":{<pid>:{"removed_at","removed_by","disposition","services":[sid...],"project":{...原 project 对象...}}}}`。
 - 归档 `removed/<sid>-<ts>.json`：`{"sid","project_id","removed_at","disposition","toml":"<完整 TOML 文本>","state":{...state.json 该 sid 条目快照...},"overrides":{...该 sid 覆盖层快照...}}`。
-- `manifest.load_all()` 跳过 tombstone 中的 service id（`localservices/tombstones.py` 提供
-  `services() -> set[str]`，读 removed.json，坏文件按空处理但不覆盖）。**移除内置服务不修改
+- `manifest.load_all()` 跳过 tombstone 中 service id 对应的**内置目录**文件（`localservices/tombstones.py`
+  提供 `services() -> set[str]`，读 removed.json，坏文件按空处理但不覆盖）。**移除内置服务不修改
   services_dir() 中随仓分发的模板**：builtin TOML 文件保持原样，仅登记层失效。
-- 同 sid 重新注册（显式重新添加）自动解除 tombstone；迁移、升级、daemon 重启、reconcile
-  不复活 tombstone 服务。
+- **内置 id 遮蔽语义（修订）**：tombstone 只遮蔽 services_dir() 下的文件；user_services_dir() 的
+  同 id 文件始终加载（用户层重新注册接管内置模板）。因此——
+  - 重新注册的 id 若存在内置模板（如 shicha）：**保留** removed.json 条目（持续遮蔽内置文件），
+    但 `GET /api/removed` 列表只显示当前未登记（load_all 不含该 id）的条目；
+  - 重新注册纯用户层 id：成功后删除 removed.json 条目；
+  - 迁移、升级、daemon 重启、reconcile 不复活 tombstone 服务（内置遮蔽持续生效）。
 
 ## V2.1 服务移除 v2 与预览
 

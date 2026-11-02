@@ -172,13 +172,15 @@ def load_all(directory: Path | None = None) -> dict[str, Project]:
     from . import tombstones
     dirs = [Path(directory)] if directory else paths.service_search_path()
     skipped = tombstones.services()
+    builtin_dir = paths.services_dir().resolve()
     out: dict[str, Project] = {}
     for d in dirs:
         for f in sorted(d.glob("*.toml")):
             p = load_file(f)
             if p.id in out:
                 raise ValueError(f"duplicate project id {p.id}: {out[p.id].file} and {f}")
-            if p.id in skipped and directory is None:
+            # V2.0 修订：tombstone 只遮蔽内置目录的模板；用户层重新注册的同 id 文件始终加载
+            if directory is None and p.id in skipped and f.parent.resolve() == builtin_dir:
                 continue
             out[p.id] = p
     ports: dict[int, str] = {}

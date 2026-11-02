@@ -12,7 +12,14 @@
 | `service` | object | 服务定义，见下 |
 | `draft_id` | string \| null | 转正草稿时填 |
 
-`service` 字段：`id`（同 project id 规则，缺省从 name 派生）、`name`、`description`、`source`（工程绝对路径，必填）、`open`（启动后打开的 URL，可为 null）、`autostart`、`adapter`、`observe_only`、`draft`、`project_hint`、`components[]`、`dependencies[]`、`evidence`。服务器只接受这些键，未知键整单拒绝。
+`service` 字段：`id`（同 project id 规则，缺省从 name 派生）、`name`、`description`、`source`（工程绝对路径，必填）、`open`（启动后打开的 URL，可为 null）、`autostart`、`adapter`、`observe_only`、`draft`、`project_hint`、`components[]`、`dependencies[]`、`evidence`、`edited[]`、`accept_new[]`、`confirmed_provision`（V2）。服务器只接受这些键，未知键整单拒绝。
+
+V2 覆盖层字段（V2.3）：
+
+- `service.edited: [dotted paths]`——本次人工确认改过的字段（如 `"name"`、`"components[api].port"`）。注册成功（created/updated）后这些路径的最终值写入覆盖层，之后重新识别/注册会优先应用覆盖值（dry_run diff 也在应用覆盖后计算，预览=实际）。
+- `service.accept_new: [paths]`（或 `["*"]`）——显式清除指定覆盖（"采用新值"）。仅在用户明确放弃旧值时携带。
+
+V2 compose 字段（V2.7）：组件可带 `run = "compose"`（此时无 `cmd`，不校验 cmd）、`compose_service`（必填）、`compose_project`（缺省 = cwd 目录名）、`compose_files[]`（缺省自动探测）、`provision = "existing" | "up"`。`provision = "up"` 允许创建/拉取容器，注册 payload 必须显式 `service.confirmed_provision = true`（用户已知情同意），否则 400 拒绝。
 
 `components[]` 常用字段：`id`（`^[a-z0-9][a-z0-9_-]*$`）、`kind`（server / worker / generator）、`name`、`cmd`（**argv 数组**，`cmd[0]` 须可解析：绝对路径 / PATH / `$source/node_modules/.bin` / 相对 `$source`）、`shell_script`（替代 cmd：指向工程内已存在脚本，由 /bin/sh 执行）、`cwd`（相对 source）、`env` / `env_files`、`port`（1–65535，且不得与已加载清单冲突）、`ready`（`{http?, tcp?, json_ok?, timeout?}`，探针端口须与本组件 port 一致）、`required`、`after`（先启动的组件 id）、`hot` / `watch` / `restart_on` / `ignore`、`build` / `install` / `install_when` / `install_marker`、`auto_update`、`external_cmd` / `external_cwd` / `external_cwd_exact`、`start_timeout`、`debounce`。
 

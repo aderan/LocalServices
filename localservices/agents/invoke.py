@@ -45,11 +45,26 @@ Hard rules:
   array instead of being guessed.
 """
 
+PROJECT_CONTEXT_RULES = """\
+Target project rules (apply when a candidate overlaps the existing services):
+- The services listed in the target project context already exist. When a candidate
+  matches one of them, prefer proposing an UPDATE that keeps that existing id over
+  proposing a brand-new id.
+- The resources listed are reusable: bind dependencies to those containers/volumes
+  by name (e.g. container:<name>) instead of proposing new ones.
+- The override fields listed are values the user deliberately set; keep those values
+  unless they are clearly wrong for the analyzed directory."""
 
-def _build_prompt(directory: Path, evidence: dict, focus: str | None) -> str:
+
+def _build_prompt(directory: Path, evidence: dict, focus: str | None,
+                  project_context: dict | None = None) -> str:
     parts = [PROMPT_HEAD, f"Analyzed directory: {directory}"]
     if focus:
         parts.append(f"User focus: {focus}")
+    if project_context:
+        parts.append("Target project context (目标项目上下文，manifest-level fields only):")
+        parts.append(json.dumps(project_context, ensure_ascii=False))
+        parts.append(PROJECT_CONTEXT_RULES)
     parts.append("Scan evidence (read-only, machine-collected):")
     parts.append(json.dumps(evidence, ensure_ascii=False))
     parts.append("Return only the JSON object now.")
@@ -193,9 +208,10 @@ def _snip(text: str) -> str:
 
 
 def run_analysis(kind: str, directory: str, focus: str | None = None,
-                 timeout: float = 240.0) -> dict:
+                 timeout: float = 240.0, project_context: dict | None = None) -> dict:
     """对 directory 做一次 Agent 分析。绝不以目标目录为 cwd 执行任何东西；
-    超时杀整个进程组；坏 JSON/根级 schema 违规整单失败，服务级违规降级进 unresolved。"""
+    超时杀整个进程组；坏 JSON/根级 schema 违规整单失败，服务级违规降级进 unresolved。
+    project_context（V2.10）：目标项目既有服务/覆盖层/资源摘要，只进 prompt。"""
     if kind not in KINDS:
         raise ValueError(f"unknown agent kind: {kind}")
     timeout = min(max(float(timeout), 1.0), MAX_TIMEOUT)
@@ -220,7 +236,7 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
     except Exception as e:  # noqa: BLE001 — 扫描失败不阻塞分析
         evidence = {"directory": str(root), "entries": [], "truncated": False,
                     "note": f"scanner 失败: {e}"}
-    prompt = _build_prompt(root, evidence, focus)
+    prompt = _build_prompt(root, evidence, focus, project_context)
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     adapter = get_adapter(kind, conn.path)
 

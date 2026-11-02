@@ -1,0 +1,8 @@
+# compose-demo：单服务 web，镜像用本机已拉取的 alpine:3.20（离线可跑）。
+# busybox httpd 提供 HTTP 80；无 docker healthcheck —— 就绪判定用宿主端口探针 18214。
+services:
+  web:
+    image: alpine:3.20
+    command: ["sh", "-c", "echo 'ok' > /tmp/www/index.html && httpd -f -p 80 -h /tmp/www"]
+    ports:
+      - "18214:80"

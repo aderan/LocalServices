@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import subprocess
 import time
@@ -10,6 +11,9 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
+
+# Docker 宿主侧端口转发进程（V2.8）：它们持有端口是替容器发布，不是普通进程冲突。
+DOCKER_PROXY_RE = re.compile(r"gvproxy|com\.docker\.backend|docker-proxy|vpnkit")
 
 
 @dataclass
@@ -47,6 +51,14 @@ def descendants(root: int, procs: dict[int, Proc]) -> set[int]:
                 seen.add(c)
                 stack.append(c)
     return seen
+
+
+def looks_like_docker_proxy(cmd: str) -> bool:
+    """True when the command line is a docker host-side port forwarder
+    (gvproxy / com.docker.backend / docker-proxy / vpnkit): the port it holds is
+    published on behalf of a container, so it must be attributed to that container,
+    not treated as a process conflict."""
+    return bool(cmd) and bool(DOCKER_PROXY_RE.search(cmd))
 
 
 def all_cwds() -> dict[int, str]:

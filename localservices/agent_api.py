@@ -192,11 +192,136 @@ def handle_agents_candidates() -> tuple[int, dict]:
     return 200, out
 
 
+def _cmd_summary(cmd: list[str]) -> str:
+    """组件命令摘要（仅清单层信息；绝不包含 env 值）。"""
+    argv = [str(x) for x in (cmd or [])]
+    head = " ".join(argv[:4])
+    return head + (" …" if len(argv) > 4 else "")
+
+
+_SECRET_KEY_RE = re.compile(r"(secret|token|password|passwd|credential|api[_-]?key|private[_-]?key)", re.I)
+
+
+def _redact_override(key: str, value):
+    """覆盖层值只承载清单层字段；键名带敏感信号的值一律脱敏（宁严勿漏）。"""
+    if _SECRET_KEY_RE.search(str(key)):
+        return "***"
+    return value
+
+
+def _overrides_raw() -> dict:
+    """读覆盖层原始数据：优先 Core 线 overrides 模块，退化到直接读 overrides.json。"""
+    try:
+        from . import overrides as _ov  # Core 线（V2.3）；可能尚未落地
+        for name in ("read", "load", "load_all", "snapshot"):
+            fn = getattr(_ov, name, None)
+            if callable(fn):
+                data = fn()
+                if isinstance(data, dict):
+                    return data
+    except Exception:  # noqa: BLE001 — 模块缺失/接口不符都退到文件直读
+        pass
+    try:
+        return json.loads(paths.overrides_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _project_overrides(sids: set[str]) -> dict:
+    """{sid: {dotted path: value}}（清单层字段，敏感键脱敏）。"""
+    data = _overrides_raw() or {}
+    svc = data.get("services") if isinstance(data, dict) else None
+    if not isinstance(svc, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for sid in sids:
+        entry = svc.get(sid)
+        fields = entry.get("fields") if isinstance(entry, dict) else entry
+        if isinstance(fields, dict) and fields:
+            out[sid] = {str(k): _redact_override(k, v) for k, v in fields.items()}
+    return out
+
+
+def _resources_summary() -> dict:
+    """资源盘点摘要（V2.6 容许旧 shape / 失败 → {}）。"""
+    try:
+        from . import resources
+        inv = resources.inventory()
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(inv, dict) or not inv.get("ok"):
+        return {}
+    items = inv.get("resources")
+    if not isinstance(items, list):  # 旧 shape / 空
+        return {}
+    return {
+        "docker_context": inv.get("docker_context"),
+        "items": [{"name": r.get("name"), "state": r.get("state") or "",
+                   "ports": r.get("ports") or {}, "volumes": r.get("volumes") or []}
+                  for r in items if isinstance(r, dict)],
+    }
+
+
+def build_project_context(pid: str) -> dict | None:
+    """V2.10 目标项目上下文：项目/既有服务/覆盖层/资源摘要。
+
+    防御式：registry/manifest/overrides/resources 任何一层失败都只降级（缺省/空），
+    项目不存在返回 None（调用方据此 400）。上下文只含清单层字段——绝不含 env 值。"""
+    try:
+        from .registry import Registry
+        proj = Registry().project(pid)
+    except Exception:  # noqa: BLE001 — registry 读失败按未知项目处理
+        proj = None
+    if not isinstance(proj, dict) or not proj:
+        return None
+    ctx = {"project": {"id": proj.get("id"), "name": proj.get("name"),
+                       "directories": [{"id": d.get("id"), "path": d.get("path")}
+                                       for d in (proj.get("directories") or [])
+                                       if isinstance(d, dict)]}}
+    try:
+        from . import manifest
+        loaded = manifest.load_all()
+    except Exception:  # noqa: BLE001
+        loaded = {}
+    sids: list[str] = list(proj.get("services") or [])
+    sids += [sid for sid, p in loaded.items() if getattr(p, "project", None) == pid]
+    seen: set[str] = set()
+    services: list[dict] = []
+    for sid in sids:
+        if not isinstance(sid, str) or sid in seen:
+            continue
+        seen.add(sid)
+        p = loaded.get(sid)
+        if p is None:
+            services.append({"id": sid, "name": sid, "source": None,
+                             "ports": [], "components": []})
+            continue
+        services.append({
+            "id": p.id, "name": p.name, "source": str(p.source),
+            "ports": [{"component": c.id, "port": c.port}
+                      for c in p.components if getattr(c, "port", None)],
+            "components": [{"id": c.id, "cwd": c.cwd, "cmd_summary": _cmd_summary(c.cmd)}
+                           for c in p.components],
+        })
+    ctx["services"] = services
+    ctx["overrides"] = _project_overrides(seen)
+    ctx["resources"] = _resources_summary()
+    return ctx
+
+
 def handle_analyze(body: dict) -> tuple[int, dict]:
-    """启动后台分析任务 → (202, {"ok": true, "job_id": ...})。"""
+    """启动后台分析任务 → (202, {"ok": true, "job_id": ...})。V2.10：可带 project_id。"""
     try:
         if not isinstance(body, dict):
             return 400, {"ok": False, "error": "body 必须是 JSON 对象"}
+        project_id = body.get("project_id")
+        if project_id is not None and (not isinstance(project_id, str) or not project_id):
+            return 400, {"ok": False, "error": "project_id 必须是非空字符串"}
+        project_ctx = None
+        if project_id is not None:
+            project_ctx = build_project_context(project_id)
+            if project_ctx is None:
+                return 400, {"ok": False, "error": "未知项目"}
         directory = body.get("directory")
         if not isinstance(directory, str) or not directory:
             return 400, {"ok": False, "error": "directory 必填"}
@@ -229,25 +354,26 @@ def handle_analyze(body: dict) -> tuple[int, dict]:
             _cleanup_old_jobs()
             job_id = "job-" + secrets.token_hex(8)
             job = {"id": job_id, "kind": "analyze", "state": "queued",
-                   "agent": agent, "directory": str(d),
+                   "agent": agent, "directory": str(d), "project_id": project_id,
                    "created_at": time.time(), "started_at": None,
                    "finished_at": None, "result": None, "error": None}
             _write_job(job)
             _RUNNING[key] = job_id
-        _POOL.submit(_run_job, job_id, agent, str(d), focus, timeout, key)
+        _POOL.submit(_run_job, job_id, agent, str(d), focus, timeout, key, project_ctx)
         return 202, {"ok": True, "job_id": job_id}
     except Exception as e:  # noqa: BLE001
         return 500, {"ok": False, "error": str(e)}
 
 
 def _run_job(job_id: str, agent: str, directory: str, focus: str | None,
-             timeout: float, key: str) -> None:
+             timeout: float, key: str, project_ctx: dict | None = None) -> None:
     """线程体：queued → running → done/failed，每次状态变化原子落盘。"""
     try:
         job = _read_job(job_id) or {"id": job_id, "kind": "analyze"}
         job.update({"state": "running", "started_at": time.time()})
         _write_job(job)
-        result = invoke.run_analysis(agent, directory, focus=focus, timeout=timeout)
+        result = invoke.run_analysis(agent, directory, focus=focus, timeout=timeout,
+                                     project_context=project_ctx)
         if result.get("ok"):
             job.update({"state": "done", "result": result, "error": None,
                         "finished_at": time.time()})

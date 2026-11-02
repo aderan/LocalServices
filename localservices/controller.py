@@ -18,7 +18,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import adapters, launchd, manifest, paths, procs, runner, sourcewatch
+from . import adapters, compose, dockerctx, launchd, manifest, paths, procs, runner, sourcewatch
 from .manifest import Component, Project
 from .infrastructure import DependencyError, Infrastructure
 
@@ -34,9 +34,17 @@ STATE_LABELS = {
     "conflict": "冲突",
     "external": "外部运行",
 }
-LAUNCHER_RE = re.compile(r"^(\S*/)?(npm|npx|pnpm|yarn|bun|node)(\s|$)|^(\S*/)?sh -c ")
+# Supervising launcher wrappers we climb through when attributing an external instance
+# (V2.8: python -m uvicorn reloaders, uv/make/go/air/just/task wrappers on top of the V1 set).
+LAUNCHER_RE = re.compile(
+    r"^(\S*/)?(npm|npx|pnpm|yarn|bun|node|python3[\w.]*|python|uv|uvicorn|make|go|air|just|task)(\s|$)"
+    r"|^(\S*/)?sh -c "
+)
 SETTLE = 3.0  # seconds a source change must be quiet before applying
 STARTUP_TIMEOUT = 30.0  # one budget for preparation and readiness, shared by all components
+AUTOSTART_CACHE_TTL = 30.0  # V2.9: registry autostart_map re-read at most this often
+COMPOSE_STATE_TTL = 5.0  # compose inspect cache for status refreshes
+COMPOSE_NAME_TTL = 10.0  # compose container-name cache for attribution
 SECRET_RE = re.compile(
     r"(?i)((?:token|secret|password|passwd|api[_-]?key|authorization|cookie|session)[\"']?\s*[:=]\s*[\"']?)"
     r"([^\s\"'&,;]{6,})"
@@ -89,9 +97,12 @@ def rotate(path: Path, limit: int = 5 * 1024 * 1024) -> None:
 class Store:
     """Persistent run intent + bookkeeping (state.json)."""
 
-    def __init__(self):
+    def __init__(self, autostart=None):
+        """`autostart`: optional callable -> {project_id: bool}（V2.9 registry 只读助手），
+        决定 intent 的初始缺省；不可用/异常一律按空处理。"""
         self.lock = threading.RLock()
         self.data = {"projects": {}}
+        self._autostart = autostart
         try:
             self.data = json.loads(paths.state_file().read_text())
         except (OSError, ValueError):
@@ -113,11 +124,21 @@ class Store:
         with self.lock:
             d = self.proj(project.id)
             if "intent" not in d:
-                d["intent"] = "running" if project.autostart else "stopped"
+                # V2.9: 初始缺省 = running 当且仅当 清单 autostart 或 registry 项目 autostart。
+                default = bool(project.autostart) or self._registry_autostart(project.id)
+                d["intent"] = "running" if default else "stopped"
                 d["intent_at"] = time.time()
                 d["intent_by"] = "default"
                 self.save()
             return d["intent"]
+
+    def _registry_autostart(self, pid: str) -> bool:
+        if not callable(self._autostart):
+            return False
+        try:
+            return bool(self._autostart().get(pid))
+        except Exception:  # registry 不可用绝不影响 intent 缺省
+            return False
 
     def set_intent(self, pid: str, intent: str, by: str = "user") -> None:
         with self.lock:
@@ -129,7 +150,8 @@ class Store:
 class Controller:
     def __init__(self):
         paths.ensure()
-        self.store = Store()
+        self._autostart_cache: tuple[float, dict[str, bool]] = (0.0, {})
+        self.store = Store(autostart=self._registry_autostart_map)
         self.lock = threading.RLock()
         self.projects: dict[str, Project] = {}
         self.adapters: dict[str, adapters.Adapter] = {}
@@ -142,6 +164,12 @@ class Controller:
         self._snapshot: dict = {"projects": [], "generated_at": 0}
         self._cwd_cache: tuple[float, dict] = (0.0, {})
         self._probe_cache: dict[str, float] = {}
+        # compose 运行期簿记（V2.7）：本会话由我们带起的容器 / 就绪判定用过端口探针的组件 /
+        # component_state 与容器名解析的短缓存（刷新周期内复用，同探针缓存）。
+        self._compose_started: dict[str, float] = {}  # "pid.cid" -> ensure 成功时刻
+        self._compose_probe_used: set[str] = set()
+        self._compose_state_cache: dict[str, tuple[float, dict]] = {}
+        self._compose_name_cache: dict[str, tuple[float, str | None]] = {}
         self.fsevents: dict = {"ok": None, "at": 0.0, "detail": ""}
         self._refresh_lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="probe")
@@ -156,6 +184,10 @@ class Controller:
             return
         try:
             projects = manifest.load_all()
+            for p in projects.values():
+                for c in p.components:
+                    if c.kind == "generator" and c.run == "compose":
+                        raise ValueError(f"{p.id}.{c.id}: generator 组件不能 run=compose")
             ads = {pid: adapters.load(p) for pid, p in projects.items()}
         except Exception as e:  # keep last good manifests
             self.manifest_error = f"清单错误：{e}"
@@ -164,6 +196,28 @@ class Controller:
         with self.lock:
             self.projects, self.adapters = projects, ads
             self.manifest_sig, self.manifest_error = sig, ""
+
+    def _registry_autostart_map(self) -> dict[str, bool]:
+        """V2.9: Registry.autostart_map()（Core 线提供），30s 缓存；任何失败按空处理。
+
+        惰性导入 + getattr 防御：registry 尚未提供该助手时不影响任何行为。
+        """
+        now = time.monotonic()
+        ts, cached = self._autostart_cache
+        if now - ts < AUTOSTART_CACHE_TTL:
+            return cached
+        cached = {}
+        try:
+            from .registry import Registry  # 惰性：daemon 启动路径不依赖 registry
+            fn = getattr(Registry(), "autostart_map", None)
+            if callable(fn):
+                raw = fn()
+                if isinstance(raw, dict):
+                    cached = {str(k): bool(v) for k, v in raw.items()}
+        except Exception:  # noqa: BLE001 — registry 读失败按无 autostart 处理
+            cached = {}
+        self._autostart_cache = (now, cached)
+        return cached
 
     # ---------- helpers ----------
     def label(self, p: Project, c: Component) -> str:
@@ -187,10 +241,75 @@ class Controller:
         pids: set[int] = set()
         for p in ([project] if project else self.projects.values()):
             for c in p.managed_components():
+                if c.run == "compose":
+                    continue  # compose 组件没有 launchd job
                 ji = launchd.info(self.label(p, c))
                 if ji.pid:
                     pids |= procs.descendants(ji.pid, ps)
         return pids
+
+    def _docker_container_for_port(self, port: int) -> str | None:
+        """哪个容器发布了该宿主端口（dockerctx，只读）；任何失败 → None（保持进程语义）。"""
+        try:
+            r = dockerctx.run(["ps", "-a", "--filter", f"publish={port}", "--format", "{{json .}}"], timeout=6)
+            if r.returncode != 0:
+                return None
+            for line in r.stdout.splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                name = str(row.get("Names", "")).split(",")[0].strip()
+                if name:
+                    return name
+        except Exception:  # noqa: BLE001 — docker 不可达时退回普通进程冲突判定
+            return None
+        return None
+
+    def _compose_container_cached(self, p: Project, c: Component) -> str | None:
+        """compose.container_name 的短缓存版（归属判定会反复调用）。"""
+        key = f"{p.id}.{c.id}"
+        hit = self._compose_name_cache.get(key)
+        now = time.monotonic()
+        if hit and now - hit[0] < COMPOSE_NAME_TTL:
+            return hit[1]
+        try:
+            name = compose.container_name(p, c)
+        except Exception:  # noqa: BLE001
+            name = None
+        self._compose_name_cache[key] = (now, name)
+        return name
+
+    def _container_owner(self, name: str, exclude_pid: str) -> str | None:
+        """容器属于哪个已登记项目（dependencies[].container 或 compose 组件的容器）。"""
+        for other in self.projects.values():
+            if other.id == exclude_pid:
+                continue
+            if any(d.container == name for d in other.dependencies):
+                return other.id
+            for oc in other.managed_components():
+                if oc.run == "compose" and self._compose_container_cached(other, oc) == name:
+                    return other.id
+        return None
+
+    def _docker_port_entry(self, p: Project, c: Component, port: int, holder_pid: int) -> dict | None:
+        """把 docker 宿主代理持有的端口归属到容器（V2.8）。
+
+        返回 None = 无法解析容器（调用方保持既有进程冲突语义）；
+        {"skip": True} = 本项目自己的依赖/自己的 compose 容器在运行（不是外部实例，不是冲突）；
+        否则为一条 docker-container 外部记录（unknown 或归属其他受管项目）。
+        """
+        name = self._docker_container_for_port(port)
+        if not name:
+            return None
+        if any(d.container == name for d in p.dependencies):
+            return {"skip": True}  # 本项目依赖容器在运行：依赖探测另行呈现
+        if c.run == "compose" and self._compose_container_cached(p, c) == name:
+            return {"skip": True}  # 本组件自己的容器已在运行（up 幂等，无需接管）
+        return {"component": c.id, "name": c.name or c.id, "kind": "docker-container",
+                "container": name, "pid": holder_pid, "tree": [], "ports": [port], "why": "docker",
+                "cmd": f"容器 {name}（docker 端口代理 pid {holder_pid}）", "same_project": False,
+                "managed_project": self._container_owner(name, p.id)}
 
     def external_instances(self, p: Project, ps: dict | None = None, fresh: bool = True) -> list[dict]:
         """Instances of p's components not started by us. `same_project` = runs from p's own source
@@ -218,7 +337,19 @@ class Controller:
             want = str((p.source / (c.external_cwd or c.cwd)).resolve())
             cands = []
             if c.port and c.port in listen and listen[c.port] not in ours:
-                cands.append((listen[c.port], "port"))
+                holder_pid = listen[c.port]
+                holder = ps.get(holder_pid)
+                if holder is not None and procs.looks_like_docker_proxy(holder.cmd):
+                    # docker 宿主代理：端口实际由某容器发布，归属到容器而不是进程冲突
+                    entry = self._docker_port_entry(p, c, c.port, holder_pid)
+                    if entry is not None:
+                        if entry.get("skip"):
+                            continue
+                        if not any(e.get("kind") == "docker-container" and e.get("container") == entry["container"]
+                                   for e in out):
+                            out.append(entry)
+                        continue
+                cands.append((holder_pid, "port"))
             if c.external_cmd:
                 rx = re.compile(c.external_cmd)
                 cands += [(pid, "cmd") for pid, pr in ps.items()
@@ -244,9 +375,21 @@ class Controller:
 
     def conflicts(self, p: Project, ps: dict | None = None, fresh: bool = True) -> list[str]:
         """Instances not started by us that would collide with starting p."""
-        return [f"{e['name']}：" + (f"端口被项目 {e['managed_project']} 占用" if e.get("managed_project") else
-                ("端口被非本工具进程占用" if e["why"] == "port" else "已有非本工具启动的实例"))
-                + f"（pid {e['pid']}：{e['cmd']}）" for e in self.external_instances(p, ps, fresh)]
+        out: list[str] = []
+        for e in self.external_instances(p, ps, fresh):
+            if e.get("kind") == "docker-container":
+                if e.get("same_project"):
+                    continue  # 自己的容器在运行：compose up 幂等，不是冲突
+                if e.get("managed_project"):
+                    out.append(f"{e['name']}：端口被项目 {e['managed_project']} 的容器 {e['container']} 占用")
+                else:
+                    port = e["ports"][0] if e["ports"] else "?"
+                    out.append(f"{e['name']}：端口 {port} 由容器 {e['container']} 发布占用（未登记）")
+                continue
+            out.append(f"{e['name']}：" + (f"端口被项目 {e['managed_project']} 占用" if e.get("managed_project") else
+                       ("端口被非本工具进程占用" if e["why"] == "port" else "已有非本工具启动的实例"))
+                       + f"（pid {e['pid']}：{e['cmd']}）")
+        return out
 
     def _adoptable(self, p: Project, ext: list[dict]) -> tuple[bool, dict[str, int]]:
         """External instances run p from its own folder and every required server answers its probe
@@ -301,6 +444,10 @@ class Controller:
         foreign = [e for e in ext if not e["same_project"]]
         if foreign:
             e = foreign[0]
+            if e.get("kind") == "docker-container":
+                return {"ok": False, "error": f"端口 {e['ports'] or '?'} 由容器 {e['container']} 发布占用"
+                        + (f"（项目 {e['managed_project']}）" if e.get("managed_project") else "（未登记）")
+                        + "，本工具不会停止它"}
             return {"ok": False, "error": f"端口 {e['ports'] or '?'} 被其他程序占用（pid {e['pid']}：{e['cmd']}），"
                                          "它不是本项目的实例，本工具不会停止它"}
         busy = self.adapters[pid].busy()
@@ -434,6 +581,64 @@ class Controller:
                 ok, detail = extra
         return ok, detail
 
+    def _compose_state(self, p: Project, c: Component) -> dict:
+        """compose.component_state 的短缓存版（状态刷新周期内复用，同探针缓存思路）。"""
+        key = f"{p.id}.{c.id}"
+        now = time.monotonic()
+        hit = self._compose_state_cache.get(key)
+        if hit and now - hit[0] < COMPOSE_STATE_TTL:
+            return hit[1]
+        try:
+            st = compose.component_state(p, c)
+        except Exception as e:  # noqa: BLE001 — docker 不可达时呈现 unknown，不炸整个快照
+            st = {"state": "unknown", "health": None, "container": None, "error": str(e)}
+        self._compose_state_cache[key] = (now, st)
+        return st
+
+    def _compose_component_status(self, p: Project, c: Component) -> dict:
+        """compose 组件的状态映射（V2.7）：running+health / 端口探针 / Running 即就绪。"""
+        key = f"{p.id}.{c.id}"
+        st = self._compose_state(p, c)
+        running = st.get("state") == "running"
+        health = st.get("health")
+        cs = {"id": c.id, "name": c.name or c.id, "kind": c.kind, "run": "compose",
+              "pid": None, "running": running, "loaded": st.get("state") not in ("missing",),
+              "started_at": self._compose_started.get(key), "required": c.required,
+              "last_exit": None, "failures": 0, "container": st.get("container"),
+              "health": health or "none", "probe_used": key in self._compose_probe_used,
+              "log": None, "code": {"state": "na", "label": "容器管理", "detail": ""}}
+        note = ""
+        if running and key not in self._compose_started:
+            note = "容器已在运行（up 幂等，无需接管）"
+        if st.get("state") == "unknown":
+            cs.update(state="unknown", label="未知", detail=f"容器状态读取失败：{st.get('error', '')}")
+            return cs
+        if not running:
+            detail = "" if st.get("state") == "missing" else f"容器状态 {st.get('state')}"
+            cs.update(state="stopped", label="未运行", detail=detail)
+            return cs
+        if health is not None:
+            if health == "healthy":
+                cs.update(state="ready", label="就绪", detail=note)
+            elif health == "unhealthy":
+                cs.update(state="unhealthy", label="未就绪", detail="容器健康检查失败" + (f"；{note}" if note else ""))
+            else:
+                cs.update(state="starting", label="启动中", detail=f"健康检查 {health}" + (f"；{note}" if note else ""))
+            return cs
+        if c.ready:
+            ok, detail = self._ready(p, c)
+            if ok:
+                cs.update(state="ready", label="就绪", detail=note)
+                return cs
+            started = self._compose_started.get(key, 0.0)
+            if time.time() - started < c.start_timeout:
+                cs.update(state="starting", label="启动中", detail=detail or "等待端口就绪")
+            else:
+                cs.update(state="unhealthy", label="未就绪", detail=detail or note)
+            return cs
+        cs.update(state="ready", label="就绪", detail=note or "容器运行中（无健康检查）")
+        return cs
+
     def _bootout_wait(self, p: Project, c: Component, timeout: float = 30.0) -> tuple[bool, str]:
         """Stop our job and wait until its whole process tree is gone (slow dev-server shutdowns
         would otherwise look like a foreign instance on restart). Only pids that descended from
@@ -539,7 +744,7 @@ class Controller:
 
     def _do_start(self, p: Project, open_after: bool, only: list[str] | None = None, skip_build: bool = False,
                   by_user: bool = True) -> None:
-        started: list[Component] = []
+        started_seq: list[tuple[str, Component]] = []  # ("local"|"compose", c) in start order
         previous: list[Component] = []
         success, conflicted = False, False
         try:
@@ -560,6 +765,21 @@ class Controller:
             for c in self._order(p):
                 if only and c.id not in only:
                     continue
+                if c.run == "compose":
+                    # V2.7: compose 组件不走 launchd/runner，readiness=容器状态
+                    self._startup_remaining(p)
+                    try:
+                        res = compose.ensure_started(p, c)
+                    except compose.ComposeError as e:
+                        self._set_error(p.id, c.id, f"无法启动：compose 服务 {c.compose_service} 启动失败：{e}")
+                        return
+                    if res.get("action") != "already-running":
+                        # 只有本次真正带起的容器才参与失败回滚；先前已在运行的容器不动
+                        self._compose_started[f"{p.id}.{c.id}"] = time.time()
+                        started_seq.append(("compose", c))
+                    if not self._wait_compose_ready(p, c):
+                        return
+                    continue
                 self._startup_remaining(p)
                 ji = launchd.info(self.label(p, c))
                 if ji.running and ji.pid in mine:
@@ -576,7 +796,7 @@ class Controller:
                 if ji.loaded:
                     self._bootout_wait(p, c)
                 self._startup_remaining(p)
-                started.append(c)
+                started_seq.append(("local", c))
                 ok, err = self._bootstrap(p, c)
                 if not ok:
                     self._set_error(p.id, c.id, f"launchd 拒绝启动：{err}")
@@ -600,12 +820,21 @@ class Controller:
                 if not success and not conflicted:
                     if not previous:
                         self.store.set_intent(p.id, "stopped", by="start-failed")
-                    if started:
+                    if started_seq:
                         with self.lock:
                             self.ops[p.id]["kind"] = "stopping"
-                        for c in reversed(started):
+                        for kind, c in reversed(started_seq):
                             try:
-                                ok, err = self._bootout_wait(p, c)
+                                if kind == "compose":
+                                    # 只回滚本次启动带起的容器；先前已在运行的容器不动
+                                    ok, err = (True, "")
+                                    try:
+                                        compose.stop_component(p, c)
+                                    except compose.ComposeError as e:
+                                        ok, err = False, str(e)
+                                    self._compose_started.pop(f"{p.id}.{c.id}", None)
+                                else:
+                                    ok, err = self._bootout_wait(p, c)
                             except Exception as e:  # still release the operation if launchctl fails
                                 ok, err = False, str(e)
                             if not ok:
@@ -613,6 +842,45 @@ class Controller:
                                 self._set_error(p.id, c.id, f"{original}；清理失败：{err}")
             finally:
                 self._end(p.id)
+
+    def _wait_compose_ready(self, p: Project, c: Component) -> bool:
+        """compose 组件就绪：容器 Running，且（有 healthcheck 用 health；否则声明端口探针；都没有=Running 即就绪）。"""
+        key = f"{p.id}.{c.id}"
+        end = time.monotonic() + min(c.start_timeout, self._startup_remaining(p))
+        detail = ""
+        while time.monotonic() < end:
+            try:
+                st = compose.component_state(p, c)
+            except compose.ComposeError as e:
+                self._set_error(p.id, c.id, f"无法启动：compose 服务 {c.compose_service} 状态读取失败：{e}")
+                return False
+            if st["state"] == "missing":
+                self._set_error(p.id, c.id, f"无法启动：compose 服务 {c.compose_service} 的容器不存在")
+                return False
+            if st["state"] != "running":
+                time.sleep(min(0.2, max(0.0, end - time.monotonic())))
+                continue
+            health = st.get("health")
+            if health is not None:
+                if health == "healthy":
+                    self._compose_probe_used.discard(key)
+                    return True
+                if health == "unhealthy":
+                    self._set_error(p.id, c.id, f"无法启动：容器健康检查失败（unhealthy）")
+                    return False
+                detail = f"健康检查 {health}"
+            elif c.ready:
+                remaining = max(0.05, min(end - time.monotonic(), self._startup_remaining(p)))
+                ok, detail = procs.probe(c.ready, min(c.ready.timeout, remaining))
+                if ok:
+                    self._compose_probe_used.add(key)
+                    return True
+            else:
+                self._compose_probe_used.discard(key)
+                return True  # Running 即就绪
+            time.sleep(min(0.2, max(0.0, end - time.monotonic())))
+        self._set_error(p.id, c.id, f"启动就绪超时（总预算 {STARTUP_TIMEOUT:g}s）：{detail}")
+        return False
 
     def _wait_ready(self, p: Project, c: Component) -> bool:
         end = time.monotonic() + min(c.start_timeout, self._startup_remaining(p))
@@ -675,6 +943,14 @@ class Controller:
         try:
             self.errors.pop(p.id, None)
             for c in reversed(self._order(p)):
+                if c.run == "compose":
+                    try:
+                        compose.stop_component(p, c)
+                    except compose.ComposeError as e:
+                        self._set_error(p.id, c.id, f"停止失败：{e}")
+                        break
+                    self._compose_started.pop(f"{p.id}.{c.id}", None)
+                    continue
                 ok, err = self._bootout_wait(p, c)
                 if not ok:
                     self._set_error(p.id, c.id, f"停止失败：{err}")
@@ -755,6 +1031,8 @@ class Controller:
             comps = [c for c in self._order(p) if not components or c.id in components]
             # Compile first so a broken/slow build never takes down the running instance.
             for c in comps:
+                if c.run == "compose":
+                    continue  # compose 组件无本地安装/编译步骤
                 ok, err = self._maybe_install(p, c)
                 if ok:
                     ok, err = self._build(p, c)
@@ -764,6 +1042,13 @@ class Controller:
                     return
             self._startup_remaining(p)
             for c in reversed(comps):
+                if c.run == "compose":
+                    try:
+                        compose.stop_component(p, c)
+                    except compose.ComposeError as e:
+                        raise RuntimeError(f"{c.name or c.id} 停止失败：{e}")
+                    self._compose_started.pop(f"{p.id}.{c.id}", None)
+                    continue
                 ok, err = self._bootout_wait(p, c)
                 if not ok:
                     raise RuntimeError(f"{c.name or c.id} 停止失败：{err}")
@@ -808,8 +1093,62 @@ class Controller:
         for c in p.components:
             if comp and c.id != comp:
                 continue
+            if c.run == "compose":
+                # V2.7: compose 组件日志来自 docker logs（只读），同样过脱敏
+                try:
+                    out[c.id] = redact(compose.logs(p, c, lines) or "")
+                except compose.ComposeError as e:
+                    out[c.id] = f"[localservices] {e}"
+                continue
             out[c.id] = tail(log_path(p.id, c.id), lines)
         return {"ok": True, "logs": out}
+
+    # ---------- release (V2.1 / V2.7) ----------
+    def release_service(self, sid: str) -> dict:
+        """移除登记后释放本工具为该服务持有的运行期对象：bootout 已加载标签、删除
+        agents/<prefix>.<sid>.*.plist、删除 run/<sid>.*.json、删除 state.json 该 sid 条目。
+
+        幂等；只按 sid 前缀匹配，绝不触碰其他服务的文件，也绝不停容器（移除语义里
+        共享/外部容器一律不动；受管 compose 容器由 ctl.stop 在移除流程更早阶段处置）。
+        """
+        released: list[str] = []
+        errors: list[str] = []
+        prefix = paths.label_prefix()
+        try:
+            for label in sorted(launchd.loaded_labels()):
+                if label.startswith(f"{prefix}.{sid}."):
+                    ok, err = launchd.bootout(label)
+                    if ok:
+                        released.append(label)
+                    else:
+                        errors.append(f"{label}: {err or 'bootout 失败'}")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"launchd bootout: {e}")
+        try:
+            removed, errs = launchd.remove_plists(sid)
+            released += [str(p) for p in removed]
+            errors += errs
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"删除 plist: {e}")
+        try:
+            for record in sorted(paths.run_dir().glob(f"{sid}.*.json")):
+                try:
+                    record.unlink()
+                    released.append(str(record))
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    errors.append(f"{record}: {e}")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"删除 run 记录: {e}")
+        with self.store.lock:
+            try:
+                if self.store.data.get("projects", {}).pop(sid, None) is not None:
+                    self.store.save()
+                    released.append(f"state:{sid}")
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"删除 state 条目: {e}")
+        return {"ok": not errors, "released": released, "errors": errors}
 
     # ---------- generators ----------
     def _run_generator(self, p: Project, g: Component, reason: str) -> None:
@@ -932,6 +1271,14 @@ class Controller:
                 continue  # a start just failed (build/install/launchd); don't hot-loop
             if intent == "running":
                 for c in p.managed_components():
+                    if c.run == "compose":
+                        st = self._compose_state(p, c)
+                        if st.get("state") != "running":
+                            if self._begin(p.id, "starting"):
+                                threading.Thread(target=self._do_start, args=(p, False),
+                                                 kwargs={"by_user": False}, daemon=True).start()
+                            break
+                        continue
                     ji = launchd.info(self.label(p, c))
                     rec = runner.read_record(p.id, c.id)
                     if rec.get("gave_up") and c.watch and not ji.running:
@@ -952,6 +1299,15 @@ class Controller:
                     self.gen_state[f"{p.id}._"] = {"ok": False, "error": str(e)}
             else:
                 for c in p.managed_components():
+                    if c.run == "compose":
+                        # 只停本会话由我们带起的容器；外部已在运行的容器按外部实例语义保留
+                        if f"{p.id}.{c.id}" in self._compose_started:
+                            try:
+                                compose.stop_component(p, c)
+                            except compose.ComposeError as e:
+                                self._set_error(p.id, c.id, f"停止失败：{e}")
+                            self._compose_started.pop(f"{p.id}.{c.id}", None)
+                        continue
                     if launchd.info(self.label(p, c)).loaded:
                         self._bootout_wait(p, c)
 
@@ -987,6 +1343,11 @@ class Controller:
                     "detail": gs.get("error", ""), "last_run": gs.get("at"), "last_ok": gs.get("last_ok_at"),
                     "reason": gs.get("reason", ""), "required": False,
                 })
+                continue
+            if c.run == "compose":
+                cs = self._compose_component_status(p, c)
+                comps.append(cs)
+                comp_map[c.id] = cs
                 continue
             ji = launchd.info(self.label(p, c))
             rec = runner.read_record(p.id, c.id)
@@ -1105,7 +1466,8 @@ class Controller:
         elif problems and state in ("partial", "failed"):
             reason = "；".join(problems)
 
-        code_states = [cs["code"] for cs in managed if cs["running"]]
+        code_states = [cs["code"] for cs in managed
+                       if cs["running"] and cs["code"].get("state") != "na"]  # compose 组件不参与代码态聚合
         if not code_states:
             code = {"state": "idle", "label": "—"}
         else:

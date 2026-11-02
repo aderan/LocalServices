@@ -30,7 +30,8 @@ COMPONENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 AGENTS = ("codex", "claude", "none")
 KINDS = ("server", "worker", "generator")
 SERVICE_KEYS = {"id", "name", "description", "source", "open", "autostart", "adapter",
-                "observe_only", "draft", "project_hint", "components", "dependencies", "evidence"}
+                "observe_only", "draft", "project_hint", "components", "dependencies", "evidence",
+                "edited", "accept_new", "confirmed_provision"}  # 后三者为 V2.3/V2.7 覆盖层与 compose 置信字段
 COMP_KEYS = {"id", "kind", "name", "cmd", "shell_script", "cwd", "env", "env_files", "port", "ready",
              "required", "start_timeout", "after", "hot", "watch", "restart_on", "ignore", "build",
              "install", "install_when", "install_marker", "auto_update", "external_cmd",
@@ -88,6 +89,15 @@ def check(payload: dict, opts) -> list[str]:
     unknown = set(svc) - SERVICE_KEYS
     if unknown:
         errs.append(f"service 含未知字段：{sorted(unknown)}")
+    # V2.3/V2.7：覆盖层与 compose 置信字段的结构自检
+    for key in ("edited", "accept_new"):
+        v = svc.get(key)
+        if v is not None and (not isinstance(v, list)
+                              or not all(isinstance(x, str) and x.strip() for x in v)):
+            errs.append(f"service.{key} 必须是非空字符串数组（dotted path）")
+    cp = svc.get("confirmed_provision")
+    if cp is not None and not isinstance(cp, bool):
+        errs.append("service.confirmed_provision 必须是布尔值")
     sid = svc.get("id")
     if sid is not None and (not isinstance(sid, str) or not ID_RE.fullmatch(sid)):
         errs.append(f"service.id 非法（须匹配 {ID_RE.pattern}）：{sid!r}")
