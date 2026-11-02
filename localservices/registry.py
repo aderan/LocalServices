@@ -1655,7 +1655,8 @@ class Registry:
                 details.append(f"组件 {nc['id']} cwd 不存在：{nc.get('cwd', '.')}")
             elif not any(_inside(cwd_abs, r) for r in roots):
                 details.append(f"组件 {nc['id']} cwd 超出声明的目录范围：{cwd_abs}")
-            _check_cmd(nc, src, details, warnings)
+            comp_cwd = Path(nc.get("cwd", ".") or ".")
+            _check_cmd(nc, src, details, warnings, comp_cwd=comp_cwd)
             if nc.get("port") is not None:
                 if nc["port"] in ports_seen:
                     details.append(f"端口 {nc['port']} 同时用于 {ports_seen[nc['port']]} 与 {nc['id']}")
@@ -1973,7 +1974,7 @@ def _check_resource_ref(dep_name: str, ref: str, name: str, details: list[str], 
         details.append(f"依赖 {dep_name} 引用的资源不存在：{ref}")
 
 
-def _check_cmd(nc: dict, src: Path, details: list[str], warnings: list[str]) -> None:
+def _check_cmd(nc: dict, src: Path, details: list[str], warnings: list[str], comp_cwd: Path | None = None) -> None:
     cid = nc["id"]
     if nc.get("run") == "compose":
         return  # V2.7：compose 组件由 docker compose 启动，无本地 cmd 可解析
@@ -1988,12 +1989,12 @@ def _check_cmd(nc: dict, src: Path, details: list[str], warnings: list[str]) -> 
     if arg0.startswith("{build}"):
         warnings.append(f"组件 {cid} cmd 使用 {{build}} 占位符，未验证可执行")
         return
-    if _resolve_cmd0(arg0, src):
+    if _resolve_cmd0(arg0, src, comp_cwd):
         return
     details.append(f"组件 {cid} cmd[0] 无法解析：{arg0}")
 
 
-def _resolve_cmd0(arg0: str, src: Path) -> bool:
+def _resolve_cmd0(arg0: str, src: Path, comp_cwd: Path | None = None) -> bool:
     p = Path(os.path.expanduser(arg0))
     candidates: list[Path] = []
     if p.is_absolute():
@@ -2001,6 +2002,12 @@ def _resolve_cmd0(arg0: str, src: Path) -> bool:
     else:
         candidates.append(src / p)
         candidates.append(src / "node_modules" / ".bin" / p.name)
+        # 组件 cwd 相对（monorepo 前端标准形态：cwd=apps/web + node_modules/.bin/vite；
+        # 运行时 runner 在 comp cwd 下 execvpe，注册校验必须与运行时同源解析）
+        if comp_cwd is not None:
+            base = comp_cwd if comp_cwd.is_absolute() else src / comp_cwd
+            candidates.append(base / p)
+            candidates.append(base / "node_modules" / ".bin" / p.name)
     for d in manifest.DEFAULT_PATH.split(":"):
         if d:
             candidates.append(Path(d) / p.name if not p.is_absolute() else p)
