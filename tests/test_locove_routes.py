@@ -40,6 +40,12 @@ def make_project(pid: str, host: str, port: int, component: str = "web") -> Proj
                    endpoints=[Endpoint(id="default", host=host, component=component, open_path="/zh")])
 
 
+def comp_state(cid: str, state: str, port: int | None = None, **kw) -> dict:
+    d = {"id": cid, "state": state, "running": state == "ready", "port": port}
+    d.update(kw)
+    return d
+
+
 class Env(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="ls-routes-")
@@ -61,14 +67,16 @@ class Env(unittest.TestCase):
 class DesiredRoutesTest(Env):
     def test_running_service_routes_to_component_port(self):
         p = make_project("buildbase", "buildbase.locove", 3000)
-        snap = {"projects": [{"id": "buildbase", "state": "available"}]}
+        snap = {"projects": [{"id": "buildbase", "state": "available",
+                              "components": [comp_state("web", "ready", 3000)]}]}
         routes = locove.desired_routes({"buildbase": p}, snap)
         r = routes["buildbase.locove"]
         self.assertEqual((r.state, r.upstream_port, r.service), ("proxy", 3000, "buildbase"))
 
     def test_stopped_service_is_unavailable(self):
         p = make_project("app", "app.locove", 3001)
-        snap = {"projects": [{"id": "app", "state": "stopped"}]}
+        snap = {"projects": [{"id": "app", "state": "stopped",
+                              "components": [comp_state("web", "stopped", 3001)]}]}
         routes = locove.desired_routes({"app": p}, snap)
         self.assertEqual(routes["app.locove"].state, "unavailable")
         # 事实保留配置端口（诊断用）；渲染层对 unavailable 一律 503，不转发
@@ -80,15 +88,62 @@ class DesiredRoutesTest(Env):
 
     def test_external_instance_uses_actual_port(self):
         p = make_project("app", "app.locove", 3003)
-        snap = {"projects": [{"id": "app", "state": "external", "external_ports": {"web": 13003}}]}
+        snap = {"projects": [{"id": "app", "state": "external",
+                              "components": [comp_state("web", "stopped", 3003)],
+                              "external_ports": {"web": 13003}}]}
         routes = locove.desired_routes({"app": p}, snap)
         self.assertEqual((routes["app.locove"].state, routes["app.locove"].upstream_port),
                          ("proxy", 13003))
 
-    def test_partial_counts_as_served(self):
+    def test_partial_ready_component_still_served(self):
         p = make_project("app", "app.locove", 3004)
-        snap = {"projects": [{"id": "app", "state": "partial"}]}
+        snap = {"projects": [{"id": "app", "state": "partial",
+                              "components": [comp_state("web", "ready", 3004)]}]}
         self.assertEqual(locove.desired_routes({"app": p}, snap)["app.locove"].state, "proxy")
+
+    def test_partial_service_stopped_component_not_proxied(self):
+        """review R2 复现：partial 服务里 stopped 组件的 endpoint 不得按服务总体状态放行——
+        其端口可能已被无关程序占用，转发即把流量送到陌生进程。"""
+        p = Project(id="svc", name="svc", source=Path("/tmp"), components=[
+            Component(id="web", cmd=["sleep", "1"], port=3000),
+            Component(id="api", cmd=["sleep", "1"], port=3001),
+        ], endpoints=[
+            Endpoint(id="web", host="web.svc.locove", component="web", open_path="/"),
+            Endpoint(id="api", host="api.svc.locove", component="api", open_path="/"),
+        ])
+        snap = {"projects": [{"id": "svc", "state": "partial", "components": [
+            comp_state("web", "ready", 3000),
+            comp_state("api", "stopped", 3001),
+        ]}]}
+        routes = locove.desired_routes({"svc": p}, snap)
+        self.assertEqual(routes["web.svc.locove"].state, "proxy", "ready 组件保持可用")
+        self.assertEqual(routes["api.svc.locove"].state, "unavailable", "stopped 组件必须 503")
+
+    def test_render_never_proxies_stopped_component(self):
+        """R2 端到端：stopped 组件的 host 在 Caddyfile 里只能是 503 站点，不得出现 reverse_proxy。"""
+        p = Project(id="svc", name="svc", source=Path("/tmp"), components=[
+            Component(id="web", cmd=["sleep", "1"], port=3000),
+            Component(id="api", cmd=["sleep", "1"], port=3001),
+        ], endpoints=[
+            Endpoint(id="web", host="web.r2.locove", component="web", open_path="/"),
+            Endpoint(id="api", host="api.r2.locove", component="api", open_path="/"),
+        ])
+        snap = {"projects": [{"id": "svc", "state": "partial", "components": [
+            comp_state("web", "ready", 3000),
+            comp_state("api", "stopped", 3001),
+        ]}]}
+        cfg = locove.render_caddyfile(locove.desired_routes({"svc": p}, snap))
+        self.assertIn("reverse_proxy 127.0.0.1:3000", cfg)
+        api_site = cfg.split("http://api.r2.locove {", 1)[1].split("\n}", 1)[0]
+        self.assertNotIn("reverse_proxy", api_site)
+        self.assertIn("503", api_site)
+
+    def test_snapshot_without_component_facts_is_unavailable(self):
+        """快照没有组件事实（旧 daemon/异构来源）→ 不按服务总体状态猜测，收敛 unavailable。"""
+        p = make_project("app", "app.locove", 3006)
+        snap = {"projects": [{"id": "app", "state": "available"}]}
+        routes = locove.desired_routes({"app": p}, snap)
+        self.assertEqual(routes["app.locove"].state, "unavailable")
 
     def test_removed_service_has_no_route(self):
         p = make_project("app", "app.locove", 3005)
@@ -111,9 +166,33 @@ class RenderTest(Env):
         self.assertIn("404", cfg)
         self.assertIn("auto_https off", cfg)
 
+    def test_all_listeners_bound_to_loopback(self):
+        """review R1：站点与 catch-all 全部回环。default_bind 是全局选项，覆盖每个站点块
+        （admin 的 127.0.0.1 不约束业务 listener，必须显式绑定）。"""
+        cfg = locove.render_caddyfile({
+            "a.locove": Route("a.locove", "a", "web", 3000, "proxy"),
+            "b.locove": Route("b.locove", "b", "web", None, "unavailable"),
+        })
+        self.assertIn("default_bind 127.0.0.1 ::1", cfg)
+        self.assertNotIn("\tbind ", cfg.replace("\tdefault_bind", ""))  # 无站点另行放宽
+        # 真实 adapt：listen 数组只允许回环地址
+        if HAS_CADDY:
+            f = Path(self.tmp.name) / "bind-adapt.caddyfile"
+            f.write_text(cfg)
+            r = subprocess.run([CADDY, "adapt", "--config", str(f), "--adapter", "caddyfile"],
+                               capture_output=True, text=True, timeout=20)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            import json as _j
+            servers = _j.loads(r.stdout)["apps"]["http"]["servers"]
+            for srv in servers.values():
+                for addr in srv["listen"]:
+                    self.assertTrue(addr.startswith("127.0.0.1:") or addr.startswith("[::1]:"),
+                                    f"非回环监听：{addr}")
+
     def test_sync_no_change_is_noop(self):
         p = make_project("a", "a.locove", 3010)
-        snap = {"projects": [{"id": "a", "state": "available"}]}
+        snap = {"projects": [{"id": "a", "state": "available",
+                              "components": [comp_state("web", "ready", 3010)]}]}
         fake = Path(self.tmp.name) / "fake-caddy"
         fake.write_text("#!/bin/sh\nexit 0\n")
         fake.chmod(0o755)
@@ -272,6 +351,33 @@ class RealCaddyTest(Env):
             capture_output=True, text=True, timeout=10)
         self.assertEqual(r.stdout, "503")
 
+    def test_real_process_listens_loopback_only(self):
+        """review R1 验收：真实 Caddy 进程的 listener 地址必须全部回环（不是配置字符串检查），
+        且本机非回环地址不可达——局域网设备无法经 Mac IP:port 访问上游。"""
+        self._start_caddy()
+        r = subprocess.run(["lsof", "-nP", f"-iTCP:{self.PROXY_PORT}", "-sTCP:LISTEN"],
+                           capture_output=True, text=True, timeout=10)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = [ln for ln in r.stdout.splitlines()[1:] if "LISTEN" in ln]
+        self.assertTrue(lines, "没有观察到监听者")
+        for ln in lines:
+            addr = ln.split()[8] if len(ln.split()) > 8 else ""
+            self.assertTrue(addr.startswith("127.0.0.1:") or addr.startswith("[::1]:"),
+                            f"非回环监听：{ln}")
+        # 本机主 IP（非回环）上端口不可达：connect 必须失败
+        import subprocess as _sp
+        ip = _sp.run(["route", "-n", "get", "default"], capture_output=True, text=True).stdout
+        import re as _re
+        m = _re.search(r"interface:\s*(\S+)", ip)
+        if m:
+            ifs = _sp.run(["ipconfig", "getifaddr", m.group(1)], capture_output=True, text=True).stdout.strip()
+            if ifs and _re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ifs):
+                try:
+                    socket.create_connection((ifs, self.PROXY_PORT), timeout=1.5).close()
+                    self.fail(f"非回环地址 {ifs}:{self.PROXY_PORT} 不应可达")
+                except OSError:
+                    pass  # 预期：拒绝/超时
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -287,7 +393,8 @@ class RebuildAfterRestartTest(Env):
         os.environ["LOCOVE_CADDY_BIN"] = str(fake)
         self.addCleanup(os.environ.pop, "LOCOVE_CADDY_BIN", None)
         p = make_project("app", "app.locove", 3010)
-        snap = {"projects": [{"id": "app", "state": "available"}]}
+        snap = {"projects": [{"id": "app", "state": "available",
+                              "components": [comp_state("web", "ready", 3010)]}]}
         self.assertEqual(locove.sync({"app": p}, snap)["changed"], True)
         routes_before = locove.routes_file().read_text()
         cfg_before = locove.caddyfile().read_text()

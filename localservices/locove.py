@@ -93,23 +93,40 @@ def effective_endpoints(p, settings: dict | None) -> list:
     return eps
 
 
+def _component_states(st: dict) -> dict:
+    return {c.get("id"): c for c in (st.get("components") or []) if isinstance(c, dict)}
+
+
 def desired_routes(projects: dict, snapshot: dict | None = None,
                    settings: dict | None = None) -> dict:
     """由清单 + 共享快照推导期望路由。快照缺失时按 unavailable 收敛（不猜测运行态）。
 
-    外部实例：快照 external_ports 已是「组件 -> 实际监听端口」（V2/V3 接线，见
-    Controller.project_status），就绪的外部实例用实际端口作上游；未就绪/未知 → unavailable。
+    逐 endpoint 判定（review R2）：服务总体状态（如 partial）不代言单个入口——
+    只看该 endpoint 目标组件的事实：外部实例有已验证归属的实际端口 → 转发实际端口；
+    组件自身 ready → 转发其端口；其余（stopped/starting/unhealthy/快照缺组件事实）→
+    unavailable（503），绝不把流量转发给已停止组件的端口——它可能已被无关程序占用。
     """
     snap_projects = {p.get("id"): p for p in (snapshot or {}).get("projects", [])}
     routes: dict[str, Route] = {}
     for pid, p in projects.items():
         st = snap_projects.get(pid, {})
-        healthy = st.get("state") in ("available", "partial", "external")
+        comp_states = _component_states(st)
         ext_ports = st.get("external_ports") or {}
         for e in effective_endpoints(p, settings):
             comp = p.component_by_id(e.component)
             port = ext_ports.get(e.component) or (comp.port if comp else None)
-            state = "proxy" if (healthy and port) else "unavailable"
+            ext_port = ext_ports.get(e.component)
+            if ext_port:
+                # 外部实例：快照 external_ports 是「组件 -> 实际监听端口」，仅经归属+就绪
+                # 验证（Controller._adoptable）后才会出现；用实际端口作上游
+                state, port = "proxy", ext_port
+            else:
+                cs = comp_states.get(e.component)
+                if cs is not None and cs.get("state") == "ready" and cs.get("running", True):
+                    port = cs.get("port") or (comp.port if comp else None)
+                    state = "proxy" if port else "unavailable"
+                else:
+                    state = "unavailable"
             routes[e.host] = Route(host=e.host, service=pid, component=e.component,
                                    upstream_port=port, state=state)
     return routes
@@ -140,12 +157,16 @@ div{{text-align:center}}h1{{font-size:17px;font-weight:600}}p{{color:#98989d;fon
 
 
 def render_caddyfile(routes: dict[str, Route]) -> str:
-    """按精确 Host 生成站点；无匹配 Host 落到 catch-all 404（不代理任何未知主机）。"""
+    """按精确 Host 生成站点；无匹配 Host 落到 catch-all 404（不代理任何未知主机）。
+
+    所有站点与 catch-all 经全局 default_bind 只监听回环（review R1）——admin 的
+    127.0.0.1 不约束业务 listener，必须显式绑定；否则数据面会开在所有网卡上。"""
     parts = [
         "{",
         f"\tadmin 127.0.0.1:{admin_port()}",
         "\tauto_https off",
         f"\thttp_port {proxy_port()}",
+        "\tdefault_bind 127.0.0.1 ::1",
         "\tgrace_period 3s",
         "}",
     ]
