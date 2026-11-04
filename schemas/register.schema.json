@@ -127,6 +127,13 @@
             "$ref": "#/$defs/dependency"
           }
         },
+        "endpoints": {
+          "type": "array",
+          "description": "V3 公开无端口入口；未提供时由加载端按稳定规则派生 <id>.locove",
+          "items": {
+            "$ref": "#/$defs/endpoint"
+          }
+        },
         "evidence": {
           "type": "object",
           "properties": {
@@ -363,6 +370,30 @@
             "existing",
             "up"
           ]
+        }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "required": [
+        "component"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string",
+          "description": "公开域名；无点号时自动补 .locove 后缀。第一个入口缺省 <service-id>.locove"
+        },
+        "component": {
+          "type": "string",
+          "description": "决定真实上游的组件 id"
+        },
+        "open_path": {
+          "type": "string",
+          "description": "打开页面的落点路径（整个应用路径都经同一 host 代理）",
+          "default": "/"
         }
       }
     },

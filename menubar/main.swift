@@ -1,4 +1,4 @@
-// MyBrain Services：菜单栏 + 主窗口（单进程，LSUIElement）。
+// Locove／洛湾（LocalServices）：菜单栏 + 主窗口（单进程，LSUIElement）。
 // 菜单栏按 registry 的 Project 分组（收藏/运行中在前，"需要处理"其次），
 // 主窗口由 MainWindow.swift 的 WKWebView 承载 daemon 工作台。
 
@@ -118,9 +118,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func updateIcon() {
         let name: String, desc: String
-        if !connected { name = "questionmark.circle"; desc = "MyBrain Services：无法连接控制服务" }
-        else if attention { name = "exclamationmark.triangle"; desc = "MyBrain Services：有项目需要处理" }
-        else { name = "square.stack.3d.up"; desc = "MyBrain Services" }
+        if !connected { name = "questionmark.circle"; desc = "Locove／洛湾：无法连接控制服务" }
+        else if attention { name = "exclamationmark.triangle"; desc = "Locove／洛湾：有项目需要处理" }
+        else { name = "square.stack.3d.up"; desc = "Locove／洛湾" }
         let img = NSImage(systemSymbolName: name, accessibilityDescription: desc)
         img?.isTemplate = true
         item.button?.image = img
@@ -171,7 +171,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func rebuild() {
         menu.removeAllItems()
-        let head = NSMenuItem(title: "MyBrain Services", action: nil, keyEquivalent: "")
+        let head = NSMenuItem(title: "Locove／洛湾", action: nil, keyEquivalent: "")
         head.isEnabled = false
         menu.addItem(head)
         menu.addItem(.separator())

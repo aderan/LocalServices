@@ -360,3 +360,50 @@ service-remove/restore）、失败不改写状态、绝不递归调用模型 CLI
 
 既有测试文件（test_registry.py 等 V1 套件）任何人不得修改，必须持续保持绿；
 新行为一律写新测试文件。
+
+---
+
+# V3 契约（MB-LOCALSERVICES-LOCOVE-DOMAINS / 2026-11-04 起）
+
+本节由 Locove／洛湾 Goal 冻结。V1/V2 继续有效；冲突处以本节为准。产品显示名为 **Locove／洛湾**；
+仓库名、内部包名、launchd 标签前缀 `com.mybrain.ls`、`lsctl` 命令、数据目录与既有服务 id/URL/API
+全部保持兼容——品牌只落在窗口/菜单栏/工作台/安装产物说明等用户可见入口。
+
+## V3.0 命名与品牌
+
+- 所有主要产品入口呈现 Locove／洛湾；`LocalServices` 不得作为并列的第二产品身份展示。
+- 迁移零变化：不改 launchd label、state.json 键、服务 id、CLI 名。
+
+## V3.1 Endpoint 数据模型（manifest v3，向后兼容）
+
+TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_path`（缺省 `/`）。
+
+- `host`：用户可见的稳定无端口域名；不含点号时补 `.locove` 后缀（本机命名约定，
+  非公网 TLD；`LOCALSERVICES_DOMAIN_SUFFIX` 可重定向，仅测试/迁移用）。
+- `component`：引用本服务组件 id，决定真实上游（该组件的实际监听端口）；未知引用在加载与注册时拒绝。
+- `open_path`：打开页面的落点；整个应用路径/脚本/资源经同一 host 代理，不按 path 拆分。
+- 旧清单无 `endpoints`：派生缺省入口 `host=<service-id>.locove`（锚定稳定 id，
+  显示名称修改不影响）、`component`=open 端口对应组件（否则第一个有端口的 server 组件）、
+  `open_path`=open URL 路径。无可浏览端口（纯 worker）则无入口。
+- `Project.public_urls()` 返回 `http://<host><open_path>` 列表；`open` 保留为直连地址。
+
+## V3.2 域名分配与冲突
+
+- 跨服务重复 host（含派生）在 `manifest.load_all()` 拒绝加载（与端口冲突同级）。
+- 注册（含 dry-run diff 预览=实际）在提交前拒绝与其他服务冲突的 host，错误列出占用方；
+  同一服务自持 host 不受影响。恢复预检同样重查（V3.4）。
+- 注册 payload `service.endpoints[]`（schema 已更新）；未提供时不写 TOML，由加载端派生。
+
+## V3.3 依赖图与意图唯一写入者（结构性修正）
+
+- 组件 `after` 未知引用 / 环：加载（`manifest.validate_component_graph`）与注册校验
+  双侧拒绝，环错误报告完整链路（`a → b → a`）。
+- 运行意图唯一写入口：daemon 内一切意图变更（含恢复流程）经 `Controller.set_intent_direct`
+  → `Store`（内存+文件一致）；`Registry._apply_restore_intent` 无 ctl 写入口时回退原子直写。
+
+## V3.4 无端口访问面（M2/M3 交付，占位）
+
+- `*.locove` 经系统 split DNS（`/etc/resolver/locove`）指向本机 DNS（用户级，高端口）；
+  80 入口为最小特权转发器；数据面由 Caddy 承载；细节随实施冻结。
+- 域名只代理业务服务；控制面（127.0.0.1:47800）的 Host/Origin/token 规则不变，
+  不因业务域名放宽。

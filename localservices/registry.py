@@ -39,6 +39,8 @@ INTENTS = ("stopped", "running")
 
 SERVICE_KEYS = {"id", "name", "description", "source", "open", "autostart", "adapter",
                 "observe_only", "draft", "project_hint", "options", "components", "dependencies", "evidence",
+                # V3 公开入口（进 TOML）
+                "endpoints",
                 # V2.3 覆盖层 / V2.7 compose 确认（payload-only，不进 TOML）
                 "edited", "accept_new", "confirmed_provision"}
 COMP_KEYS = {"id", "kind", "name", "cmd", "shell_script", "cwd", "env", "env_files", "port", "ready",
@@ -59,6 +61,7 @@ _COMP_ORDER = ["id", "kind", "name", "cwd", "cmd", "env", "env_files", "port", "
                "external_cwd_exact", "debounce", "run", "compose_service", "compose_project",
                "compose_files", "provision"]
 _DEP_ORDER = ["name", "probe", "affects", "managed", "note", "required", "container", "volume"]
+_ENDPOINT_ORDER = ["id", "host", "component", "open_path"]
 
 _lock = threading.RLock()
 
@@ -797,6 +800,28 @@ class Registry:
                     return {"ok": False, "error": f"端口 {cobj.port} 已被占用",
                             "details": [f"{owner} 与 {sid}.{cobj.id}"]}
 
+            # V3 域名冲突（锁内重读后的最新状态；以实际将写盘的定义计算，预览 = 实际）
+            host_owner: dict[str, str] = {}
+            for lp in loaded.values():
+                if lp.id == sid:
+                    continue
+                for ep in lp.endpoints:
+                    host_owner[ep.host] = lp.id
+            cand = manifest.Project(id=sid, name=str(final_def.get("name", sid)),
+                                    source=Path(str(final_def["source"])),
+                                    open=final_def.get("open"),
+                                    components=[manifest._component(dict(c))
+                                                for c in final_def.get("components", [])])
+            try:
+                cand_eps = manifest._derive_endpoints(cand, final_def.get("endpoints", []))
+            except ValueError as e:
+                return {"ok": False, "error": str(e), "details": []}
+            clash = sorted({ep.host for ep in cand_eps} & set(host_owner))
+            if clash:
+                return {"ok": False,
+                        "error": "域名已被占用：" + "；".join(f"{h}（服务 {host_owner[h]}）" for h in clash),
+                        "details": clash}
+
             # ---- 校验完成，开始落盘 ----
             target = (Path(existing.file) if existing is not None and existing.file
                       else paths.user_services_dir() / f"{sid}.toml")
@@ -1035,7 +1060,7 @@ class Registry:
 
     @staticmethod
     def _set_state_intent(sid: str, intent: str, by: str = "restore") -> None:
-        """恢复时显式写 state.json 意图（缺省 stopped；绝不自动启动）。"""
+        """显式写 state.json 意图（缺省 stopped；绝不自动启动）——仅作无 ctl 写入口时的回退。"""
         try:
             data = json.loads(paths.state_file().read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -1048,6 +1073,17 @@ class Registry:
         projects[sid] = entry
         _write_bytes_atomic(paths.state_file(),
                             json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))
+
+    @staticmethod
+    def _apply_restore_intent(ctl, sid: str, intent: str) -> None:
+        """恢复流程设置意图（V3：统一写入口）。优先走 ctl.set_intent_direct——daemon 内
+        Controller 的 Store 持有内存缓存，绕过它会制造“文件刚写就被旧缓存覆盖”的竞态；
+        无该入口（旧桩/独立进程）时回退为原子直写文件。"""
+        writer = getattr(ctl, "set_intent_direct", None)
+        if callable(writer):
+            writer(sid, intent, by="restore")
+            return
+        Registry._set_state_intent(sid, intent)
 
     @staticmethod
     def _stop_via_controller(ctl, sid: str) -> None:
@@ -1409,7 +1445,7 @@ class Registry:
             if ov_bytes is not None:
                 writes.append((paths.overrides_file(), ov_bytes))
             _atomic_commit(writes, after=lambda: self._save(data))
-            self._set_state_intent(sid, intent, by="restore")  # 绝不自动启动
+            self._apply_restore_intent(ctl, sid, intent)  # 绝不自动启动
             return {"ok": True, "service_id": sid, "project_id": target_pid, "intent": intent,
                     "archive": archive_path.name, "builtin_shadow": builtin_shadow,
                     "project_recreated": recreated}
@@ -1558,7 +1594,7 @@ class Registry:
                 writes.append((paths.overrides_file(), ov_bytes))
             _atomic_commit(writes, after=lambda: self._save(data))
             for sid in members:
-                self._set_state_intent(sid, intent, by="restore")
+                self._apply_restore_intent(ctl, sid, intent)
             return {"ok": True, "project_id": pid, "intent": intent, "services": members,
                     "project": copy.deepcopy(proj)}
 
@@ -1709,6 +1745,60 @@ class Registry:
 
     # ---------- 校验辅助 ----------
 
+    def _norm_endpoints(self, raw, comp_objs, sid: str, details: list[str]) -> list[dict] | None:
+        """V3：payload service.endpoints 规范化。None = 未提供（加载端派生缺省入口）。
+        host 缺省：第一个入口用 <sid>.<suffix>（锚定稳定 id），其余必须显式。"""
+        if raw is None:
+            return None
+        if not isinstance(raw, list):
+            details.append("service.endpoints 必须是数组")
+            return []
+        comp_ids = {c.id for c in comp_objs}
+        out: list[dict] = []
+        seen: set[str] = set()
+        for i, d in enumerate(raw):
+            if not isinstance(d, dict):
+                details.append(f"endpoints[{i}] 必须是对象")
+                continue
+            unknown = set(d) - set(_ENDPOINT_ORDER)
+            if unknown:
+                details.append(f"endpoints[{i}] 含未知字段：{sorted(unknown)}")
+                continue
+            host_in = d.get("host")
+            if host_in is None:
+                if i == 0:
+                    host_in = f"{sid}.{manifest.domain_suffix()}"
+                else:
+                    details.append(f"endpoints[{i}] 缺少 host（仅第一个入口可用服务 id 缺省域名）")
+                    continue
+            if not isinstance(host_in, str):
+                details.append(f"endpoints[{i}].host 必须是字符串")
+                continue
+            try:
+                host = manifest._norm_host(host_in)
+            except ValueError as e:
+                details.append(str(e))
+                continue
+            if host in seen:
+                details.append(f"endpoints[{i}] host 重复：{host}")
+                continue
+            seen.add(host)
+            comp = d.get("component")
+            if comp is None:
+                details.append(f"endpoints[{i}]（{host}）缺少 component")
+                continue
+            if comp not in comp_ids:
+                details.append(f"endpoints[{i}]（{host}）引用未知组件 {comp!r}")
+                continue
+            open_path = d.get("open_path", "/")
+            if not isinstance(open_path, str):
+                details.append(f"endpoints[{i}]（{host}）open_path 必须是字符串")
+                continue
+            out.append({"id": str(d.get("id") or f"ep-{i + 1}-{host.split('.')[0]}"),
+                        "host": host, "component": comp,
+                        "open_path": manifest._norm_open_path(open_path)})
+        return out
+
     def _validate(self, payload: dict, warnings: list[str]) -> dict:
         details: list[str] = []
         svc = payload["service"]
@@ -1802,6 +1892,18 @@ class Registry:
         _raise_details(details)
 
         comp_objs = [manifest._component(dict(c)) for c in comps]
+        # V3 依赖图：未知 after 引用 / 环在提交前失败（与加载端同一校验）
+        try:
+            manifest.validate_component_graph(
+                manifest.Project(id=sid, name=svc["name"], source=src, components=comp_objs))
+        except ValueError as e:
+            details.append(str(e))
+        _raise_details(details)
+
+        # V3 公开入口：显式 endpoints 规范化进 TOML；未提供时由加载端按稳定规则派生
+        endpoints_out = self._norm_endpoints(svc.get("endpoints"), comp_objs, sid, details)
+        _raise_details(details)
+
         toml = {"id": sid, "name": svc["name"], "source": str(src)}
         for key in ("description", "open", "adapter"):
             v = svc.get(key)
@@ -1815,6 +1917,8 @@ class Registry:
         toml["project"] = pid
         toml["components"] = [{k: c[k] for k in _COMP_ORDER if k in c} for c in comps]
         toml["dependencies"] = [{k: d[k] for k in _DEP_ORDER if k in d} for d in deps]
+        if endpoints_out is not None:
+            toml["endpoints"] = endpoints_out
 
         evidence = svc.get("evidence") or {}
         ev_agent = evidence.get("agent") if isinstance(evidence, dict) else None

@@ -29,7 +29,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 760),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "MyBrain Services"
+        window.title = "Locove／洛湾"
         window.minSize = NSSize(width: 960, height: 600)
         window.isReleasedWhenClosed = false // 关闭窗口只是隐藏；菜单栏仍在
         window.center()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -81,6 +82,40 @@ class Component:
 
 
 @dataclass
+class Endpoint:
+    """公开访问入口：host 是用户在浏览器看到的稳定无端口域名（Locove），
+    component 决定真实上游组件（其监听端口），open_path 只是打开页面的落点。
+    整个应用路径/脚本/资源都经同一 host 代理，不按 path 拆分。"""
+
+    id: str = "web"
+    host: str = ""
+    component: str = ""
+    open_path: str = "/"
+
+
+def domain_suffix() -> str:
+    """`.locove` 是本机命名约定（单机私有，非公网 TLD）；测试可用环境变量重定向。"""
+    return os.environ.get("LOCALSERVICES_DOMAIN_SUFFIX", "locove")
+
+
+def _norm_host(host: str) -> str:
+    host = host.strip().lower().rstrip(".")
+    if not host:
+        raise ValueError("endpoint host 不能为空")
+    if "." not in host:  # 单段 label：补全局后缀
+        host = f"{host}.{domain_suffix()}"
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?", host):
+        raise ValueError(f"endpoint host 非法：{host!r}")
+    return host
+
+
+def _norm_open_path(path: str | None) -> str:
+    if not path:
+        return "/"
+    return path if path.startswith("/") else f"/{path}"
+
+
+@dataclass
 class Dependency:
     name: str
     probe: Probe
@@ -111,6 +146,7 @@ class Project:
     registered: dict = field(default_factory=dict)
     components: list[Component] = field(default_factory=list)
     dependencies: list[Dependency] = field(default_factory=list)
+    endpoints: list[Endpoint] = field(default_factory=list)
     file: Path | None = None
     options: dict = field(default_factory=dict)
 
@@ -129,6 +165,87 @@ class Project:
     def comp_cwd(self, c: Component) -> Path:
         return (self.source / c.cwd).resolve()
 
+    def public_urls(self) -> list[str]:
+        """无端口公开地址（http://<host><open_path>）；供打开入口与 UI 主地址使用。"""
+        return [f"http://{e.host}{_norm_open_path(e.open_path)}" for e in self.endpoints]
+
+    def component_by_id(self, cid: str) -> Component | None:
+        return next((c for c in self.components if c.id == cid), None)
+
+
+def validate_component_graph(p: "Project") -> None:
+    """组件依赖图校验：未知 after 引用与环在加载/注册阶段明确失败，并报告链路。
+
+    引用可以指向任何组件（含 generator）；环按全组件图判定。"""
+    ids = {c.id for c in p.components}
+    for c in p.components:
+        unknown = [a for a in c.after if a not in ids]
+        if unknown:
+            raise ValueError(f"{p.id}: 组件 {c.id} 的 after 引用未知组件 {', '.join(unknown)}")
+    # 环检测：DFS 留痕，报出完整链路
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = {c.id: WHITE for c in p.components}
+    stack: list[str] = []
+
+    def visit(cid: str) -> None:
+        color[cid] = GRAY
+        stack.append(cid)
+        comp = next(c for c in p.components if c.id == cid)
+        for nxt in comp.after:
+            if color.get(nxt, BLACK) == GRAY:
+                cycle = stack[stack.index(nxt):] + [nxt]
+                raise ValueError(f"{p.id}: 组件依赖环 {' → '.join(cycle)}")
+            if color.get(nxt) == WHITE:
+                visit(nxt)
+        stack.pop()
+        color[cid] = BLACK
+
+    for c in p.components:
+        if color[c.id] == WHITE:
+            visit(c.id)
+
+
+def _derive_endpoints(p: "Project", raw: list[dict]) -> list[Endpoint]:
+    """显式 endpoints 规范化；旧清单没有 endpoints 时按稳定规则派生缺省入口：
+    host = <service id>.<suffix>（锚定稳定 id，不随显示名变化）；
+    component = open URL 端口对应的组件，否则第一个有端口的 server 组件；
+    open_path = open URL 的路径，否则 /。没有任何可浏览端口 → 无入口。"""
+    if raw:
+        out, seen = [], set()
+        for i, d in enumerate(raw):
+            if not isinstance(d, dict):
+                raise ValueError(f"{p.id}: endpoints[{i}] 必须是表")
+            host = _norm_host(str(d.get("host", "")))
+            comp = str(d.get("component", ""))
+            if not comp:
+                raise ValueError(f"{p.id}: endpoint {host} 缺少 component")
+            if p.component_by_id(comp) is None:
+                raise ValueError(f"{p.id}: endpoint {host} 引用未知组件 {comp}")
+            if host in seen:
+                raise ValueError(f"{p.id}: endpoint host 重复：{host}")
+            seen.add(host)
+            label = host.split(".")[0]
+            out.append(Endpoint(id=str(d.get("id") or f"ep-{i + 1}-{label}"), host=host,
+                                component=comp, open_path=_norm_open_path(d.get("open_path"))))
+        return out
+    open_port, open_path = None, "/"
+    if p.open:
+        m = re.fullmatch(r"https?://[^/:]+:(\d+)(/.*)?", p.open)
+        if m:
+            open_port, open_path = int(m.group(1)), _norm_open_path(m.group(2))
+    target = None
+    for c in p.components:
+        if c.kind == "server" and c.port:
+            if open_port is not None and c.port == open_port:
+                target = c
+                break
+            if target is None:
+                target = c
+    if target is None:
+        return []
+    return [Endpoint(id="default", host=f"{p.id}.{domain_suffix()}", component=target.id,
+                     open_path=open_path)]
+
 
 def _component(d: dict) -> Component:
     d = dict(d)
@@ -145,6 +262,7 @@ def load_file(path: Path) -> Project:
         dep = dict(dep)
         dep["probe"] = Probe(**dep["probe"])
         deps.append(Dependency(**dep))
+    raw_endpoints = d.pop("endpoints", [])
     d["source"] = Path(os.path.expanduser(d["source"]))
     p = Project(**d, components=comps, dependencies=deps, file=path)
     seen = set()
@@ -160,6 +278,8 @@ def load_file(path: Path) -> Project:
             continue  # compose 组件无本地 cmd
         if c.kind in ("server", "worker", "generator") and not c.cmd:
             raise ValueError(f"{path}: component {c.id} has no cmd")
+    validate_component_graph(p)
+    p.endpoints = _derive_endpoints(p, raw_endpoints)
     return p
 
 
@@ -185,6 +305,7 @@ def load_all(directory: Path | None = None) -> dict[str, Project]:
                 continue
             out[p.id] = p
     ports: dict[int, str] = {}
+    hosts: dict[str, str] = {}
     for p in out.values():
         for c in p.managed_components():
             if not c.port:
@@ -193,6 +314,11 @@ def load_all(directory: Path | None = None) -> dict[str, Project]:
             if c.port in ports:
                 raise ValueError(f"duplicate listen port {c.port}: {ports[c.port]} and {owner}")
             ports[c.port] = owner
+        for e in p.endpoints:
+            owner = f"{p.id}.{e.id}"
+            if e.host in hosts:
+                raise ValueError(f"duplicate endpoint host {e.host}: {hosts[e.host]} and {owner}")
+            hosts[e.host] = owner
     return out
 
 

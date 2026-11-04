@@ -1,6 +1,6 @@
-# LocalServices
+# Locove／洛湾（LocalServices）
 
-本机子项目的统一启停与状态：菜单栏 + 主窗口 App + 本地 Dashboard + `lsctl` CLI + Codex Skill。
+本机子项目的统一启停与状态（产品名 Locove／洛湾；`LocalServices` 为仓库名与兼容标识）：菜单栏 + 主窗口 App + 本地 Dashboard + `lsctl` CLI + Codex Skill。
 每个子项目从**当前源码目录**启动（不打包副本），源码变化按策略自动生效。
 工作台以 **Project**（多目录、多服务）组织，可用本机 Codex / Claude Code 识别项目启动方式并注册服务。
 

@@ -148,6 +148,7 @@ class Store:
 
 
 class Controller:
+
     def __init__(self):
         paths.ensure()
         self._autostart_cache: tuple[float, dict[str, bool]] = (0.0, {})
@@ -234,6 +235,11 @@ class Controller:
     # ---------- helpers ----------
     def label(self, p: Project, c: Component) -> str:
         return launchd.label_for(p.id, c.id)
+
+    def set_intent_direct(self, pid: str, intent: str, by: str = "restore") -> None:
+        """运行意图唯一写入口（V3）：恢复/卸载等登记面流程也必须经 Store 更新内存+文件，
+        避免直接改写 state.json 后被 Store 的下一次整份保存覆盖（意图丢失竞态）。"""
+        self.store.set_intent(pid, intent, by=by)
 
     def _plist_env(self) -> dict[str, str]:
         env = {"PATH": manifest.DEFAULT_PATH, "HOME": str(Path.home()), "PYTHONDONTWRITEBYTECODE": "1"}
