@@ -8,18 +8,22 @@
 ## 无端口域名（Locove domains）
 
 - **默认本地 IP 直连**：工具打开服务一律用直连地址。域名跳转为可选能力——在工作台
-  「设置 / 草稿 → 域名跳转」或 `lsctl locove-domains --on --form suffix|custom` 同时开启
+  「设置 → 域名跳转」或 `lsctl locove-domains --on --form suffix|custom` 同时开启
   「使用域名」与「域名形式」后才经域名打开（suffix=每个服务 `<id>.locove`；custom=仅显式登记的域名）。
-  域名基础设施保持运行，浏览器手动输入域名始终可用。
+  域名基础设施保持运行，浏览器手动输入域名始终可用。编辑服务定义不会把派生入口意外固化为
+  显式声明（仅真正编辑入口时才固化）。
 - 已登记服务自动获得 `<service-id>.locove`（稳定：锚定服务 id，显示名修改不影响；也可在注册 payload
-  `service.endpoints[]` 显式指定 host/组件/落点）。停止的服务显示明确不可用页（503），移除登记即撤销路由。
+  `service.endpoints[]` 显式指定 host/组件/落点）。路由按**每个入口的目标组件**判定：
+  组件就绪（或已验证归属的外部实例实际端口）才转发；停止/未就绪显示明确不可用页（503），
+  移除登记即撤销路由——已停止组件的端口即使被无关程序占用也不会被转发。
 - 组成：用户级本地 DNS（`com.mybrain.ls.locove.dns`，127.0.0.1:5354，只回答已登记名字）+
-  Caddy 数据面（`com.mybrain.ls.locove.proxy`，127.0.0.1:47890，按精确 Host 路由）+
+  Caddy 数据面（`com.mybrain.ls.locove.proxy`，**所有监听仅回环 127.0.0.1/::1**，按精确 Host 路由）+
   80 端口最小特权转发器（root LaunchDaemon，绑定后降权 nobody，仅字节转发）。daemon 周期把
   「登记 × 运行事实」收敛为路由，配置先校验再热加载，失败保持上次有效配置。
 - 系统级 wiring（`/etc/resolver/locove` split DNS + 80 入口）需要一次管理员授权：
-  `sudo scripts/install-locove-system.sh --system`（幂等；卸载 `scripts/uninstall-locove-system.sh`，
-  只删除本工具自己的文件）。健康分层查看：`lsctl endpoints` 或工作台「设置 / 草稿」页。
+  `sudo scripts/install-locove-system.sh --system`（幂等；resolver 文件带管理标记，他人配置
+  绝不覆盖/删除；sudo 全安装时用户级件以目标用户身份落盘）。卸载 `scripts/uninstall-locove-system.sh`
+  只删除本工具自己的文件。健康分层查看：`lsctl endpoints` 或工作台「设置」页。
 - Vite 等按 Host 校验的开发服务器需在项目配置显式允许域名（如 `server.allowedHosts: ["xxx.locove"]`），
   不要设为 `true`；Next dev 无需额外配置。
 - **系统代理环境注意**：本机网关客户端（Clash Verge）会用自家模板重写系统代理绕行表，

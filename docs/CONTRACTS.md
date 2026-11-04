@@ -401,17 +401,26 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
 - 运行意图唯一写入口：daemon 内一切意图变更（含恢复流程）经 `Controller.set_intent_direct`
   → `Store`（内存+文件一致）；`Registry._apply_restore_intent` 无 ctl 写入口时回退原子直写。
 
-## V3.4 无端口访问面（已实施）
+## V3.4 无端口访问面（已实施；2026-11-04 review 修复后修订）
 
 - 解析：`/etc/resolver/locove`（split DNS，安装需一次管理员授权）把 `.locove` 定向到
   用户级 DNS responder `com.mybrain.ls.locove.dns`（127.0.0.1:5354，UDP+TCP；
   已登记名 A=127.0.0.1 / AAAA·HTTPS=NODATA，未登记 NXDOMAIN；只管理本工具文件）。
+  **resolver 文件所有权（R3）**：写入/删除经 `localservices.locove_resolver`，带
+  `# managed-by: locove (com.mybrain.ls)` 标记；他人内容安装拒绝覆盖（且在任何系统文件
+  写入之前，失败零残留）、卸载拒绝删除；旧版安装器写的无标记文件按旧头部认领可升级/卸载。
 - 入口：`com.mybrain.ls.locove.entry`（root LaunchDaemon）绑定 127.0.0.1:80 后降权 nobody，
   仅向 127.0.0.1:47890 做字节转发；无 shell/配置/动态上游。
-- 数据面：`com.mybrain.ls.locove.proxy`（Caddy）。daemon 周期 sync（缺省 5s，另有 60s 强制
-  重激活的漂移自愈）把「登记 × 运行事实」写入 `~/…/LocalServices/locove/{routes.json,Caddyfile}`，
+- 数据面：`com.mybrain.ls.locove.proxy`（Caddy）。**所有站点与 catch-all 经全局
+  `default_bind 127.0.0.1 ::1` 只监听回环（R1）**；admin 固定 127.0.0.1。daemon 周期 sync
+  （缺省 5s，另有 60s 强制重激活的漂移自愈）把「登记 × 运行事实」写入
+  `~/…/LocalServices/locove/{routes.json,Caddyfile}`，
   先 `caddy validate` 再优雅 reload；validate 失败零写入，reload 失败回滚文件并保持运行态。
   停止服务 = 503 明确不可用页；移除登记 = 撤销路由（未知 Host 404，DNS NXDOMAIN）。
+- **逐组件路由资格（R2）**：每个 endpoint 按其目标组件事实判定，不按服务总体状态——
+  外部实例有已验证归属的实际端口 → 转发实际端口；组件 ready → 转发其端口；
+  其余（stopped/starting/unhealthy/快照缺组件事实）→ unavailable（503）。
+  partial 服务的 stopped 组件不会被代理，已停止组件的端口即使被无关程序占用也不转发。
 - 外部实例：快照 `external_ports`（组件→实际监听端口）就绪时路由到实际端口；
   退出/未知占用 → unavailable，绝不转发到无关程序。
 - 隔离守卫：`LOCALSERVICES_HOME` 重定向且未显式设置 `LOCOVE_ADMIN_PORT` 的进程只落盘，
@@ -420,7 +429,9 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
   80 占用/权限不足显示原因与安装指引。域名只代理业务服务；控制面（127.0.0.1:47800）的
   Host/Origin/token 规则不变，不因业务域名放宽。
 - 安装/卸载：`scripts/install-locove-system.sh`（用户级自动；系统级 `--system` 需 sudo）/
-  `scripts/uninstall-locove-system.sh`；幂等、只管理自身文件。
+  `scripts/uninstall-locove-system.sh`；幂等、只管理自身文件。**sudo 全安装的用户级步骤
+  以目标用户身份执行（`launchctl asuser` + `sudo -u`），python 初始化显式
+  `LOCALSERVICES_HOME=<目标用户状态根>`，agent plist 归目标用户（R4）。**
 - 转发器顺序契约：root 绑定 80 → 降权 nobody → 用预绑定套接字服务（先降权后绑定会
   EACCES；升级 root 属主副本用 `scripts/refresh-locove-entry.sh`）。
 - 代理兼容：系统代理环境需在绕行表加 `*.locove`（`scripts/locove-proxy-bypass.sh`，加法式），
@@ -439,4 +450,19 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
 - **基础设施不变**：DNS/入口/代理与路由收敛持续运行（回环限定）；设置只影响工具的跳转与
   UI 主地址展示。手动在浏览器输入域名始终可用。
 - 快照组件新增 `port`（直连地址与诊断直接可用，不依赖路由收敛节奏）；endpoints 新增 `derived`。
+- **派生声明保真（R5）**：`GET /api/services/<sid>/definition` 的 endpoints 行带 `derived`
+  标记（注册 payload 接受并忽略该字段）。既有服务无显式 `[[endpoints]]` 时，编辑往返
+  （definition 原样回传）不把派生入口固化为显式声明——仅改 description 等无关字段不改变
+  custom 模式的路由资格；与派生不一致（用户真正编辑 host/组件/落点）才写显式；
+  全新注册显式提供的 endpoints 与既有显式入口不受影响。
 - CLI：`lsctl locove-domains [--on|--off] [--form suffix|custom]`；`lsctl endpoints` 尾行显示跳转设置。
+
+## V3.6 观测与调度分离（R7，2026-11-05）
+
+- `Controller._refresh()` 是纯观测：采集运行事实并投影共享快照；不调度更新、不写运行意图。
+- 源码更新调度统一由 reconcile 周期的 `_schedule_updates()` 驱动，依据最新快照的组件
+  running/code 事实（忙碌延后、空闲应用、`auto_update=false` 不动、停止意图跳过）；
+  观测与调度只经快照传递数据。快照落后一个观测周期（≤3s）属调度语义。
+- GUI（R6 定稿）：统一侧栏（服务/项目 + 管理区），设置独立成页、草稿归入添加流程；
+  服务行 = 一个主操作 + 稳定日志入口 + ⋯（次要动作收拢）；行可键盘展开分层详情
+  （概览/入口/组件/依赖/日志）。域名健康条为一行摘要，完整诊断/安装指引在设置页披露。
