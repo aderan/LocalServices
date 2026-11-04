@@ -109,6 +109,12 @@ class Base(unittest.TestCase):
         code, body, _ = procs.http_get(f"http://127.0.0.1:{self.port}/health")
         return json.loads(body)["version"] if code == 200 else None
 
+    def cycle(self):
+        """一次 daemon 双循环：观测（refresh）→ 调度（reconcile，含更新调度）。"""
+        self.ctl.refresh_snapshot()
+        self.ctl.reconcile()
+        return True
+
 
 class LifecycleTest(Base):
     def test_1_start_idempotent_stop(self):
@@ -225,20 +231,20 @@ class LifecycleTest(Base):
         time.sleep(1.1)
         (self.src / "VERSION").write_text("v2")
         time.sleep(4)
-        self.ctl.refresh_snapshot()
+        self.cycle()  # 观测（refresh）采集 pending；调度（reconcile）按忙碌延后
         st = self.status()
         self.assertEqual(st["code"]["state"], "pending")
         self.assertIn("已延后", st["components"][0]["code"]["label"])
         self.assertEqual(self.version(), "v1")
         # job finished: update applied at the next safe point
         self.busy.unlink()
-        self.assertTrue(wait(lambda: (self.ctl.refresh_snapshot() and self.version() == "v2"), 40))
+        self.assertTrue(wait(lambda: (self.cycle() and self.version() == "v2"), 40))
         self.assertTrue(wait(lambda: self.status()["code"]["state"] == "synced", 20), self.status()["code"])
         # broken build: old instance keeps serving, status says update failed
         self.broken.write_text("1")
         time.sleep(1.1)
         (self.src / "VERSION").write_text("v3")
-        self.assertTrue(wait(lambda: (self.ctl.refresh_snapshot() and self.status()["code"]["state"] == "failed"), 40),
+        self.assertTrue(wait(lambda: (self.cycle() and self.status()["code"]["state"] == "failed"), 40),
                         self.status()["code"])
         self.assertEqual(self.version(), "v2")
         self.assertIn("编译失败", self.status()["code"]["detail"])
@@ -246,7 +252,7 @@ class LifecycleTest(Base):
         self.broken.unlink()
         time.sleep(1.1)
         (self.src / "VERSION").write_text("v4")
-        self.assertTrue(wait(lambda: (self.ctl.refresh_snapshot() and self.version() == "v4"), 40))
+        self.assertTrue(wait(lambda: (self.cycle() and self.version() == "v4"), 40))
 
     def test_5_controller_restart_rediscovers(self):
         self.ctl.start("fx")

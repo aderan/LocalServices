@@ -1400,6 +1400,9 @@ class Controller:
                         continue
                     if launchd.info(self.label(p, c)).loaded:
                         self._bootout_wait(p, c)
+        # 源码更新调度：与启停/生成器同属调度层，按最新快照事实驱动（R7/C4）。
+        # 快照落后一个观测周期（≤3s）是调度语义的一部分，不是缺陷。
+        self._schedule_updates()
 
     # ---------- status ----------
     def project_status(self, p: Project, ps: dict | None = None, listen: dict | None = None) -> dict:
@@ -1603,16 +1606,12 @@ class Controller:
                     "group": p.group, "group_name": p.group_name, "group_order": p.group_order}
 
     def _refresh(self) -> dict:
+        """纯观测：采集运行事实并投影为共享快照。不调度更新、不写运行意图（R7/C4）——
+        更新/生成器/重试统一由 reconcile 周期依据本快照驱动（_schedule_updates）。"""
         self.reload()
         ps = procs.snapshot()
         projects = list(self.projects.values())
         out = list(self._pool.map(lambda p: self._status_safe(p, ps), projects))
-        for p, st in zip(projects, out):
-            if not p.observe_only and st.get("intent") == "running":
-                try:
-                    self._tick_updates(p, {c["id"]: c for c in st.get("components", []) if c.get("kind") != "generator"})
-                except Exception:  # noqa: BLE001
-                    traceback.print_exc()
         system = []
         if self.fsevents.get("ok") is False:
             system.append(self.fsevents["detail"])
@@ -1621,6 +1620,22 @@ class Controller:
                 "attention": bool(system) or any(s.get("state") in ("failed", "conflict", "partial") for s in out)}
         self._snapshot = snap
         return snap
+
+    def _schedule_updates(self) -> None:
+        """调度层（reconcile 周期）：按最新快照驱动源码更新调度。读取快照里的组件
+        running/code 事实；观测（refresh）不再承担调度副作用，两层只经快照传递数据。"""
+        snap_projects = {s.get("id"): s for s in (self._snapshot or {}).get("projects", [])}
+        for p in list(self.projects.values()):
+            if p.observe_only:
+                continue
+            st = snap_projects.get(p.id)
+            if not st or st.get("intent") != "running":
+                continue
+            try:
+                self._tick_updates(p, {c["id"]: c for c in st.get("components", [])
+                                        if c.get("kind") != "generator"})
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
 
     def snapshot(self) -> dict:
         return self._snapshot
