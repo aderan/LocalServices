@@ -425,3 +425,18 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
   EACCES；升级 root 属主副本用 `scripts/refresh-locove-entry.sh`）。
 - 代理兼容：系统代理环境需在绕行表加 `*.locove`（`scripts/locove-proxy-bypass.sh`，加法式），
   否则网关按公网域名上游解析而 502；`lsctl endpoints` 的 dns/入口层会如实呈现。
+
+## V3.5 域名跳转为可选能力（用户修订 2026-11-04：默认本地 IP 直连）
+
+- registry.json 顶层 `settings`: `{"use_domains": bool（缺省 false）, "domain_form": "suffix"|"custom"（缺省 suffix）}`；
+  `GET/POST /api/locove/settings`（POST 部分字段更新，非法 domain_form 400）；`GET /api/locove` 合并返回 `settings`。
+- **打开行为**：默认（use_domains=false）一切打开动作用直连地址（`open` / 组件端口），
+  即使域名入口健康也不经域名——「域名入口未就绪」提示只在开启后出现。
+  开启 + 入口健康 → 经 `http://<host><open_path>` 打开；开启 + 入口故障 → 回退直连并附缺口说明。
+- **域名形式**：`suffix` = 派生 `<id>.locove`（+显式）全部参与路由与跳转（V3.0–V3.4 行为）；
+  `custom` = 仅显式登记的 `[[endpoints]]`（派生入口 derived=True 不参与路由/跳转/URL）。
+  有显式 endpoints 的清单不派生（V3.1 不变）。
+- **基础设施不变**：DNS/入口/代理与路由收敛持续运行（回环限定）；设置只影响工具的跳转与
+  UI 主地址展示。手动在浏览器输入域名始终可用。
+- 快照组件新增 `port`（直连地址与诊断直接可用，不依赖路由收敛节奏）；endpoints 新增 `derived`。
+- CLI：`lsctl locove-domains [--on|--off] [--form suffix|custom]`；`lsctl endpoints` 尾行显示跳转设置。

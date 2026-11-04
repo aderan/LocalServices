@@ -121,7 +121,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, resources.inventory())
                 return
             if u.path == "/api/locove":
-                self._send(200, locove.entry_status())
+                st = locove.entry_status()
+                try:
+                    from .registry import Registry
+                    st["settings"] = Registry().locove_settings()
+                except Exception:  # noqa: BLE001 — 设置读取失败不拖垮健康面
+                    st["settings"] = {"use_domains": False, "domain_form": "suffix"}
+                self._send(200, st)
                 return
             if u.path == "/api/drafts":
                 self._send(*register_api.handle_drafts())
@@ -176,6 +182,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            if u.path == "/api/locove/settings":
+                self._send(*register_api.handle_locove_settings_post(body))
+                return
             if u.path == "/api/refresh":
                 self._send(200, self.ctl.refresh_snapshot(wait=6))
                 return
@@ -326,7 +335,10 @@ def main() -> int:
     loop(ctl.refresh_snapshot, float(os.environ.get("LOCALSERVICES_STATUS", "3")), "status")
     # Locove 无端口路由收敛：登记/运行事实变化 → routes.json/Caddyfile → Caddy 热加载
     def _locove_sync():
-        locove.sync(ctl.projects, ctl.snapshot())
+        # V3.5：域名形式=custom 时只路由显式 endpoints；域名跳转开关只影响打开行为，
+        # 不影响已交付的基础设施收敛
+        settings = ctl.domain_settings()
+        locove.sync(ctl.projects, ctl.snapshot(), settings=settings)
     try:
         _locove_sync()
     except Exception:  # noqa: BLE001 — caddy 缺失等环境问题不阻塞控制面；loop 周期重试

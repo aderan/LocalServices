@@ -7,6 +7,10 @@
 
 ## 无端口域名（Locove domains）
 
+- **默认本地 IP 直连**：工具打开服务一律用直连地址。域名跳转为可选能力——在工作台
+  「设置 / 草稿 → 域名跳转」或 `lsctl locove-domains --on --form suffix|custom` 同时开启
+  「使用域名」与「域名形式」后才经域名打开（suffix=每个服务 `<id>.locove`；custom=仅显式登记的域名）。
+  域名基础设施保持运行，浏览器手动输入域名始终可用。
 - 已登记服务自动获得 `<service-id>.locove`（稳定：锚定服务 id，显示名修改不影响；也可在注册 payload
   `service.endpoints[]` 显式指定 host/组件/落点）。停止的服务显示明确不可用页（503），移除登记即撤销路由。
 - 组成：用户级本地 DNS（`com.mybrain.ls.locove.dns`，127.0.0.1:5354，只回答已登记名字）+

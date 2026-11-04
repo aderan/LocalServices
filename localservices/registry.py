@@ -1861,6 +1861,40 @@ class Registry:
                         "open_path": manifest._norm_open_path(open_path)})
         return out
 
+    # ---------- Locove 域名设置（V3.5：默认直连 IP，域名跳转需显式开启） ----------
+
+    LOCOVE_FORMS = ("suffix", "custom")
+
+    def locove_settings(self) -> dict:
+        """{"use_domains": bool, "domain_form": "suffix"|"custom"}；缺省全部关闭/后缀式。"""
+        with _file_lock():
+            data = self._load()
+        st = data.get("settings") or {}
+        return {"use_domains": bool(st.get("use_domains", False)),
+                "domain_form": st.get("domain_form", "suffix") if st.get("domain_form") in ("suffix", "custom") else "suffix"}
+
+    def locove_settings_update(self, body: dict) -> dict:
+        body = body if isinstance(body, dict) else {}
+        use = body.get("use_domains")
+        form = body.get("domain_form")
+        if use is not None and not isinstance(use, bool):
+            raise RegistryError("use_domains 必须是布尔值")
+        if form is not None and form not in self.LOCOVE_FORMS:
+            raise RegistryError(f"domain_form 必须是 {'/'.join(self.LOCOVE_FORMS)}")
+        # 开启域名跳转必须同时有明确形式（缺省视为 suffix，显式传 null 拒绝）
+        with _file_lock():
+            data = self._load()
+            st = data.setdefault("settings", {})
+            if not isinstance(st, dict):
+                raise RegistryError("registry.settings 损坏（不是对象），拒绝覆盖", status=500)
+            if use is not None:
+                st["use_domains"] = use
+            if form is not None:
+                st["domain_form"] = form
+            st["updated_at"] = _now()
+            self._save(data)
+        return self.locove_settings()
+
     def _validate(self, payload: dict, warnings: list[str]) -> dict:
         details: list[str] = []
         svc = payload["service"]

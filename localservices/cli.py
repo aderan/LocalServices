@@ -212,6 +212,13 @@ def main(argv=None) -> int:
     sp = sub.add_parser("endpoints", help="Locove 无端口公开入口与域名层健康（V3）")
     sp.add_argument("--json", action="store_true")
 
+    sp = sub.add_parser("locove-domains", help="域名跳转设置（V3.5：默认本地 IP 直连）")
+    mg = sp.add_mutually_exclusive_group()
+    mg.add_argument("--on", dest="use", action="store_true")
+    mg.add_argument("--off", dest="use", action="store_false")
+    sp.add_argument("--form", choices=["suffix", "custom"])
+    sp.add_argument("--json", action="store_true")
+
     sp = sub.add_parser("export", help="export a shareable service definition (no credentials, no local state)")
     sp.add_argument("service")
     sp.add_argument("--file", help="write to file instead of stdout")
@@ -415,6 +422,20 @@ def main(argv=None) -> int:
             else:
                 print(res.get("error") or res)
             return _exit_code(code, res)
+        if a.cmd == "locove-domains":
+            body = {}
+            if a.use is not None:
+                body["use_domains"] = a.use
+            if a.form:
+                body["domain_form"] = a.form
+            code, res = call("POST", "/api/locove/settings", body) if body else call("GET", "/api/locove/settings")
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+                return 0 if res.get("ok") else 1
+            st = res.get("settings") or {}
+            form_label = "后缀式 <id>.locove" if st.get("domain_form") == "suffix" else "自定义（仅显式域名）"
+            print(f"域名跳转：{'开' if st.get('use_domains') else '关（默认，本地 IP 直连）'} · 形式：{form_label}")
+            return 0 if res.get("ok") else 1
         if a.cmd == "endpoints":
             _, snap = call("GET", "/api/status", timeout=15)
             _, st = call("GET", "/api/locove", timeout=10)
@@ -434,10 +455,14 @@ def main(argv=None) -> int:
             d, en, px = st.get("dns", {}), st.get("entry", {}), st.get("proxy", {})
             pb = st.get("proxy_bypass", {})
             mark = lambda ok: "✅" if ok else "❌"  # noqa: E731
+            st = st.get("settings") or {}
             print(f"\n域名层：dns {mark(d.get('ok'))}（{d.get('detail', '')}）  "
                   f"代理 {mark(px.get('ok'))}（{px.get('detail', '')}）  "
                   f"入口 {mark(en.get('ok'))}（{en.get('detail', '')}）  "
                   f"代理绕行 {mark(pb.get('ok', True))}（{pb.get('detail', '')}）")
+            print(f"域名跳转：{'开' if st.get('use_domains') else '关（默认，本地 IP 直连）'} · "
+                  f"形式：{'后缀式 <id>.locove' if st.get('domain_form') == 'suffix' else '自定义（仅显式域名）'}"
+                  + ("" if st.get("use_domains") else "（开启：lsctl locove-domains --on）"))
             return 0
         if a.cmd == "resources":
             code, res = call("GET", "/api/resources", timeout=20)

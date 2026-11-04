@@ -382,18 +382,51 @@ function copyText(text, key, label) {
   } catch (e) { done(false); }
 }
 
+function domainSettings() { return locoveData?.settings || {use_domains: false, domain_form: "suffix"}; }
+
+function directUrl(p) {
+  if (p.open) return p.open;
+  const c = (p.components || []).find(x => x.kind === "server" && x.port);
+  if (c) return `http://127.0.0.1:${c.port}/`;
+  // 兜底：路由事实里的配置端口（停止服务也保留）
+  const route = Object.values(locoveData?.routes || {}).find(r => r.service === p.id && r.upstream_port);
+  return route ? `http://127.0.0.1:${route.upstream_port}/` : "";
+}
+
 function domainChip(p) {
+  // V3.5：默认本地 IP 直连；设置开启「使用域名」后按域名形式显示/跳转
+  const st = domainSettings();
   const eps = p.endpoints || [];
-  if (!eps.length) return "";
-  const e = eps[0];
-  const route = locoveData?.routes?.[e.host];
-  const entryOk = locoveData?.entry?.ok !== false;
-  const served = route && route.state === "proxy";
-  const sub = !entryOk ? "域名入口未安装（仍可直连）"
-    : served ? "无端口入口 · 点击复制" : "未运行时显示不可用页 · 点击复制";
-  return `<button class="domain${entryOk ? "" : " down"}" title="${esc(e.public_url)}（点击复制）"
-    onclick="copyText('${esc(e.public_url)}','${p.id}','地址')">
-    <b>${esc(e.host)}</b><small>${esc(sub)}</small></button>`;
+  if (st.use_domains) {
+    const e = st.domain_form === "custom" ? (eps.find(x => !x.derived) || null) : eps[0];
+    if (!e) return "";
+    const route = locoveData?.routes?.[e.host];
+    const entryOk = locoveData?.entry?.ok !== false;
+    const served = route && route.state === "proxy";
+    const sub = !entryOk ? "域名入口未安装（仍可直连）"
+      : served ? "无端口入口 · 点击复制" : "未运行时显示不可用页 · 点击复制";
+    const url = `http://${e.host}${e.open_path}`;
+    return `<button class="domain${entryOk ? "" : " down"}" title="${esc(url)}（点击复制）"
+      onclick="copyText('${esc(url)}','${p.id}','地址')">
+      <b>${esc(e.host)}</b><small>${esc(sub)}</small></button>`;
+  }
+  const url = directUrl(p);
+  if (!url) return "";
+  let label = url;
+  try { const u = new URL(url); label = u.host; } catch (err) {}
+  return `<button class="domain" title="${esc(url)}（点击复制）"
+    onclick="copyText('${esc(url)}','${p.id}','地址')">
+    <b>${esc(label)}</b><small>本地直连 · 点击复制（域名需在设置中开启）</small></button>`;
+}
+
+async function locoveSetting(key, value) {
+  const [, res] = await api("POST", "/api/locove/settings", {[key]: value});
+  if (res?.ok && locoveData) locoveData.settings = res.settings;
+  msgs["locove-settings"] = res?.ok
+    ? `域名跳转：${res.settings.use_domains ? "开" : "关"} · ${res.settings.domain_form === "custom" ? "自定义域名" : "后缀式 <id>.locove"}`
+    : `保存失败：${res?.error || ""}`;
+  render();
+  if (res?.ok) setTimeout(() => { delete msgs["locove-settings"]; render(); }, 2000);
 }
 
 function primary(p) {
@@ -687,7 +720,18 @@ function locoveCard() {
   const pbRow = d.proxy_bypass ? row(d.proxy_bypass.ok, "代理绕行（浏览器路径）", d.proxy_bypass.detail) : "";
   const hosts = Object.entries(d.routes || {}).map(([h, r]) =>
     `<tr><td class="k">${esc(h)}</td><td>${r.state === "proxy" ? `代理中 → 127.0.0.1:${r.upstream_port}` : "明确不可用页（503）"}<span class="note">（${esc(r.service)}.${esc(r.component)}）</span></td></tr>`).join("");
-  return `<section class="card"><div class="card-head"><h3>域名入口（Locove）</h3><span class="note">*.${esc(d.suffix)} · 无端口访问</span></div>
+  const st = d.settings || {use_domains: false, domain_form: "suffix"};
+  const ctrl = `<div class="card" id="locove-settings">
+    <div class="card-head"><h3>域名跳转</h3><span class="note">默认本地 IP 直连；开启后打开服务改用无端口域名</span></div>
+    <div class="acts" style="margin-bottom:8px">
+      <button class="${st.use_domains ? "primary" : ""}" onclick="locoveSetting('use_domains',${!st.use_domains})">${st.use_domains ? "✓ 使用域名" : "使用域名：关（本地 IP 直连）"}</button>
+      <button class="${st.domain_form === "suffix" ? "primary" : ""}" ${st.use_domains ? "" : "disabled"} onclick="locoveSetting('domain_form','suffix')">后缀式 &lt;id&gt;.locove</button>
+      <button class="${st.domain_form === "custom" ? "primary" : ""}" ${st.use_domains ? "" : "disabled"} onclick="locoveSetting('domain_form','custom')">自定义（仅显式登记的域名）</button>
+    </div>
+    <p class="note">形式说明：后缀式为每个服务派生 <code>&lt;service-id&gt;.${esc(d.suffix)}</code>；自定义只使用服务定义里显式登记的 [[endpoints]] 域名。域名基础设施（DNS/入口/代理）保持运行，手动在浏览器输入域名始终可用。</p>
+    ${msgs["locove-settings"] ? `<p class="msg" role="status">${esc(msgs["locove-settings"])}</p>` : ""}
+  </div>`;
+  return ctrl + `<section class="card"><div class="card-head"><h3>域名入口诊断（Locove）</h3><span class="note">*.${esc(d.suffix)} · 无端口访问</span></div>
     <div class="table-scroll"><table>${row(d.dns?.ok, "本地 DNS", d.dns?.detail)}${row(d.proxy?.ok, "代理（Caddy）", d.proxy?.detail)}${row(d.entry?.ok, "80 入口", d.entry?.detail)}${pbRow}${d.resolver_installed ? "" : `<tr><td class="k">split DNS</td><td>/etc/resolver/${esc(d.suffix)} 未安装（需要一次管理员授权：sudo scripts/install-locove-system.sh --system）</td></tr>`}</table></div>
     ${hosts ? `<details ontoggle="if(this.isConnected)0"><summary>全部 ${Object.keys(d.routes || {}).length} 条路由</summary><div class="table-scroll"><table>${hosts}</table></div></details>` : `<p class="note">暂无登记公开入口的服务。</p>`}
     </section>`;
@@ -2200,7 +2244,10 @@ async function refresh(manual) {
     snap = snapNew;
     const [rc, reg] = await api("GET", "/api/registry");
     if (rc === 200 && reg?.ok) registry = reg;
-    api("GET", "/api/locove").then(([lc, lv]) => { if (lc === 200 && lv) locoveData = lv; }).catch(() => {});
+    try {  // V3.5：chip 依赖 settings/routes，随刷新一并等待，避免渲染竞态
+      const [lc, lv] = await api("GET", "/api/locove");
+      if (lc === 200 && lv) locoveData = lv;
+    } catch (e) { /* 域名面不可用不阻塞状态刷新 */ }
     if (!agentCandidates) loadCandidates().then(render);
     setConn(true);
     if (draftsData) loadDrafts();

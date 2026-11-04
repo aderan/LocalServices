@@ -204,7 +204,7 @@ open_path = "/zh"
         self.assertEqual(proj["endpoints"][0]["host"], "snap.locove")
         self.assertEqual(proj["endpoints"][0]["public_url"], "http://snap.locove/zh")
 
-    def _open_with_patches(self, entry_ok: bool) -> tuple[dict, object]:
+    def _open_with_patches(self, entry_ok: bool, use_domains: bool = True) -> tuple[dict, object]:
         ctl = self._controller_with_service()
         for p_ in self._patch_open_path():
             p_.start()
@@ -213,7 +213,9 @@ open_path = "/zh"
         sub_mock = sub_mgr.start()
         self.addCleanup(sub_mgr.stop)
         status = {"entry": {"ok": True}} if entry_ok else {"entry": {"ok": False, "detail": "80 未监听"}}
-        with patch("localservices.locove.entry_status", return_value=status):
+        with patch("localservices.locove.entry_status", return_value=status), \
+             patch.object(ctl, "domain_settings",
+                          return_value={"use_domains": use_domains, "domain_form": "suffix"}):
             res = ctl.open("snap")
         return res, sub_mock
 
@@ -236,6 +238,13 @@ open_path = "/zh"
         res, sub_patch = self._open_with_patches(entry_ok=False)
         self.assertTrue(res["ok"])
         self.assertIn("note", res)
+        self.assertEqual(sub_patch.Popen.call_args[0][0][1], "http://localhost:48801/zh")
+
+    def test_open_defaults_to_direct_when_domains_not_enabled(self):
+        """V3.5：默认（未开启「使用域名」）即使入口健康也走本地直连地址。"""
+        res, sub_patch = self._open_with_patches(entry_ok=True, use_domains=False)
+        self.assertTrue(res["ok"])
+        self.assertNotIn("note", res)
         self.assertEqual(sub_patch.Popen.call_args[0][0][1], "http://localhost:48801/zh")
 
 

@@ -351,6 +351,23 @@ def handle_restore_project(pid: str, body: dict, ctl) -> tuple[int, dict]:
         return _fail(e)
 
 
+def handle_locove_settings_get() -> tuple[int, dict]:
+    try:
+        return 200, {"ok": True, "settings": Registry().locove_settings()}
+    except RegistryError as e:
+        return _fail(e)
+
+
+def handle_locove_settings_post(body: dict) -> tuple[int, dict]:
+    """V3.5：域名跳转设置。默认 use_domains=false（本地 IP 直连）；
+    开启需同时具备 domain_form（suffix=<id>.locove 派生 / custom=仅显式 endpoints）。"""
+    try:
+        st = Registry().locove_settings_update(body if isinstance(body, dict) else {})
+        return 200, {"ok": True, "settings": st}
+    except RegistryError as e:
+        return _fail(e)
+
+
 def handle_autostart(pid: str, body: dict) -> tuple[int, dict]:
     """POST /api/projects/<pid>/autostart {value:bool}（V2.9 专用端点，与 favorite 同形）。"""
     try:

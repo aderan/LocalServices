@@ -84,7 +84,17 @@ class Route:
                 "upstream_port": self.upstream_port, "state": self.state}
 
 
-def desired_routes(projects: dict, snapshot: dict | None = None) -> dict:
+def effective_endpoints(p, settings: dict | None) -> list:
+    """V3.5：域名形式=custom → 只保留显式登记入口（derived 派生不算）；
+    缺省 suffix → 派生+显式全部参与（向后兼容 V3.0–V3.4 行为）。"""
+    eps = p.endpoints
+    if (settings or {}).get("domain_form") == "custom":
+        eps = [e for e in eps if not getattr(e, "derived", False)]
+    return eps
+
+
+def desired_routes(projects: dict, snapshot: dict | None = None,
+                   settings: dict | None = None) -> dict:
     """由清单 + 共享快照推导期望路由。快照缺失时按 unavailable 收敛（不猜测运行态）。
 
     外部实例：快照 external_ports 已是「组件 -> 实际监听端口」（V2/V3 接线，见
@@ -96,7 +106,7 @@ def desired_routes(projects: dict, snapshot: dict | None = None) -> dict:
         st = snap_projects.get(pid, {})
         healthy = st.get("state") in ("available", "partial", "external")
         ext_ports = st.get("external_ports") or {}
-        for e in p.endpoints:
+        for e in effective_endpoints(p, settings):
             comp = p.component_by_id(e.component)
             port = ext_ports.get(e.component) or (comp.port if comp else None)
             state = "proxy" if (healthy and port) else "unavailable"
@@ -245,13 +255,13 @@ _last_applied = 0.0
 _FORCE_REAPPLY = float(os.environ.get("LOCOVE_FORCE_REAPPLY", "60"))
 
 
-def sync(projects: dict, snapshot: dict | None) -> dict:
+def sync(projects: dict, snapshot: dict | None, settings: dict | None = None) -> dict:
     """daemon 周期调用：期望 == 已落盘 → 无操作；否则走 apply_routes。
 
     另外每 _FORCE_REAPPLY 秒强制重激活一次：运行中的 Caddy 若被外部配置覆盖
     （漂移），落盘事实没变也照样收敛回来——重启/漂移后自动重建一致配置。"""
     global _last_applied
-    routes = desired_routes(projects, snapshot)
+    routes = desired_routes(projects, snapshot, settings)
     current = (read_routes() or {}).get("routes")
     want = routes_payload(routes)["routes"]
     now = time.time()

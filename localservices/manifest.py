@@ -85,12 +85,16 @@ class Component:
 class Endpoint:
     """公开访问入口：host 是用户在浏览器看到的稳定无端口域名（Locove），
     component 决定真实上游组件（其监听端口），open_path 只是打开页面的落点。
-    整个应用路径/脚本/资源都经同一 host 代理，不按 path 拆分。"""
+    整个应用路径/脚本/资源都经同一 host 代理，不按 path 拆分。
+
+    derived=True 表示该入口来自「后缀式」稳定派生（<id>.<suffix>），不是用户显式
+    登记的 [[endpoints]]——V3.5 域名形式=custom 时派生入口不参与路由与跳转。"""
 
     id: str = "web"
     host: str = ""
     component: str = ""
     open_path: str = "/"
+    derived: bool = False
 
 
 def domain_suffix() -> str:
@@ -242,8 +246,9 @@ def _derive_endpoints(p: "Project", raw: list[dict]) -> list[Endpoint]:
                 raise ValueError(f"{p.id}: endpoint host 重复：{host}")
             seen.add(host)
             label = host.split(".")[0]
-            out.append(Endpoint(id=str(d.get("id") or f"ep-{i + 1}-{label}"), host=host,
-                                component=comp, open_path=_norm_open_path(d.get("open_path"))))
+            out.append(Endpoint(id=str(d.get("id") or ("default" if i == 0 else f"ep-{i + 1}")),
+                                host=host, component=comp,
+                                open_path=_norm_open_path(d.get("open_path")), derived=False))
         return out
     open_port, open_path = None, "/"
     if p.open:
@@ -261,7 +266,7 @@ def _derive_endpoints(p: "Project", raw: list[dict]) -> list[Endpoint]:
     if target is None:
         return []
     return [Endpoint(id="default", host=f"{p.id}.{domain_suffix()}", component=target.id,
-                     open_path=open_path)]
+                     open_path=open_path, derived=True)]
 
 
 def _component(d: dict) -> Component:

@@ -152,6 +152,7 @@ class Controller:
     def __init__(self):
         paths.ensure()
         self._autostart_cache: tuple[float, dict[str, bool]] = (0.0, {})
+        self._domain_settings_cache: tuple[float, dict] = (0.0, {"use_domains": False, "domain_form": "suffix"})
         self.store = Store(autostart=self._registry_autostart_map)
         self.lock = threading.RLock()
         self.projects: dict[str, Project] = {}
@@ -209,6 +210,21 @@ class Controller:
                     self.store.save()
                 except OSError:
                     pass
+
+    def domain_settings(self) -> dict:
+        """V3.5 域名跳转设置（Registry.locove_settings 的短缓存读）。默认关闭。"""
+        now = time.monotonic()
+        ts, cached = self._domain_settings_cache
+        if now - ts < AUTOSTART_CACHE_TTL:
+            return cached
+        cached = {"use_domains": False, "domain_form": "suffix"}
+        try:
+            from .registry import Registry
+            cached = Registry().locove_settings()
+        except Exception:  # noqa: BLE001 — 设置不可读按默认（直连）处理
+            cached = {"use_domains": False, "domain_form": "suffix"}
+        self._domain_settings_cache = (now, cached)
+        return cached
 
     def _registry_autostart_map(self) -> dict[str, bool]:
         """V2.9: Registry.autostart_map()（Core 线提供），30s 缓存；任何失败按空处理。
@@ -622,7 +638,7 @@ class Controller:
         health = st.get("health")
         cs = {"id": c.id, "name": c.name or c.id, "kind": c.kind, "run": "compose",
               "pid": None, "running": running, "loaded": False,  # F-4：compose 无 launchd job，loaded 恒 false
-              "started_at": self._compose_started.get(key), "required": c.required,
+              "started_at": self._compose_started.get(key), "required": c.required, "port": c.port,
               "last_exit": None, "failures": 0, "container": st.get("container"),
               "health": health or "none", "probe_used": key in self._compose_probe_used,
               "log": None, "code": {"state": "na", "label": "容器管理", "detail": ""}}
@@ -1100,22 +1116,37 @@ class Controller:
             adopt, ports = self._adoptable(p, self.external_instances(p, fresh=False))
             if adopt:
                 url = self._external_url(p, ports)
-        # V3：无端口公开地址是主入口；入口层健康时优先打开域名（外部实例/正常启动同样适用）。
-        # 入口未安装/不健康时回退直连地址并在结果里说明缺口——不把带端口地址当作交付形态。
+        # V3.5：默认本地 IP 直连。仅当设置开启「使用域名」且配置了域名形式时，
+        # 入口层健康才经域名打开；域名开启但入口故障 → 回退直连并说明缺口。
         entry_note = None
-        pub = self._public_open_url(p)
-        if pub:
-            url = pub
-        elif p.endpoints:
-            entry_note = "域名入口未就绪（系统件未安装或代理未运行），已打开直连地址；详见工作台域名诊断"
+        st = self.domain_settings()
+        if st.get("use_domains"):
+            pub = self._public_open_url(p, st)
+            if pub:
+                url = pub
+            elif self._form_endpoints(p, st):
+                # 只有「该服务在当前域名形式下确有域名」才提示入口缺口；
+                # custom 形式下无显式域名的服务本来就应直连，不算故障
+                entry_note = "域名入口未就绪（系统件未安装或代理未运行），已打开直连地址；详见工作台域名诊断"
         if not url:
             return {"ok": False, "error": "没有可打开的地址"}
         subprocess.Popen(["/usr/bin/open", url])
         return {"ok": True, **({"note": entry_note} if entry_note else {})}
 
-    def _public_open_url(self, p: Project) -> str | None:
-        """入口层健康且服务处于可打开状态时返回无端口公开地址。"""
-        if not p.endpoints:
+    @staticmethod
+    def _form_endpoints(p: Project, settings: dict) -> list[Endpoint]:
+        """V3.5：domain_form=custom → 只算显式登记入口；suffix（缺省）→ 全部。"""
+        eps = p.endpoints
+        if settings.get("domain_form") == "custom":
+            eps = [e for e in eps if not e.derived]
+        return eps
+
+    def _public_open_url(self, p: Project, settings: dict | None = None) -> str | None:
+        """入口层健康且服务处于可打开状态时返回无端口公开地址。
+
+        V3.5：domain_form=custom 只跳转显式登记的入口（派生入口不算）。"""
+        eps = self._form_endpoints(p, settings or self.domain_settings())
+        if not eps:
             return None
         from . import locove
         try:
@@ -1128,7 +1159,7 @@ class Controller:
                      if s.get("id") == p.id), None)
         if snap is None or snap.get("state") not in ("available", "partial", "external"):
             return None
-        return p.public_urls()[0]
+        return f"http://{eps[0].host}{eps[0].open_path}"
 
     def open_source(self, pid: str) -> dict:
         p = self.projects.get(pid)
@@ -1377,7 +1408,8 @@ class Controller:
                 "description": p.description, "group": p.group,
                 "group_name": p.group_name, "group_order": p.group_order,
                 "endpoints": [{"id": e.id, "host": e.host, "component": e.component,
-                               "open_path": e.open_path, "public_url": f"http://{e.host}{e.open_path}"}
+                               "open_path": e.open_path, "derived": e.derived,
+                               "public_url": f"http://{e.host}{e.open_path}"}
                               for e in p.endpoints]}
         if p.observe_only:
             try:
@@ -1416,6 +1448,7 @@ class Controller:
             started = rec.get("started_at") if ji.running else None
             cs = {"id": c.id, "name": c.name or c.id, "kind": c.kind, "pid": ji.pid, "running": ji.running,
                   "loaded": ji.loaded, "started_at": started, "required": c.required,
+                  "port": c.port,  # V3.5：直连地址/诊断直接可用，不依赖路由层收敛节奏
                   "last_exit": ji.last_exit, "failures": rec.get("failures", 0)}
             if ji.running and rec.get("phase") == "backoff" and rec.get("pid") == ji.pid:
                 cs.update(state="backoff", running=False,
