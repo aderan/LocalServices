@@ -401,9 +401,23 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
 - 运行意图唯一写入口：daemon 内一切意图变更（含恢复流程）经 `Controller.set_intent_direct`
   → `Store`（内存+文件一致）；`Registry._apply_restore_intent` 无 ctl 写入口时回退原子直写。
 
-## V3.4 无端口访问面（M2/M3 交付，占位）
+## V3.4 无端口访问面（已实施）
 
-- `*.locove` 经系统 split DNS（`/etc/resolver/locove`）指向本机 DNS（用户级，高端口）；
-  80 入口为最小特权转发器；数据面由 Caddy 承载；细节随实施冻结。
-- 域名只代理业务服务；控制面（127.0.0.1:47800）的 Host/Origin/token 规则不变，
-  不因业务域名放宽。
+- 解析：`/etc/resolver/locove`（split DNS，安装需一次管理员授权）把 `.locove` 定向到
+  用户级 DNS responder `com.mybrain.ls.locove.dns`（127.0.0.1:5354，UDP+TCP；
+  已登记名 A=127.0.0.1 / AAAA·HTTPS=NODATA，未登记 NXDOMAIN；只管理本工具文件）。
+- 入口：`com.mybrain.ls.locove.entry`（root LaunchDaemon）绑定 127.0.0.1:80 后降权 nobody，
+  仅向 127.0.0.1:47890 做字节转发；无 shell/配置/动态上游。
+- 数据面：`com.mybrain.ls.locove.proxy`（Caddy）。daemon 周期 sync（缺省 5s，另有 60s 强制
+  重激活的漂移自愈）把「登记 × 运行事实」写入 `~/…/LocalServices/locove/{routes.json,Caddyfile}`，
+  先 `caddy validate` 再优雅 reload；validate 失败零写入，reload 失败回滚文件并保持运行态。
+  停止服务 = 503 明确不可用页；移除登记 = 撤销路由（未知 Host 404，DNS NXDOMAIN）。
+- 外部实例：快照 `external_ports`（组件→实际监听端口）就绪时路由到实际端口；
+  退出/未知占用 → unavailable，绝不转发到无关程序。
+- 隔离守卫：`LOCALSERVICES_HOME` 重定向且未显式设置 `LOCOVE_ADMIN_PORT` 的进程只落盘，
+  不得调用 Caddy 二进制（测试/验收脚本绝不污染生产实例）。
+- 观测：`GET /api/locove` 与 `lsctl endpoints` 分层报告 dns/入口/代理健康与全部路由；
+  80 占用/权限不足显示原因与安装指引。域名只代理业务服务；控制面（127.0.0.1:47800）的
+  Host/Origin/token 规则不变，不因业务域名放宽。
+- 安装/卸载：`scripts/install-locove-system.sh`（用户级自动；系统级 `--system` 需 sudo）/
+  `scripts/uninstall-locove-system.sh`；幂等、只管理自身文件。

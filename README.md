@@ -1,8 +1,23 @@
 # Locove／洛湾（LocalServices）
 
-本机子项目的统一启停与状态（产品名 Locove／洛湾；`LocalServices` 为仓库名与兼容标识）：菜单栏 + 主窗口 App + 本地 Dashboard + `lsctl` CLI + Codex Skill。
+本机子项目的统一工作台（产品名 Locove／洛湾；`LocalServices` 为仓库名与兼容标识）：菜单栏 + 主窗口 App + 本地 Dashboard + `lsctl` CLI + Codex Skill。
 每个子项目从**当前源码目录**启动（不打包副本），源码变化按策略自动生效。
 工作台以 **Project**（多目录、多服务）组织，可用本机 Codex / Claude Code 识别项目启动方式并注册服务。
+每个可浏览服务获得稳定的**无端口专属域名**（如 `http://buildbase.locove/zh`）——浏览器主入口不出现端口。
+
+## 无端口域名（Locove domains）
+
+- 已登记服务自动获得 `<service-id>.locove`（稳定：锚定服务 id，显示名修改不影响；也可在注册 payload
+  `service.endpoints[]` 显式指定 host/组件/落点）。停止的服务显示明确不可用页（503），移除登记即撤销路由。
+- 组成：用户级本地 DNS（`com.mybrain.ls.locove.dns`，127.0.0.1:5354，只回答已登记名字）+
+  Caddy 数据面（`com.mybrain.ls.locove.proxy`，127.0.0.1:47890，按精确 Host 路由）+
+  80 端口最小特权转发器（root LaunchDaemon，绑定后降权 nobody，仅字节转发）。daemon 周期把
+  「登记 × 运行事实」收敛为路由，配置先校验再热加载，失败保持上次有效配置。
+- 系统级 wiring（`/etc/resolver/locove` split DNS + 80 入口）需要一次管理员授权：
+  `sudo scripts/install-locove-system.sh --system`（幂等；卸载 `scripts/uninstall-locove-system.sh`，
+  只删除本工具自己的文件）。健康分层查看：`lsctl endpoints` 或工作台「设置 / 草稿」页。
+- Vite 等按 Host 校验的开发服务器需在项目配置显式允许域名（如 `server.allowedHosts: ["xxx.locove"]`），
+  不要设为 `true`；Next dev 无需额外配置。
 
 ## 安装 / 更新 / 卸载
 
@@ -37,7 +52,8 @@ lsctl start-group|stop-group|restart-group <group>          # 旧组命令兼容
 lsctl projects [--json]                                      # 工作台结构
 lsctl project-new --name N [--dir P]... ；lsctl project-rename <id> --name N
 lsctl dir-add <pid> --path P ；lsctl dir-remove <pid> <dir-id>
-lsctl register [--file F|--stdin] [--json]                   # 注册（机器可读；409→退出码 5）
+lsctl endpoints [--json]                                     # 无端口域名清单 + dns/代理/入口分层健康
+lsctl register [--file F|--stdin] [--json]                   # 注册（机器可读；409→退出码 5；endpoints 可选）
 lsctl analyze <dir> --agent codex|claude [--focus ...] [--wait S] [--json]
 lsctl agents|agent-scan|agent-verify <kind>|jobs <id>|resources [--json]
 lsctl service-remove <id> [--stop|--keep-external] [--preview] ；lsctl export <service> [--file F]

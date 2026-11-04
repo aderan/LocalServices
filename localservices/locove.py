@@ -189,6 +189,15 @@ def _reload() -> None:
         raise ActivationError(f"caddy reload 失败：{(r.stderr or r.stdout).strip()[:600]}")
 
 
+def _caddy_control_enabled() -> bool:
+    """隔离守卫：LOCALSERVICES_HOME 被重定向（测试/验收脚本的隔离 daemon）且未显式
+    指定 admin 端口时，禁止一切对 Caddy 二进制的调用——隔离进程只能写自己 home 下的
+    配置文件，绝不 reload 任何运行中的实例（防止测试配置污染生产代理）。"""
+    if "LOCOVE_ADMIN_PORT" in os.environ:
+        return True
+    return not os.environ.get("LOCALSERVICES_HOME")
+
+
 def apply_routes(routes: dict[str, Route]) -> dict:
     """把期望路由落为运行态。顺序：生成 → validate → 写 routes.json/Caddyfile → reload；
     validate 失败不动任何文件；reload 失败回滚两个文件到旧内容（运行中的 Caddy 从未
@@ -203,12 +212,16 @@ def apply_routes(routes: dict[str, Route]) -> dict:
         old_cfg = caddyfile().read_text(encoding="utf-8")
     except OSError:
         pass
-    try:
-        _validate(cfg)
-    except ActivationError as e:
-        return {"ok": False, "changed": False, "error": str(e)}
+    if _caddy_control_enabled():
+        # 校验通过才允许替换任何文件（坏配置零写入）；隔离守卫路径只落盘自己的 home
+        try:
+            _validate(cfg)
+        except ActivationError as e:
+            return {"ok": False, "changed": False, "error": str(e)}
     routes_file().write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     caddyfile().write_text(cfg, encoding="utf-8")
+    if not _caddy_control_enabled():
+        return {"ok": True, "changed": True, "hosts": len(routes), "pending": True, "isolated": True}
     if not _port_open("127.0.0.1", admin_port()):
         return {"ok": True, "changed": True, "hosts": len(routes), "pending": True}
     try:
@@ -227,14 +240,26 @@ def apply_routes(routes: dict[str, Route]) -> dict:
     return {"ok": True, "changed": True, "hosts": len(routes)}
 
 
+_last_applied = 0.0
+_FORCE_REAPPLY = float(os.environ.get("LOCOVE_FORCE_REAPPLY", "60"))
+
+
 def sync(projects: dict, snapshot: dict | None) -> dict:
-    """daemon 周期调用：期望 == 已落盘 → 无操作；否则走 apply_routes。"""
+    """daemon 周期调用：期望 == 已落盘 → 无操作；否则走 apply_routes。
+
+    另外每 _FORCE_REAPPLY 秒强制重激活一次：运行中的 Caddy 若被外部配置覆盖
+    （漂移），落盘事实没变也照样收敛回来——重启/漂移后自动重建一致配置。"""
+    global _last_applied
     routes = desired_routes(projects, snapshot)
     current = (read_routes() or {}).get("routes")
     want = routes_payload(routes)["routes"]
-    if current == want:
+    now = time.time()
+    if current == want and now - _last_applied < _FORCE_REAPPLY:
         return {"ok": True, "changed": False, "hosts": len(routes)}
-    return apply_routes(routes)
+    res = apply_routes(routes)
+    if res.get("ok"):
+        _last_applied = now
+    return res
 
 
 # ---------- 分层健康（DNS / 入口 / 代理 / 应用各自观测） ----------

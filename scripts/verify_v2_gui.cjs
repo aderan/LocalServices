@@ -29,9 +29,12 @@ const srcA = path.join(tmp, "dir-a"), srcB = path.join(tmp, "dir-b");
 for (const d of [home, servicesDir, srcA, srcB]) fs.mkdirSync(d, {recursive: true});
 const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
+const adminPort = await freePort();   // 隔离 Caddy admin 端口：绝不指向生产实例
 const daemon = spawn("python3", ["-m", "localservices.daemon"], {
   cwd: REPO, env: {...process.env, LOCALSERVICES_HOME: home, LOCALSERVICES_SERVICES: servicesDir,
-                          LOCALSERVICES_PORT: String(port)},
+                          LOCALSERVICES_PORT: String(port),
+                          LOCOVE_ADMIN_PORT: String(adminPort), LOCOVE_PROXY_PORT: "47899",
+                          LOCOVE_FORCE_REAPPLY: "3600"},
   stdio: ["ignore", "ignore", "ignore"],
 });
 const cleanup = () => { try { daemon.kill("SIGTERM"); } catch (e) {} try { fs.rmSync(tmp, {recursive: true, force: true}); } catch (e) {} };

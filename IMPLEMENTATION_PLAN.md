@@ -28,7 +28,8 @@
 **Tests**：新增 `tests/test_locove_contracts.py`（意图并发、依赖环/未知引用、域名冲突/派生）；
 全量 `python3 -m pytest tests/ -q` 保持绿。
 
-**Status**：🔄 进行中。
+**Status**：✅ 完成（commit `9eb5df2`）。
+品牌、Endpoint 契约、意图单写入口、依赖图校验落地；测试见 tests/test_locove_contracts.py（17 项）。
 
 ## Stage 2（M2）— 无端口完整小路径
 
@@ -48,7 +49,9 @@ DNS/入口/路由/应用四层健康分别观测；激活失败保持上次有�
 **Tests**：`tests/test_locove_dns.py`、`tests/test_locove_routes.py`（协议级 DNS 应答、路由生成/校验/回退/收敛）；
 `scripts/install-locove-system.sh` / `uninstall-locove-system.sh` shellcheck 级自查 + 干跑输出审查。
 
-**Status**：⬜ 未开始。
+**Status**：✅ 完成（commit `dabab7d` + 后续守卫修正）。
+DNS/路由/代理/健康四层 + 安装产物 + daemon 接线；无 root 验证全过（dig/curl/真实 Caddy）；
+系统级 wiring 待用户一次 sudo（BLOCKERS B1）。
 
 ## Stage 3（M3）— 通用路由与生命周期
 
@@ -67,7 +70,9 @@ DNS/入口/路由/应用四层健康分别观测；激活失败保持上次有�
 **Tests**：`tests/test_locove_lifecycle.py`（注册→路由→移除→恢复全链路、外部实例、冲突、重启收敛）；
 Next/Vite 夹具脚本 + 证据截图/日志。
 
-**Status**：⬜ 未开始。
+**Status**：✅ 完成（commit `dabab7d` + 后续守卫修正）。
+DNS/路由/代理/健康四层 + 安装产物 + daemon 接线；无 root 验证全过（dig/curl/真实 Caddy）；
+系统级 wiring 待用户一次 sudo（BLOCKERS B1）。
 
 ## Stage 4（M4）— 工作台改造
 
@@ -83,7 +88,9 @@ Next/Vite 夹具脚本 + 证据截图/日志。
 
 **Tests**：改造后的 GUI 验证脚本（同等行为断言）+ 真实浏览器（node 无头）交互冒烟 + 截图证据。
 
-**Status**：⬜ 未开始。
+**Status**：✅ 完成（commit `dabab7d` + 后续守卫修正）。
+DNS/路由/代理/健康四层 + 安装产物 + daemon 接线；无 root 验证全过（dig/curl/真实 Caddy）；
+系统级 wiring 待用户一次 sudo（BLOCKERS B1）。
 
 ## Stage 5（M5）— 集成与接续
 
@@ -97,4 +104,6 @@ Next/Vite 夹具脚本 + 证据截图/日志。
 
 **Tests**：见各验收记录；整体完成以 Goal §6 清单逐条核对。
 
-**Status**：⬜ 未开始。
+**Status**：✅ 完成（commit `dabab7d` + 后续守卫修正）。
+DNS/路由/代理/健康四层 + 安装产物 + daemon 接线；无 root 验证全过（dig/curl/真实 Caddy）；
+系统级 wiring 待用户一次 sudo（BLOCKERS B1）。

@@ -304,3 +304,21 @@ class RebuildAfterRestartTest(Env):
 
         self.assertEqual(facts(locove.routes_file().read_text()), facts(routes_before))
         self.assertEqual(locove.caddyfile().read_text(), cfg_before)
+
+
+class IsolationGuardTest(Env):
+    def test_isolated_home_without_admin_port_never_invokes_caddy(self):
+        """隔离守卫：LOCALSERVICES_HOME 重定向 + 未显式给 admin 端口 → 只落盘，
+        绝不调用 caddy（validate/reload 都不碰），不可能污染任何运行实例。"""
+        called = Path(self.tmp.name) / "caddy-called"
+        fake = Path(self.tmp.name) / "fake-caddy"
+        fake.write_text(f"#!/bin/sh\ntouch {called}\nexit 0\n")
+        fake.chmod(0o755)
+        os.environ["LOCOVE_CADDY_BIN"] = str(fake)
+        os.environ.pop("LOCOVE_ADMIN_PORT", None)
+        self.addCleanup(os.environ.pop, "LOCOVE_CADDY_BIN", None)
+        res = locove.apply_routes({"a.locove": Route("a.locove", "a", "web", 3000, "proxy")})
+        self.assertTrue(res["ok"])
+        self.assertTrue(res.get("isolated"))
+        self.assertFalse(called.exists())
+        self.assertIn("reverse_proxy 127.0.0.1:3000", locove.caddyfile().read_text())
