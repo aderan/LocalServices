@@ -820,6 +820,26 @@ class Registry:
                 toml["registered"] = norm["registered"]
                 final_def = toml
 
+            # R5（review）：派生声明保真。既有服务无显式入口时，payload 原样带回的入口
+            # （toml["endpoints"]，_validate 规范化结果）若与「按稳定规则派生」完全一致
+            # （GUI 编辑往返：只改了 description 等无关字段），不固化为显式 [[endpoints]]
+            # ——custom 域名形式下的路由资格不能被无关编辑改变。与派生不一致（用户真正
+            # 编辑过 host/组件/落点）→ 照常写显式；既有显式入口不走此分支。dry_run diff
+            # 在此之后计算，预览 = 实际。
+            ep_payload = toml.get("endpoints")
+            if (existing is not None and ep_payload is not None
+                    and not any(not e.derived for e in existing.endpoints)):
+                probe = {k: v for k, v in final_def.items() if k != "endpoints"}
+                try:
+                    derived_rows = manifest.endpoint_rows(probe)
+                except Exception:  # noqa: BLE001 — 派生失败（如无端口组件）按显式处理
+                    derived_rows = None
+                if derived_rows is not None and [
+                    {"id": e.get("id"), "host": e.get("host"), "component": e.get("component"),
+                     "open_path": e.get("open_path")} for e in ep_payload
+                ] == derived_rows:
+                    final_def.pop("endpoints", None)
+
             # 端口冲突（锁内重读后的最新状态；更新自身端口除外）
             owners: dict[int, str] = {}
             for lp in loaded.values():
@@ -1822,7 +1842,7 @@ class Registry:
             if not isinstance(d, dict):
                 details.append(f"endpoints[{i}] 必须是对象")
                 continue
-            unknown = set(d) - set(_ENDPOINT_ORDER)
+            unknown = set(d) - set(_ENDPOINT_ORDER) - {"derived"}  # derived 是 definition 元数据，回传时忽略
             if unknown:
                 details.append(f"endpoints[{i}] 含未知字段：{sorted(unknown)}")
                 continue

@@ -30,12 +30,22 @@ LA="$HOME_/Library/LaunchAgents"
 LOGS="$HOME_/Library/Logs/LocalServices"
 LS_HOME="$HOME_/Library/Application Support/LocalServices"
 LOCOVE_DIR="$LS_HOME/locove"
-RESOLVER_FILE="/etc/resolver/locove"
+RESOLVER_DIR="/etc/resolver"
+RESOLVER_SUFFIX="${LOCOVE_DOMAIN_SUFFIX:-locove}"
 DAEMON_PLIST="/Library/LaunchDaemons/com.mybrain.ls.locove.entry.plist"
 LIBEXEC_DIR="/Library/Application Support/Locove/libexec"
 LIBEXEC="$LIBEXEC_DIR/locove-entry.py"
 DNS_PORT="${LOCOVE_DNS_PORT:-5354}"
 PROXY_PORT="${LOCOVE_PROXY_PORT:-47890}"
+# R4：用户级件（launchd agents、初始配置）必须以目标用户身份落盘/引导——
+# sudo 一次全安装时，root 直接执行会把文件/plist 引导成 root 属主，普通用户 daemon 无法读写。
+run_as_user() {
+  if [ "$EUID_" = 0 ]; then
+    launchctl asuser "$(id -u "$USER_")" sudo -u "$USER_" -- "$@"
+  else
+    "$@"
+  fi
+}
 
 resolve_python() {
   if [ -n "${LOCALSERVICES_PYTHON:-}" ]; then
@@ -58,13 +68,16 @@ CADDY="${LOCOVE_CADDY:-/opt/homebrew/bin/caddy}"
 [ -n "$CADDY" ] || { echo "ERROR: 未找到 caddy（数据面代理）。安装：brew install caddy"; exit 1; }
 
 install_user_parts() {
-  mkdir -p "$LA" "$LOGS" "$LOCOVE_DIR"
-  # 初始配置（无路由时只有 catch-all；daemon 起来后周期收敛真实路由）
-  (cd "$REPO" && "$PY" - <<PYEOF
+  # R4：全部用户级文件/目录以目标用户身份创建（sudo 全安装时 root 直接 mkdir/cat
+  # 会留下 root 属主目录，普通用户 daemon 无法写入自己的 locove 状态根）
+  run_as_user mkdir -p "$LA" "$LOGS" "$LOCOVE_DIR"
+  # 初始配置（无路由时只有 catch-all；daemon 起来后周期收敛真实路由）。
+  # 以目标用户 + 显式 LOCALSERVICES_HOME 执行：绝不落入 /var/root。
+  (cd "$REPO" && run_as_user env LOCALSERVICES_HOME="$LS_HOME" "$PY" - <<PYEOF
 from localservices import locove
 locove.apply_routes({})
 PYEOF
-) >/dev/null 2>&1 || (cd "$REPO" && "$PY" -c "from localservices import locove; locove.locove_dir().mkdir(parents=True, exist_ok=True)")  # caddy 不可用时至少建目录
+  ) >/dev/null 2>&1 || run_as_user mkdir -p "$LOCOVE_DIR"  # caddy 不可用时至少建目录
 
   cat > "$LA/com.mybrain.ls.locove.dns.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -104,6 +117,8 @@ PLIST
 
   local uid
   uid="$(id -u "$USER_")"
+  # root 执行时把 agent plist 交给目标用户（属主错会挡住用户 daemon 读写/替换）
+  [ "$EUID_" = 0 ] && chown "$USER_" "$LA/com.mybrain.ls.locove.dns.plist" "$LA/com.mybrain.ls.locove.proxy.plist"
   for job in dns proxy; do
     launchctl bootout "gui/$uid/com.mybrain.ls.locove.$job" 2>/dev/null || true
     for _ in $(seq 1 20); do
@@ -117,7 +132,15 @@ PLIST
 
 install_system_parts() {
   [ "$(id -u)" = 0 ] || { echo "系统级安装需要 root"; exit 1; }
-  mkdir -p /etc/resolver "$LIBEXEC_DIR"
+  # R3：resolver 归属检查放在写任何系统文件之前——失败即中止，零残留
+  (cd "$REPO" && "$PY" -m localservices.locove_resolver install \
+     --dir "$RESOLVER_DIR" --port "$DNS_PORT" --suffix "$RESOLVER_SUFFIX") || {
+    echo "ERROR: /etc/resolver/$RESOLVER_SUFFIX 归属检查未通过，系统级安装中止（未写入任何文件）。"
+    echo "       处理见上方报错；确认后重试本脚本。"
+    exit 1
+  }
+  mkdir -p "$RESOLVER_DIR" "$LIBEXEC_DIR"
+  chown root:wheel "$RESOLVER_DIR/$RESOLVER_SUFFIX" 2>/dev/null || true
   # 转发器脚本必须放 root 属主目录：以 root 执行的代码不能留在用户可写路径
   cp "$REPO/localservices/locove_entry.py" "$LIBEXEC"
   chown root:wheel "$LIBEXEC"
@@ -143,15 +166,6 @@ PLIST
   chown root:wheel "$DAEMON_PLIST"
   chmod 0644 "$DAEMON_PLIST"
   mkdir -p /Library/Logs/Locove
-
-  cat > "$RESOLVER_FILE" <<RESOLVER
-# Locove／洛湾 split DNS：仅把 .locove 交给本地 DNS（由 LocalServices 管理）
-nameserver 127.0.0.1
-port $DNS_PORT
-search_order 1
-RESOLVER
-  chown root:wheel "$RESOLVER_FILE"
-  chmod 0644 "$RESOLVER_FILE"
 
   launchctl bootout "system/com.mybrain.ls.locove.entry" 2>/dev/null || true
   launchctl bootstrap "system" "$DAEMON_PLIST"

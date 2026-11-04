@@ -274,9 +274,12 @@ def handle_service_definition(sid: str) -> tuple[int, dict]:
         if p.open:
             svc["open"] = p.open
         if p.endpoints:
-            # V3 公开无端口入口（显式或派生）；编辑后回写为显式定义，地址保持稳定
+            # V3 公开无端口入口。derived 标记声明来源（R5）：派生入口由加载端按稳定规则
+            # 生成，不是用户显式登记——编辑器据此区分展示，注册端对未编辑的派生入口
+            # 不固化为显式 [[endpoints]]（见 registry._register 的往返保真逻辑）。
             svc["endpoints"] = [{"id": e.id, "host": e.host, "component": e.component,
-                                 "open_path": e.open_path} for e in p.endpoints]
+                                 "open_path": e.open_path, "derived": e.derived}
+                                for e in p.endpoints]
         if p.autostart:
             svc["autostart"] = True
         if p.observe_only:
