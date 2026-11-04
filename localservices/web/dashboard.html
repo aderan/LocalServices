@@ -52,7 +52,7 @@
   .note { color: var(--mute); font-size: 12px; margin: 2px 0 8px; }
   .row { border-top: 1px solid var(--line); padding: 10px 0 8px; }
   .card > .row:first-of-type { border-top: 0; }
-  .line { display: grid; grid-template-columns: minmax(0, 1.3fr) 130px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+  .line { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .9fr) 110px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
   .name { font-weight: 600; overflow-wrap: anywhere; }
   .name small { display: block; font-weight: 400; color: var(--mute); font-size: 12px; }
   .state { font-weight: 600; font-size: 13px; }
@@ -66,6 +66,23 @@
   .code.pending, .code.failed { font-weight: 600; }
   .code.pending { color: var(--warn); } .code.failed { color: var(--bad); }
   .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  /* V3：无端口域名是服务行的主要信息（紧凑主副文本 + 可复制） */
+  .domain { display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+    padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent;
+    color: var(--fg); font: inherit; text-align: left; min-width: 0; cursor: copy; }
+  .domain:hover { border-color: var(--acc); }
+  .domain b { font-size: 12.5px; font-weight: 600; max-width: 220px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .domain small { color: var(--mute); font-size: 11px; max-width: 220px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .domain.down { border-color: var(--warn); }
+  .domain.down small { color: var(--warn); }
+  .health { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px;
+    padding: 5px 10px; border: 1px solid var(--warn); border-radius: 6px; margin-bottom: 8px; }
+  .health b { font-weight: 600; }
+  .health .fix { color: var(--mute); }
+  button.link { background: none; border: none; padding: 0; color: var(--acc); text-decoration: underline;
+    font: inherit; cursor: copy; min-height: 0; }
   button, .btn { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px;
                  border: 1px solid var(--line); background: var(--soft); color: var(--fg); cursor: pointer; }
   button.primary, .btn.primary { background: var(--btn); border-color: var(--btn); color: #fff; }
@@ -141,7 +158,7 @@
     .navitem { width: auto; }
     main, .topbar { padding-left: 14px; padding-right: 14px; }
     .line { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-    .code, .acts { grid-column: 1 / -1; }
+    .domain, .code, .acts { grid-column: 1 / -1; }
     .acts { justify-content: flex-start; }
     button { min-height: 36px; }
   }
@@ -169,6 +186,7 @@
     <input id="globalSearch" type="search" placeholder="搜索项目 / 服务（跨视图）" aria-label="全局搜索">
     <button id="refreshBtn" onclick="refresh(true)">刷新</button>
   </header>
+  <div id="locoveHealth" role="status"></div>
   <main id="main" aria-live="polite"></main>
 </section>
 </div>
@@ -184,6 +202,7 @@ let snap = null;      // /api/status
 let registry = null;  // /api/registry
 let agentCandidates = null;  // /api/agents/candidates（连接页候选，按需加载）
 let agentsData = null, resourcesData = null, draftsData = null, removedData = null;
+let locoveData = null;   // /api/locove：dns / 入口 / 代理三层健康 + 路由事实
 let view = "all";     // all | project:<id> | attention | removed | resources | agents | drafts | new-project
 let connOk = null;
 let draftEdit = {};         // draft id -> 编辑中的 service 字段
@@ -286,8 +305,20 @@ function attentionServices() {
 const VIEW_TITLES = {all: "全部服务", attention: "需要处理", removed: "已移除登记", resources: "共享资源",
                      agents: "Agent 连接", drafts: "设置 / 草稿", "new-project": "添加项目"};
 
+function renderHealth() {
+  const el = document.getElementById("locoveHealth");
+  if (!el) return;
+  const d = locoveData;
+  if (!d || (d.dns?.ok !== false && d.entry?.ok !== false && d.proxy?.ok !== false)) { el.innerHTML = ""; el.hidden = true; return; }
+  const item = (ok, name, detail) => `<b>${name}${ok ? " ✓" : " ✗"}</b>${ok ? "" : `<span class="fix">${esc(detail || "")}</span>`}`;
+  el.hidden = false;
+  el.innerHTML = `<span class="fix">域名入口：</span>${item(d.dns?.ok, "DNS", d.dns?.detail)} · ${item(d.proxy?.ok, "代理", d.proxy?.detail)} · ${item(d.entry?.ok, "80 入口", d.entry?.detail)}`
+    + (d.entry?.ok === false ? `<span class="fix">安装：sudo scripts/install-locove-system.sh --system</span>` : "");
+}
+
 function render() {
   renderNav();
+  renderHealth();
   const main = document.getElementById("main");
   // 用户正在输入时不整刷内容区（导航/徽标照常更新），避免打断
   const a = document.activeElement;
@@ -338,6 +369,31 @@ function renderNav() {
 
 // ------------------------------------------------------------ 服务行（沿用原列表能力）
 
+function copyText(text, key, label) {
+  const done = ok => { msgs[key] = ok ? (label || "已复制") + "：" + text : "复制失败（浏览器未授权剪贴板）"; render();
+    setTimeout(() => { delete msgs[key]; render(); }, 1800); };
+  try {
+    if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(text).then(() => done(true), () => done(false)); return; }
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    done(document.execCommand("copy")); ta.remove();
+  } catch (e) { done(false); }
+}
+
+function domainChip(p) {
+  const eps = p.endpoints || [];
+  if (!eps.length) return "";
+  const e = eps[0];
+  const route = locoveData?.routes?.[e.host];
+  const entryOk = locoveData?.entry?.ok !== false;
+  const served = route && route.state === "proxy";
+  const sub = !entryOk ? "域名入口未安装（仍可直连）"
+    : served ? "无端口入口 · 点击复制" : "未运行时显示不可用页 · 点击复制";
+  return `<button class="domain${entryOk ? "" : " down"}" title="${esc(e.public_url)}（点击复制）"
+    onclick="copyText('${esc(e.public_url)}','${p.id}','地址')">
+    <b>${esc(e.host)}</b><small>${esc(sub)}</small></button>`;
+}
+
 function primary(p) {
   if (p.observe_only) return "";
   if (connOk === false || p.state === "unknown") return `<button class="primary" disabled>状态未知</button>`;
@@ -385,9 +441,19 @@ function detailsHtml(p) {
   const src = `<tr><td class="k">源码</td><td colspan="3">${esc(p.source)}${p.code && p.code.process_started ? " · 进程启动于 " + t(p.code.process_started) : ""}${p.code && p.code.newest_change ? " · 最近源码修改 " + t(p.code.newest_change) : ""}</td></tr>`;
   const reasonRow = p.reason ? `<tr><td class="k">诊断</td><td colspan="3" class="${["failed","conflict"].includes(p.state) ? "" : "muted"}" style="white-space:pre-wrap">${esc(p.reason)}</td></tr>` : "";
   const lg = logs[p.id] !== undefined ? `<pre id="logs-${p.id}">${esc(logs[p.id] || "(无日志)")}</pre>` : "";
+  const eps = (p.endpoints || []).map(e => {
+    const route = locoveData?.routes?.[e.host];
+    const st = !route ? "未生成路由" : route.state === "proxy"
+      ? `代理中 → 127.0.0.1:${route.upstream_port}` : "明确不可用页（503）";
+    return `<tr><td class="k">入口 ${esc(e.id)}</td>
+      <td><button class="link" onclick="copyText('${esc(e.public_url)}','${p.id}','地址')" title="点击复制">${esc(e.public_url)}</button>
+        <span class="note">（组件 ${esc(e.component)} · 落点 ${esc(e.open_path)}）</span></td>
+      <td class="k">${esc(st)}</td><td></td></tr>`;
+  }).join("");
+  const direct = p.observe_only ? "" : `<tr><td class="k">直连地址</td><td colspan="3">${esc(p.open || "—")}<span class="note">（内部端口实现细节；对外统一走无端口域名）</span></td></tr>`;
   return `<details ${open[p.id] ? "open" : ""} ontoggle="if(this.isConnected)open['${p.id}']=this.open">
-    <summary>命令 / 端口 / 组件明细</summary>
-    <div class="table-scroll"><table>${extra}${rows}${deps}${src}${reasonRow}</table></div>
+    <summary>入口 / 命令 / 端口 / 组件明细</summary>
+    <div class="table-scroll"><table>${extra}${eps}${direct}${rows}${deps}${src}${reasonRow}</table></div>
     ${lg}</details>`;
 }
 
@@ -400,6 +466,7 @@ function serviceRow(p, showProject) {
   return `<section class="row" id="p-${p.id}">
     <div class="line">
       <div class="name">${pjName ? `<small>项目：${esc(projectName(pjName))}</small>` : ""}${esc(p.name)}<small>${esc(p.id)} · ${esc(p.description || "")}</small></div>
+      ${domainChip(p)}
       <div class="state s-${p.state}">${esc(p.label)}</div>
       <div class="code ${code.state}">${esc(code.label || "")}${["pending", "failed"].includes(code.state) ? "：" + esc((code.detail || "").split("\n")[0]) : ""}</div>
       <div class="acts">${primary(p)}${secondary(p)}<button class="kebab" aria-haspopup="menu" aria-label="服务菜单（编辑 / 日志 / 打开目录 / 移除登记）" onclick="toggleMenu(event,'svc:${esc(p.id)}')">⋯</button></div>
@@ -434,13 +501,19 @@ function viewAll() {
     const shown = members.filter(matchesSearch);
     if (!shown.length && members.length) return "";
     const groupIds = [...new Set(shown.filter(m => m.group).map(m => m.group))];
-    return `<section class="card" aria-label="项目 ${esc(pj.name)}">
-      <div class="card-head">
+    // 单服务项目：不再重复项目标题（行内名称即身份），仅保留收藏与项目菜单
+    const slim = !orphan && members.length === 1 && !groupIds.length;
+    const head = slim
+      ? `<div class="card-head"><button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${pj.id}')" aria-label="收藏">${pj.favorite ? "★" : "☆"}</button>
+         <div class="acts"><button onclick="setView('project:${esc(pj.id)}')">项目详情</button><button class="kebab" aria-haspopup="menu" aria-label="项目菜单（添加服务 / 重新识别 / 重命名 / 移除项目）" onclick="toggleMenu(event,'proj:${esc(pj.id)}')">⋯</button></div></div>`
+      : `<div class="card-head">
         ${orphan ? "" : `<button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${pj.id}')" aria-label="收藏">${pj.favorite ? "★" : "☆"}</button>`}
         <h3>${esc(pj.name)}</h3>
         <span class="note">${members.length} 个服务${pj.agent && pj.agent !== "none" ? " · Agent " + esc(pj.agent) : ""}</span>
         ${orphan ? "" : `<div class="acts"><button onclick="setView('project:${esc(pj.id)}')">项目详情</button><button class="kebab" aria-haspopup="menu" aria-label="项目菜单（添加服务 / 重新识别 / 重命名 / 移除项目）" onclick="toggleMenu(event,'proj:${esc(pj.id)}')">⋯</button></div>`}
-      </div>
+      </div>`;
+    return `<section class="card" aria-label="项目 ${esc(pj.name)}">
+      ${head}
       ${groupIds.map(gid => groupToolbar(gid, shown.filter(m => m.group === gid))).join("")}
       ${shown.map(p => serviceRow(p, false)).join("") || `<div class="empty">无匹配服务</div>`}
     </section>`;
@@ -605,13 +678,25 @@ function draftSummary(payload) {
   return `服务 ${s.id || "(无 id)"} · ${s.name || "(未命名)"} · 源码 ${s.source || "?"} · 组件 ${(s.components || []).map(c => c.id).join(", ") || "无"}`;
 }
 
+function locoveCard() {
+  const d = locoveData;
+  if (!d) return "";
+  const row = (ok, name, detail) => `<tr><td class="k">${esc(name)}</td><td>${ok ? "✓ 正常" : "✗ " + esc(detail || "")}</td></tr>`;
+  const hosts = Object.entries(d.routes || {}).map(([h, r]) =>
+    `<tr><td class="k">${esc(h)}</td><td>${r.state === "proxy" ? `代理中 → 127.0.0.1:${r.upstream_port}` : "明确不可用页（503）"}<span class="note">（${esc(r.service)}.${esc(r.component)}）</span></td></tr>`).join("");
+  return `<section class="card"><div class="card-head"><h3>域名入口（Locove）</h3><span class="note">*.${esc(d.suffix)} · 无端口访问</span></div>
+    <div class="table-scroll"><table>${row(d.dns?.ok, "本地 DNS", d.dns?.detail)}${row(d.proxy?.ok, "代理（Caddy）", d.proxy?.detail)}${row(d.entry?.ok, "80 入口", d.entry?.detail)}${d.resolver_installed ? "" : `<tr><td class="k">split DNS</td><td>/etc/resolver/${esc(d.suffix)} 未安装（需要一次管理员授权：sudo scripts/install-locove-system.sh --system）</td></tr>`}</table></div>
+    ${hosts ? `<details ontoggle="if(this.isConnected)0"><summary>全部 ${Object.keys(d.routes || {}).length} 条路由</summary><div class="table-scroll"><table>${hosts}</table></div></details>` : `<p class="note">暂无登记公开入口的服务。</p>`}
+    </section>`;
+}
+
 function viewDrafts() {
   if (!draftsData) return `<div class="empty">加载中…</div>`;
   const q = document.getElementById("globalSearch").value.trim().toLowerCase();
   const list = (draftsData.drafts || []).filter(d =>
       !q || d.id.toLowerCase().includes(q) || draftSummary(d.payload).toLowerCase().includes(q));
-  if (!list.length) return `<div class="empty">没有草稿。注册缺必要字段时会自动存为草稿。</div>`;
-  return list.map(d => {
+  if (!list.length) return locoveCard() + `<div class="empty">没有草稿。注册缺必要字段时会自动存为草稿。</div>`;
+  return locoveCard() + list.map(d => {
     const e = draftEdit[d.id] || {};
     const comps = e.components || d.payload?.service?.components || [];
     return `<section class="card" id="draft-${esc(d.id)}">
@@ -2112,6 +2197,7 @@ async function refresh(manual) {
     snap = snapNew;
     const [rc, reg] = await api("GET", "/api/registry");
     if (rc === 200 && reg?.ok) registry = reg;
+    api("GET", "/api/locove").then(([lc, lv]) => { if (lc === 200 && lv) locoveData = lv; }).catch(() => {});
     if (!agentCandidates) loadCandidates().then(render);
     setConn(true);
     if (draftsData) loadDrafts();

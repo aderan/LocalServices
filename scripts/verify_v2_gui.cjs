@@ -110,7 +110,7 @@ const dispatchKey = (key, target) => {
     fn({key, target: target || null, preventDefault() {}, stopPropagation() {}});
 };
 
-const runner = new Function(script + "\n; return {render, api, refresh, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}};");
+const runner = new Function(script + "\n; return {render, api, refresh, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}};");
 const page = runner();
 const out = [];
 const SECTIONS = [];
@@ -580,6 +580,56 @@ try {
   check("「不绑定」恢复识别原值", dep2.container === "" && dep2.volume === "demo_pgdata", JSON.stringify(dep2));
   globalThis.fetch = pageFetch14;
 } catch (e) { check("R08 资源/复用绑定", false, e.message); }
+
+
+// ---------- 15) V3 Locove：域名作为服务行主要信息 + 健康分层 + 详情入口 ----------
+try {
+  const mkEp = (id, src, port) => ({
+    schemaVersion: 1, revision: 0, by: "gui",
+    project: {id: "epproj", name: "EpProj"},
+    directories: [{path: src, role: "source"}],
+    service: {id, name: "Domain " + id, source: src,
+              endpoints: [{host: "domain-app.locove", component: "web", open_path: "/zh"}],
+              evidence: {agent: "none", summary: "verify"},
+              components: [{id: "web", kind: "server", name: "web", cmd: ["/bin/sleep", "100"], cwd: ".",
+                            port, ready: {http: `http://127.0.0.1:${port}/`}}]},
+  });
+  const [c, r] = await page.api("POST", "/api/register", mkEp("domain-app", srcA, 18260));
+  check("V3: 带 endpoints 的服务注册 created", c === 200 && r.action === "created", JSON.stringify(r).slice(0, 140));
+  const [, def] = await page.api("GET", "/api/services/domain-app/definition");
+  check("V3: 定义 API 返回 endpoints",
+        def?.definition?.endpoints?.[0]?.host === "domain-app.locove"
+        && def.definition.endpoints[0].open_path === "/zh", JSON.stringify(def?.definition?.endpoints));
+  const [lc, lv] = await page.api("GET", "/api/locove");
+  check("V3: /api/locove 分层健康（dns/proxy/entry 各自报告）",
+        lc === 200 && lv.dns && lv.proxy && lv.entry && typeof lv.resolver_installed === "boolean",
+        JSON.stringify(lv).slice(0, 120));
+  await page.api("POST", "/api/refresh");   // 快照有 3s 缓存：显式刷新拿到新登记
+  await page.refresh();
+  const html = page.viewAll();
+  check("V3: 服务行显示无端口域名（domain chip）",
+        html.includes("domain-app.locove") && html.includes("无端口"), "");
+  check("V3: 域名 chip 可复制（copyText 绑定）", html.includes("copyText('http://domain-app.locove/zh'"), "");
+  check("V3: 单服务项目不重复项目标题（slim header，仅收藏+菜单）",
+        !/<h3>[^<]*EpProj/.test(html), "");
+  page.setOpen({"domain-app": true});
+  const proj = page.snapGet().projects.find(x => x.id === "domain-app");
+  const det = page.detailsHtml(proj);
+  check("V3: 详情含入口区（public_url + 组件/落点）",
+        det.includes("http://domain-app.locove/zh") && det.includes("组件 web") && det.includes("/zh"), "");
+  check("V3: 详情直连地址标注为内部实现", det.includes("直连地址") && det.includes("内部端口"), "");
+  page.setLocoveData({dns: {ok: false, detail: "未安装 resolver"}, proxy: {ok: true}, entry: {ok: false, detail: "80 未监听"}, routes: {}});
+  page.renderHealth();
+  const strip = documentStub.getElementById("locoveHealth").innerHTML;
+  check("V3: 域名层健康条呈现故障层与安装指引",
+        strip.includes("DNS") && strip.includes("80 入口") && strip.includes("install-locove-system"), strip.slice(0, 80));
+  page.setLocoveData({dns: {ok: true}, proxy: {ok: true}, entry: {ok: true}, routes: {}});
+  page.renderHealth();
+  check("V3: 全部健康时健康条隐藏", documentStub.getElementById("locoveHealth").innerHTML === "", "");
+  page.setLocoveData({dns: {ok: false, detail: "d"}, proxy: {ok: true}, entry: {ok: false, detail: "80 未监听"}, routes: {}});
+  const chipDown = page.domainChip({...proj, endpoints: [{host: "x.locove", public_url: "http://x.locove/", id: "default", component: "web", open_path: "/"}]});
+  check("V3: 入口未就绪时域名 chip 显示降级提示", chipDown.includes("域名入口未安装") && chipDown.includes("down"), chipDown.slice(0, 90));
+} catch (e) { check("V3 域名 UI", false, e.message); }
 
 console.log(out.join("\n"));
 const fails = out.filter(l => l.startsWith("FAIL")).length;
