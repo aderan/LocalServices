@@ -44,10 +44,15 @@ class Env(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="ls-routes-")
         self.addCleanup(self.tmp.cleanup)
+        # admin 端口取空闲临时端口：绝不指向生产 Caddy 的 admin（否则单测会重载真实例）
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        free_admin = probe.getsockname()[1]
+        probe.close()
         self.env = patch.dict(os.environ, {
             "LOCALSERVICES_HOME": str(Path(self.tmp.name) / "home"),
             "LOCOVE_PROXY_PORT": "47890",
-            "LOCOVE_ADMIN_PORT": "47891",
+            "LOCOVE_ADMIN_PORT": str(free_admin),
         })
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -270,3 +275,32 @@ class RealCaddyTest(Env):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RebuildAfterRestartTest(Env):
+    def test_daemon_proxy_dns_restart_rebuilds_identical_config(self):
+        """daemon/代理/DNS 重启收敛：落盘事实被清后，同一输入重建出完全一致的
+        routes.json/Caddyfile（DNS responder 每次 mtime 重读，无需重建）。"""
+        fake = Path(self.tmp.name) / "fake-caddy"
+        fake.write_text("#!/bin/sh\nexit 0\n")
+        fake.chmod(0o755)
+        os.environ["LOCOVE_CADDY_BIN"] = str(fake)
+        self.addCleanup(os.environ.pop, "LOCOVE_CADDY_BIN", None)
+        p = make_project("app", "app.locove", 3010)
+        snap = {"projects": [{"id": "app", "state": "available"}]}
+        self.assertEqual(locove.sync({"app": p}, snap)["changed"], True)
+        routes_before = locove.routes_file().read_text()
+        cfg_before = locove.caddyfile().read_text()
+        locove.routes_file().unlink()
+        locove.caddyfile().unlink()
+        res = locove.sync({"app": p}, snap)
+        self.assertTrue(res["changed"])
+        import json as _json
+
+        def facts(text):
+            d = _json.loads(text)
+            d.pop("generated_at", None)  # 时间戳不属于配置事实
+            return d
+
+        self.assertEqual(facts(locove.routes_file().read_text()), facts(routes_before))
+        self.assertEqual(locove.caddyfile().read_text(), cfg_before)

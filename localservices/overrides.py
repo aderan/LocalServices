@@ -35,7 +35,7 @@ _lock = threading.RLock()
 # 顶层可覆盖字段（V2.3 契约限定；source/id 等身份字段绝不可覆盖）
 TOP_FIELDS = ("name", "description", "open")
 # 嵌套路径的根容器（成员按 id/name 定位，不得凭空发明成员）
-_SECTION_ROOTS = ("components", "dependencies")
+_SECTION_ROOTS = ("components", "dependencies", "endpoints")
 _MISSING = object()
 # 单段 token：`name`、`components[api]`、`[KEY]`（env 键等）
 _TOKEN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)?(?:\[([A-Za-z0-9_-]+)\])?$")

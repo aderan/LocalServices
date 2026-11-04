@@ -273,6 +273,10 @@ def handle_service_definition(sid: str) -> tuple[int, dict]:
             svc["description"] = p.description
         if p.open:
             svc["open"] = p.open
+        if p.endpoints:
+            # V3 公开无端口入口（显式或派生）；编辑后回写为显式定义，地址保持稳定
+            svc["endpoints"] = [{"id": e.id, "host": e.host, "component": e.component,
+                                 "open_path": e.open_path} for e in p.endpoints]
         if p.autostart:
             svc["autostart"] = True
         if p.observe_only:

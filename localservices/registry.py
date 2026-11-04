@@ -291,6 +291,19 @@ def _diff_definitions(old: dict, new: dict) -> list[dict]:
                 ov, nv = oldc[cid].get(f), newc[cid].get(f)
                 if ov != nv and not (ov is None and nv is None):
                     out.append({"field": f"components[{cid}].{f}", "old": ov, "new": nv})
+    # V3：endpoints 按 host 对齐
+    olde = {e.get("host"): e for e in old.get("endpoints", []) if isinstance(e, dict)}
+    newe = {e.get("host"): e for e in new.get("endpoints", []) if isinstance(e, dict)}
+    for h in sorted(set(olde) | set(newe), key=str):
+        if h not in olde:
+            out.append({"field": f"endpoints[{h}]", "old": None, "new": "新增公开入口"})
+        elif h not in newe:
+            out.append({"field": f"endpoints[{h}]", "old": "（移除）", "new": None})
+        else:
+            for f in ("component", "open_path"):
+                ov, nv = olde[h].get(f), newe[h].get(f)
+                if ov != nv and not (ov is None and nv is None):
+                    out.append({"field": f"endpoints[{h}].{f}", "old": ov, "new": nv})
     oldd = {d.get("name"): d for d in old.get("dependencies", []) if isinstance(d, dict)}
     newd = {d.get("name"): d for d in new.get("dependencies", []) if isinstance(d, dict)}
     for dn in sorted(set(oldd) | set(newd), key=str):
@@ -381,7 +394,18 @@ def _service_key(source: Path, d: dict) -> tuple:
         d.get("adapter") or "",
         tuple(sorted(_comp_key(c, source) for c in comps)),
         tuple(sorted(_dep_key(x) for x in deps)),
+        # V3：endpoints 变化是真实内容变化（域名/落点/组件引用），不能被判为 unchanged
+        tuple(sorted((e.get("host"), e.get("component"), e.get("open_path"))
+                     for e in _endpoint_rows(d))),
     )
+
+
+def _endpoint_rows(d: dict) -> list[dict]:
+    """等价键用 endpoints 行（TOML dict 与 Project 序列化结果同形）。"""
+    raw = d.get("endpoints")
+    if isinstance(raw, list):
+        return [r for r in raw if isinstance(r, dict)]
+    return []
 
 
 def _insert_project_line(text: str, pid: str) -> str:
@@ -424,6 +448,16 @@ def _set_project_field(text: str, pid: str) -> str:
 
 
 # ---------------------------------------------------------------- Registry
+
+def _archived_endpoint_hosts(sid: str, parsed: dict) -> set[str]:
+    """归档定义将生效的公开域名（显式 endpoints，否则按稳定 id 派生）；恢复预检用。"""
+    proj = manifest.Project(
+        id=str(parsed.get("id") or sid), name=str(parsed.get("name") or sid),
+        source=Path(os.path.expanduser(str(parsed.get("source") or "/tmp"))),
+        open=parsed.get("open"),
+        components=[manifest._component(dict(c)) for c in parsed.get("components", []) or []])
+    return {e.host for e in manifest._derive_endpoints(proj, parsed.get("endpoints", []) or [])}
+
 
 class Registry:
     """工作台注册权威。实例无内部缓存（每次读盘），单例与多实例同样安全。
@@ -807,16 +841,13 @@ class Registry:
                     continue
                 for ep in lp.endpoints:
                     host_owner[ep.host] = lp.id
-            cand = manifest.Project(id=sid, name=str(final_def.get("name", sid)),
-                                    source=Path(str(final_def["source"])),
-                                    open=final_def.get("open"),
-                                    components=[manifest._component(dict(c))
-                                                for c in final_def.get("components", [])])
             try:
-                cand_eps = manifest._derive_endpoints(cand, final_def.get("endpoints", []))
+                cand_rows = manifest.endpoint_rows(final_def)
             except ValueError as e:
                 return {"ok": False, "error": str(e), "details": []}
-            clash = sorted({ep.host for ep in cand_eps} & set(host_owner))
+            if any(r.get("__invalid__") for r in cand_rows):
+                return {"ok": False, "error": "endpoints 定义无效（未知组件/重复域名）", "details": []}
+            clash = sorted({str(r.get("host")) for r in cand_rows} & set(host_owner))
             if clash:
                 return {"ok": False,
                         "error": "域名已被占用：" + "；".join(f"{h}（服务 {host_owner[h]}）" for h in clash),
@@ -876,6 +907,10 @@ class Registry:
 
     def _content_equal(self, toml: dict, existing: manifest.Project) -> bool:
         try:
+            # V3：endpoints 两侧同规归一（未显式提供的一侧按稳定规则派生），
+            # 否则「未提供 vs 已派生」永远不等，unchanged 判定被破坏
+            toml = dict(toml)
+            toml["endpoints"] = manifest.endpoint_rows(toml)
             existing_d = {
                 "name": existing.name, "description": existing.description,
                 "source": str(existing.source), "open": existing.open,
@@ -883,6 +918,8 @@ class Registry:
                 "adapter": existing.adapter,
                 "components": [dataclass_to_comp_dict(c) for c in existing.components],
                 "dependencies": [dep_to_dict(d) for d in existing.dependencies],
+                "endpoints": [{"id": e.id, "host": e.host, "component": e.component,
+                               "open_path": e.open_path} for e in existing.endpoints],
             }
         except Exception:
             return False
@@ -1397,6 +1434,18 @@ class Registry:
                     raise RegistryError(f"端口 {port} 已被占用", status=409,
                                         details=[f"{owners[port]} 与 {sid}.{c.get('id')}"])
 
+            # V3 域名冲突预检（写盘前）：归档 endpoints（显式或按 id 派生）不得占用现存服务域名
+            try:
+                arch_hosts = _archived_endpoint_hosts(sid, parsed)
+            except ValueError as e:
+                raise RegistryError(f"归档定义无效：{e}", status=500)
+            host_owner = {ep.host: lp.id for lp in loaded.values() for ep in lp.endpoints}
+            hclash = sorted(arch_hosts & set(host_owner))
+            if hclash:
+                raise RegistryError(
+                    "域名已被占用：" + "；".join(f"{h}（服务 {host_owner[h]}）" for h in hclash),
+                    status=409, details=hclash)
+
             target_pid = body.get("project_id") or doc.get("project_id") or sid
             if not isinstance(target_pid, str) or not ID_RE.fullmatch(target_pid or ""):
                 raise RegistryError(f"project_id 非法：{target_pid!r}")
@@ -1509,6 +1558,8 @@ class Registry:
             seen_ids: set[str] = set()
             seen_ports: dict[int, str] = {}
             seen_idents: dict[tuple, str] = {}
+            host_owner = {ep.host: lp.id for lp in loaded.values() for ep in lp.endpoints}
+            seen_hosts: dict[str, str] = {}
             for sid in members:
                 try:
                     parsed = tomllib.loads(str(archives[sid].get("toml") or ""))
@@ -1523,6 +1574,17 @@ class Registry:
                 elif inner in seen_ids:
                     conflicts.append(f"服务 id {inner} 在恢复成员中重复")
                 seen_ids.add(inner)
+                try:
+                    ahosts = _archived_endpoint_hosts(sid, parsed)
+                except ValueError as e:
+                    conflicts.append(f"{sid}: 归档定义无效（{e}）")
+                    ahosts = set()
+                for h in sorted(ahosts):
+                    if h in host_owner:
+                        conflicts.append(f"域名 {h} 已被服务 {host_owner[h]} 占用（与 {sid} 冲突）")
+                    elif h in seen_hosts:
+                        conflicts.append(f"域名 {h} 在恢复成员 {seen_hosts[h]} 与 {sid} 之间重复")
+                    seen_hosts[h] = sid
                 try:
                     comps = [manifest._component(dict(c))
                              for c in parsed.get("components", []) or [] if isinstance(c, dict)]
@@ -1794,7 +1856,7 @@ class Registry:
             if not isinstance(open_path, str):
                 details.append(f"endpoints[{i}]（{host}）open_path 必须是字符串")
                 continue
-            out.append({"id": str(d.get("id") or f"ep-{i + 1}-{host.split('.')[0]}"),
+            out.append({"id": str(d.get("id") or ("default" if i == 0 else f"ep-{i + 1}")),
                         "host": host, "component": comp,
                         "open_path": manifest._norm_open_path(open_path)})
         return out

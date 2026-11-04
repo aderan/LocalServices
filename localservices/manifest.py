@@ -173,6 +173,23 @@ class Project:
         return next((c for c in self.components if c.id == cid), None)
 
 
+def endpoint_rows(d: dict) -> list[dict]:
+    """TOML 层 dict（id/name/source/open/components[/endpoints]）→ 归一化 endpoint 行。
+
+    显式 endpoints 规范化；未提供时按稳定规则派生——与加载端同一逻辑，
+    注册比较（_content_equal）、域名冲突预检共用，保证「预览 = 实际」两端一致。"""
+    p = Project(id=str(d.get("id") or ""), name=str(d.get("name") or d.get("id") or ""),
+                source=Path(os.path.expanduser(str(d.get("source") or "."))),
+                open=d.get("open"),
+                components=[_component(dict(c)) for c in d.get("components", []) or []])
+    try:
+        eps = _derive_endpoints(p, d.get("endpoints") or [])
+    except ValueError:
+        return [{"__invalid__": True}]
+    return [{"id": e.id, "host": e.host, "component": e.component, "open_path": e.open_path}
+            for e in eps]
+
+
 def validate_component_graph(p: "Project") -> None:
     """组件依赖图校验：未知 after 引用与环在加载/注册阶段明确失败，并报告链路。
 

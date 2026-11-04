@@ -209,6 +209,9 @@ def main(argv=None) -> int:
     sp = sub.add_parser("resources", help="shared docker/compose resource inventory")
     sp.add_argument("--json", action="store_true")
 
+    sp = sub.add_parser("endpoints", help="Locove 无端口公开入口与域名层健康（V3）")
+    sp.add_argument("--json", action="store_true")
+
     sp = sub.add_parser("export", help="export a shareable service definition (no credentials, no local state)")
     sp.add_argument("service")
     sp.add_argument("--file", help="write to file instead of stdout")
@@ -412,6 +415,28 @@ def main(argv=None) -> int:
             else:
                 print(res.get("error") or res)
             return _exit_code(code, res)
+        if a.cmd == "endpoints":
+            _, snap = call("GET", "/api/status", timeout=15)
+            _, st = call("GET", "/api/locove", timeout=10)
+            rows = [{"host": e.get("host"), "public_url": e.get("public_url"),
+                     "service": p.get("id"), "state": p.get("state"),
+                     "component": e.get("component")}
+                    for p in snap.get("projects", [])
+                    for e in (p.get("endpoints") or [])]
+            if a.json:
+                print(json.dumps({"ok": True, "locove": st, "endpoints": rows},
+                                 ensure_ascii=False, indent=1))
+                return 0
+            for r in rows:
+                print(f"{r['host']:<32} {str(r['service']):<20} {str(r['state']):<10} {r['public_url']}")
+            if not rows:
+                print("（尚无登记了公开入口的服务）")
+            d, en, px = st.get("dns", {}), st.get("entry", {}), st.get("proxy", {})
+            mark = lambda ok: "✅" if ok else "❌"  # noqa: E731
+            print(f"\n域名层：dns {mark(d.get('ok'))}（{d.get('detail', '')}）  "
+                  f"代理 {mark(px.get('ok'))}（{px.get('detail', '')}）  "
+                  f"入口 {mark(en.get('ok'))}（{en.get('detail', '')}）")
+            return 0
         if a.cmd == "resources":
             code, res = call("GET", "/api/resources", timeout=20)
             print(json.dumps(res, ensure_ascii=False, indent=1) if a.json else

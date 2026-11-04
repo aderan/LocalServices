@@ -30,6 +30,7 @@ description: 把本地项目/服务注册或更新到 LocalServices 工作台（
 - 端口、`ready` 探针、依赖 probe 只在文件里有真实依据（README、Makefile、.env、compose ports、配置默认值）时填写；没有依据就留空，并把疑问记进 `service.evidence.unresolved`。
 - `name`、`source`（绝对路径）、组件 `cmd` 凑不齐或没把握时：置 `service.draft = true` 让服务存为草稿，把缺失字段如实列给用户，不编造端口、探针或命令。
 - `revision`：目标 Project 已存在时带当前 revision（`lsctl projects --json` 的 `registry.projects[].revision`）；新建项目省略（缺省 0）。
+- `service.endpoints[]`（V3 可选）：无端口公开入口 `[{host?, component, open_path?}]`；不填时按服务 id 派生 `<id>.locove`（稳定，不随显示名变化）。`component` 必须是本服务组件 id；`host` 抢占其他服务的域名会被拒绝（错误里列出占用方）。注册成功后向用户报告公开地址（`http://<host><open_path>`），可用 `lsctl endpoints` 查看。
 
 组装时优先用 `<技能目录>/scripts/build_payload.py`（典型在 `~/.codex/skills/localservices/scripts/`）：partial JSON 从 stdin 进，规范化 payload 从 stdout 出；cmd 不是数组、id 非法、端口越界这类结构错误会列在 stderr 并以退出码 2 拒绝。
 

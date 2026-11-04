@@ -89,3 +89,14 @@ V2 compose 字段（V2.7）：组件可带 `run = "compose"`（此时无 `cmd`�
 ```
 
 示例中的端口、探针、依赖全部有文件依据；换到真实工程时同样标准：**没有依据的字段留空或进 `unresolved`，有依据才填**。
+
+
+## service.endpoints[]（V3 公开无端口入口，可选）
+
+```json
+"endpoints": [{"host": "admin.mysite.locove", "component": "web", "open_path": "/admin"}]
+```
+
+- `host`：用户在浏览器访问的稳定域名（无端口）。省略时第一个入口派生 `<service-id>.locove`；无点号自动补 `.locove`。跨服务重复在提交前被拒绝。
+- `component`：决定真实上游的组件 id（其监听端口）；`open_path` 是打开页面的落点（缺省 `/`）。
+- 注册 payload 结构权威仍是仓库 `schemas/register.schema.json`。

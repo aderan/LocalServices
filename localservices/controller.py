@@ -1100,10 +1100,35 @@ class Controller:
             adopt, ports = self._adoptable(p, self.external_instances(p, fresh=False))
             if adopt:
                 url = self._external_url(p, ports)
+        # V3：无端口公开地址是主入口；入口层健康时优先打开域名（外部实例/正常启动同样适用）。
+        # 入口未安装/不健康时回退直连地址并在结果里说明缺口——不把带端口地址当作交付形态。
+        entry_note = None
+        pub = self._public_open_url(p)
+        if pub:
+            url = pub
+        elif p.endpoints:
+            entry_note = "域名入口未就绪（系统件未安装或代理未运行），已打开直连地址；详见工作台域名诊断"
         if not url:
             return {"ok": False, "error": "没有可打开的地址"}
         subprocess.Popen(["/usr/bin/open", url])
-        return {"ok": True}
+        return {"ok": True, **({"note": entry_note} if entry_note else {})}
+
+    def _public_open_url(self, p: Project) -> str | None:
+        """入口层健康且服务处于可打开状态时返回无端口公开地址。"""
+        if not p.endpoints:
+            return None
+        from . import locove
+        try:
+            st = locove.entry_status()
+        except Exception:  # noqa: BLE001 — 域名层故障不阻塞直连打开
+            return None
+        if not st.get("entry", {}).get("ok"):
+            return None
+        snap = next((s for s in self.snapshot().get("projects", [])
+                     if s.get("id") == p.id), None)
+        if snap is None or snap.get("state") not in ("available", "partial", "external"):
+            return None
+        return p.public_urls()[0]
 
     def open_source(self, pid: str) -> dict:
         p = self.projects.get(pid)
@@ -1350,7 +1375,10 @@ class Controller:
         ad = self.adapters[p.id]
         base = {"id": p.id, "name": p.name, "source": str(p.source), "observe_only": p.observe_only,
                 "description": p.description, "group": p.group,
-                "group_name": p.group_name, "group_order": p.group_order}
+                "group_name": p.group_name, "group_order": p.group_order,
+                "endpoints": [{"id": e.id, "host": e.host, "component": e.component,
+                               "open_path": e.open_path, "public_url": f"http://{e.host}{e.open_path}"}
+                              for e in p.endpoints]}
         if p.observe_only:
             try:
                 ob = ad.observe()
