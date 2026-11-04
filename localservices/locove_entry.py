@@ -51,7 +51,19 @@ def handle(client: socket.socket, target: tuple[str, int]) -> None:
     try:
         with client:
             client.settimeout(IDLE_TIMEOUT)
-            upstream = socket.create_connection(target, timeout=10.0)
+            try:
+                upstream = socket.create_connection(target, timeout=10.0)
+            except OSError:
+                # 上游不可达：排空并半关闭后再让 with 收尾——带着未读数据直接 close
+                # 会发 RST，浏览器把它当成异常断连而不是干净的"服务未运行"
+                try:
+                    client.shutdown(socket.SHUT_WR)
+                    client.settimeout(0.5)
+                    while client.recv(4096):
+                        pass
+                except OSError:
+                    pass
+                return
             upstream.settimeout(IDLE_TIMEOUT)
             with upstream:
                 t1 = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
