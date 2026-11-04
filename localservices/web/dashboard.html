@@ -309,11 +309,13 @@ function renderHealth() {
   const el = document.getElementById("locoveHealth");
   if (!el) return;
   const d = locoveData;
-  if (!d || (d.dns?.ok !== false && d.entry?.ok !== false && d.proxy?.ok !== false)) { el.innerHTML = ""; el.hidden = true; return; }
+  const pb = d?.proxy_bypass;
+  if (!d || (d.dns?.ok !== false && d.entry?.ok !== false && d.proxy?.ok !== false && pb?.ok !== false)) { el.innerHTML = ""; el.hidden = true; return; }
   const item = (ok, name, detail) => `<b>${name}${ok ? " ✓" : " ✗"}</b>${ok ? "" : `<span class="fix">${esc(detail || "")}</span>`}`;
   el.hidden = false;
-  el.innerHTML = `<span class="fix">域名入口：</span>${item(d.dns?.ok, "DNS", d.dns?.detail)} · ${item(d.proxy?.ok, "代理", d.proxy?.detail)} · ${item(d.entry?.ok, "80 入口", d.entry?.detail)}`
-    + (d.entry?.ok === false ? `<span class="fix">安装：sudo scripts/install-locove-system.sh --system</span>` : "");
+  el.innerHTML = `<span class="fix">域名入口：</span>${item(d.dns?.ok, "DNS", d.dns?.detail)} · ${item(d.proxy?.ok, "代理", d.proxy?.detail)} · ${item(d.entry?.ok, "80 入口", d.entry?.detail)} · ${item(pb?.ok !== false, "代理绕行", pb?.detail)}`
+    + (d.entry?.ok === false ? `<span class="fix">安装：sudo scripts/install-locove-system.sh --system</span>` : "")
+    + (pb?.ok === false ? `<span class="fix">立即修复：sudo scripts/locove-proxy-bypass.sh ${esc(d.suffix)}；永久修复在网关客户端（Clash Verge → 设置 → 系统设置 → 代理绕过）加入 *.${esc(d.suffix)}</span>` : "");
 }
 
 function render() {
@@ -682,10 +684,11 @@ function locoveCard() {
   const d = locoveData;
   if (!d) return "";
   const row = (ok, name, detail) => `<tr><td class="k">${esc(name)}</td><td>${ok ? "✓ 正常" : "✗ " + esc(detail || "")}</td></tr>`;
+  const pbRow = d.proxy_bypass ? row(d.proxy_bypass.ok, "代理绕行（浏览器路径）", d.proxy_bypass.detail) : "";
   const hosts = Object.entries(d.routes || {}).map(([h, r]) =>
     `<tr><td class="k">${esc(h)}</td><td>${r.state === "proxy" ? `代理中 → 127.0.0.1:${r.upstream_port}` : "明确不可用页（503）"}<span class="note">（${esc(r.service)}.${esc(r.component)}）</span></td></tr>`).join("");
   return `<section class="card"><div class="card-head"><h3>域名入口（Locove）</h3><span class="note">*.${esc(d.suffix)} · 无端口访问</span></div>
-    <div class="table-scroll"><table>${row(d.dns?.ok, "本地 DNS", d.dns?.detail)}${row(d.proxy?.ok, "代理（Caddy）", d.proxy?.detail)}${row(d.entry?.ok, "80 入口", d.entry?.detail)}${d.resolver_installed ? "" : `<tr><td class="k">split DNS</td><td>/etc/resolver/${esc(d.suffix)} 未安装（需要一次管理员授权：sudo scripts/install-locove-system.sh --system）</td></tr>`}</table></div>
+    <div class="table-scroll"><table>${row(d.dns?.ok, "本地 DNS", d.dns?.detail)}${row(d.proxy?.ok, "代理（Caddy）", d.proxy?.detail)}${row(d.entry?.ok, "80 入口", d.entry?.detail)}${pbRow}${d.resolver_installed ? "" : `<tr><td class="k">split DNS</td><td>/etc/resolver/${esc(d.suffix)} 未安装（需要一次管理员授权：sudo scripts/install-locove-system.sh --system）</td></tr>`}</table></div>
     ${hosts ? `<details ontoggle="if(this.isConnected)0"><summary>全部 ${Object.keys(d.routes || {}).length} 条路由</summary><div class="table-scroll"><table>${hosts}</table></div></details>` : `<p class="note">暂无登记公开入口的服务。</p>`}
     </section>`;
 }

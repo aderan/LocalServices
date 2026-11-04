@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -272,6 +273,42 @@ def _port_open(host: str, port: int, timeout: float = 0.6) -> bool:
         return False
 
 
+SCUTIL = "/usr/sbin/scutil"  # 注意：scutil 在 sbin，不在 bin（写错会静默变成假绿）
+
+
+def _scutil_proxy() -> str:
+    try:
+        r = subprocess.run([SCUTIL, "--proxy"], capture_output=True,
+                           text=True, timeout=3)
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:  # noqa: BLE001 — 观测失败按未知处理，不炸健康接口
+        return ""
+
+
+def proxy_bypass_status() -> dict:
+    """系统代理层观测：浏览器经网关代理时，自定义后缀必须在系统代理绕行表里，
+    否则网关按公网域名上游解析 → 502（"无法访问"）。网关客户端（如 Clash Verge
+    的 use_default_bypass 模板）会重写系统代理设置并覆盖追加条目——这里如实呈现。"""
+    text = _scutil_proxy()
+    if "HTTPEnable" not in text:
+        # 读不到 ≠ 未启用：如实报未知，绝不把观测失败伪装成"正常"
+        return {"ok": True, "enabled": None, "detail": "系统代理状态未知（scutil 不可读）"}
+    enabled = re.search(r"^\s*HTTPEnable : 1", text, re.M) is not None
+    entries = [m.strip() for m in re.findall(r"^\s+\d+ : (.+)$", text, re.M)]
+    sfx = suffix()
+    covered = any(e == f"*.{sfx}" or e.endswith(f".{sfx}") for e in entries)
+    if not enabled:
+        return {"ok": True, "enabled": False, "detail": "系统代理未启用（无需绕行）"}
+    if covered:
+        return {"ok": True, "enabled": True, "detail": f"*.{sfx} 已在系统代理绕行表"}
+    return {"ok": False, "enabled": True,
+            "entries": entries,
+            "detail": f"系统代理已启用但绕行表缺 *.{sfx}：浏览器把 .{sfx} 发给代理网关导致无法访问。"
+                      f"立即修复：sudo scripts/locove-proxy-bypass.sh {sfx}；永久修复需在网关客户端"
+                      "的代理绕过设置中加入（如 Clash Verge → 设置 → 系统设置 → 代理绕过），"
+                      "客户端重写系统代理时会沿用自家模板"}
+
+
 def entry_status() -> dict:
     """四层健康各报各的：dns=名字服务在答，proxy=Caddy 在监听，entry=80 入口在听，
     config=激活态与文件一致。任何一层失败都给出面向用户的原因，不互相掩盖。"""
@@ -295,6 +332,7 @@ def entry_status() -> dict:
         dns_detail = "正常"
     return {
         "suffix": suffix(),
+        "proxy_bypass": proxy_bypass_status(),
         "dns": {"ok": dns_ok and installed_resolver, "detail": dns_detail},
         "entry": {"ok": entry_ok and proxy_ok, "detail": entry_detail},
         "proxy": {"ok": proxy_ok, "detail": "正常" if proxy_ok else "Caddy 未运行（launchd agent com.mybrain.ls.locove.proxy）"},

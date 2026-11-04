@@ -432,10 +432,12 @@ def main(argv=None) -> int:
             if not rows:
                 print("（尚无登记了公开入口的服务）")
             d, en, px = st.get("dns", {}), st.get("entry", {}), st.get("proxy", {})
+            pb = st.get("proxy_bypass", {})
             mark = lambda ok: "✅" if ok else "❌"  # noqa: E731
             print(f"\n域名层：dns {mark(d.get('ok'))}（{d.get('detail', '')}）  "
                   f"代理 {mark(px.get('ok'))}（{px.get('detail', '')}）  "
-                  f"入口 {mark(en.get('ok'))}（{en.get('detail', '')}）")
+                  f"入口 {mark(en.get('ok'))}（{en.get('detail', '')}）  "
+                  f"代理绕行 {mark(pb.get('ok', True))}（{pb.get('detail', '')}）")
             return 0
         if a.cmd == "resources":
             code, res = call("GET", "/api/resources", timeout=20)

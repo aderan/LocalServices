@@ -18,6 +18,10 @@
   只删除本工具自己的文件）。健康分层查看：`lsctl endpoints` 或工作台「设置 / 草稿」页。
 - Vite 等按 Host 校验的开发服务器需在项目配置显式允许域名（如 `server.allowedHosts: ["xxx.locove"]`），
   不要设为 `true`；Next dev 无需额外配置。
+- **系统代理环境注意**：本机网关客户端（Clash Verge）会用自家模板重写系统代理绕行表，
+  可能覆盖追加的 `*.locove` → 浏览器"无法访问"（服务器链路本身正常）。临时修复
+  `sudo scripts/locove-proxy-bypass.sh`；永久修复在 Clash Verge → 设置 → 系统设置 →
+  代理绕过中加入 `*.locove`。`lsctl endpoints` 的"代理绕行"层会如实显示该状态。
 
 ## 安装 / 更新 / 卸载
 

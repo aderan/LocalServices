@@ -322,3 +322,61 @@ class IsolationGuardTest(Env):
         self.assertTrue(res.get("isolated"))
         self.assertFalse(called.exists())
         self.assertIn("reverse_proxy 127.0.0.1:3000", locove.caddyfile().read_text())
+
+
+class ProxyBypassObservationTest(Env):
+    """系统代理层观测：绕行表缺后缀 → 明确告警 + 修复指引（Clash Verge 重写系统代理
+    会覆盖追加条目——2026-11-04 mediascope.locove 无法访问的根因）。"""
+
+    SCUTIL_ON_NO_SUFFIX = """
+<dictionary> {
+  HTTPEnable : 1
+  HTTPProxy : 127.0.0.1
+  HTTPPort : 7897
+  ExceptionsList : <array> {
+    0 : 127.0.0.1
+    1 : localhost
+    2 : *.local
+  }
+}
+"""
+    SCUTIL_ON_WITH_SUFFIX = SCUTIL_ON_NO_SUFFIX.replace("    2 : *.local",
+                                                        "    2 : *.local\n    3 : *.locove")
+    SCUTIL_OFF = "<dictionary> {\n  HTTPEnable : 0\n}\n"
+
+    def _status(self, text):
+        with patch("localservices.locove._scutil_proxy", return_value=text):
+            return locove.proxy_bypass_status()
+
+    def test_proxy_on_without_suffix_warns_with_remedy(self):
+        st = self._status(self.SCUTIL_ON_NO_SUFFIX)
+        self.assertFalse(st["ok"])
+        self.assertTrue(st["enabled"])
+        self.assertIn("locove-proxy-bypass.sh", st["detail"])
+        self.assertIn("Clash Verge", st["detail"])
+
+    def test_proxy_on_with_suffix_ok(self):
+        st = self._status(self.SCUTIL_ON_WITH_SUFFIX)
+        self.assertTrue(st["ok"])
+
+    def test_proxy_off_ok(self):
+        st = self._status(self.SCUTIL_OFF)
+        self.assertTrue(st["ok"])
+        self.assertFalse(st["enabled"])
+
+    def test_entry_status_carries_layer(self):
+        with patch("localservices.locove._scutil_proxy", return_value=self.SCUTIL_ON_NO_SUFFIX):
+            st = locove.entry_status()
+        self.assertIn("proxy_bypass", st)
+        self.assertFalse(st["proxy_bypass"]["ok"])
+
+
+class ProxyBypassLiveTest(Env):
+    def test_scutil_path_is_real_and_layer_reads_live_state(self):
+        """回归：scutil 在 /usr/sbin（写 /usr/bin 曾静默假绿）。真实读取必须能拿到
+        HTTPEnable 键（enabled 为 True/False 而非 None）。"""
+        import os as _os
+        self.assertTrue(_os.path.exists(locove.SCUTIL), locove.SCUTIL)
+        st = locove.proxy_bypass_status()
+        self.assertIn(st["enabled"], (True, False))
+        self.assertIsNotNone(st["enabled"])
