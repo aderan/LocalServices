@@ -53,9 +53,11 @@ class DashboardStaticTest(unittest.TestCase):
         self.assertIn('id="globalSearch"', self.html)
 
     def test_six_nav_items(self):
-        # 全部服务 / 按 Project 分组列表 / 需要处理 / 共享资源 / Agent 连接 / 设置草稿
-        for anchor in ("全部服务", 'id="navProjects"', "需要处理", "共享资源", "Agent 连接", "设置 / 草稿"):
+        # R6 IA：服务 / 按 Project 分组列表 / 需要处理 / 共享资源 / Agent 连接 / 设置（与草稿分离）
+        for anchor in ('id="nav-all"', 'id="navProjects"', "需要处理", "共享资源", "Agent 连接",
+                       'id="nav-settings"', "已移除登记", "＋ 添加服务"):
             self.assertIn(anchor, self.html)
+        self.assertNotIn("设置 / 草稿", self.html)  # 草稿归入添加流程，不再与设置混放
 
     def test_api_anchors(self):
         for api in ("/api/analyze", "/api/register", "/api/jobs/", "/api/resources",

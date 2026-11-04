@@ -113,7 +113,7 @@ const dispatchKey = (key, target) => {
     fn({key, target: target || null, preventDefault() {}, stopPropagation() {}});
 };
 
-const runner = new Function(script + "\n; return {render, api, refresh, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}};");
+const runner = new Function(script + "\n; return {render, api, refresh, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}};");
 const page = runner();
 const out = [];
 const SECTIONS = [];
@@ -622,9 +622,13 @@ try {
         stOn?.ok && stOn.settings.use_domains === true, JSON.stringify(stOn).slice(0, 120));
   await page.api("POST", "/api/refresh");
   await page.refresh();
+  // 确定性驱动：健康入口 + 已收敛路由（隔离环境无 Caddy/80，不猜运行态）
+  page.setLocoveData({dns: {ok: true}, proxy: {ok: true}, entry: {ok: true},
+                      routes: {"domain-app.locove": {service: "domain-app", component: "web", upstream_port: 18260, state: "proxy"}},
+                      settings: {use_domains: true, domain_form: "suffix"}});
   html = page.viewAll();
   check("V3: 开启后服务行显示无端口域名（domain chip）",
-        html.includes("domain-app.locove") && html.includes("无端口"), "");
+        html.includes("domain-app.locove") && html.includes("无端口"), html.slice(html.indexOf("domain"), html.indexOf("domain") + 160));
   check("V3: 域名 chip 可复制（copyText 绑定）", html.includes("copyText('http://domain-app.locove/zh'"), "");
   const [, stOff] = await page.api("POST", "/api/locove/settings", {use_domains: false});
   check("V3.5: 可关闭回到默认直连", stOff?.settings.use_domains === false, "");
@@ -639,8 +643,12 @@ try {
   page.setLocoveData({dns: {ok: false, detail: "未安装 resolver"}, proxy: {ok: true}, entry: {ok: false, detail: "80 未监听"}, routes: {}});
   page.renderHealth();
   const strip = documentStub.getElementById("locoveHealth").innerHTML;
-  check("V3: 域名层健康条呈现故障层与安装指引",
-        strip.includes("DNS") && strip.includes("80 入口") && strip.includes("install-locove-system"), strip.slice(0, 80));
+  check("R6: 健康条为一行摘要（故障层命名）+ 去设置入口，不再整段 shell 指令占据主区",
+        strip.includes("DNS") && strip.includes("80 入口") && strip.includes("setView('settings')")
+        && !strip.includes("sudo "), strip.slice(0, 90));
+  const settingsHtml = page.viewSettings();
+  check("R6: 安装/绕行指引完整收进设置视图",
+        settingsHtml.includes("install-locove-system") && settingsHtml.includes("域名入口诊断"), "");
   page.setLocoveData({dns: {ok: true}, proxy: {ok: true}, entry: {ok: true}, routes: {}});
   page.renderHealth();
   check("V3: 全部健康时健康条隐藏", documentStub.getElementById("locoveHealth").innerHTML === "", "");
@@ -649,6 +657,51 @@ try {
   const chipDown = page.domainChip({...proj, endpoints: [{host: "x.locove", public_url: "http://x.locove/", id: "default", component: "web", open_path: "/"}]});
   check("V3: 入口未就绪时域名 chip 显示降级提示", chipDown.includes("域名入口未安装") && chipDown.includes("down"), chipDown.slice(0, 90));
 } catch (e) { check("V3 域名 UI", false, e.message); }
+
+// ---------- R6：完整工作台改造（紧凑行 / 次要动作收拢 / 详情分层 / 设置草稿分离） ----------
+section("R6 workbench");
+try {
+  page.setLocoveData({dns: {ok: true}, proxy: {ok: true}, entry: {ok: true}, routes: {},
+                      settings: {use_domains: false, domain_form: "suffix"}});
+  // 用运行态快照事实驱动行渲染（隔离 daemon 里服务未启动，需要伪造运行事实）
+  const snapOrig = page.snapGet();
+  const runSnap = JSON.parse(JSON.stringify(snapOrig));
+  const runProj = runSnap.projects.find(x => x.id === "domain-app");
+  Object.assign(runProj, {state: "available", label: "可用", op: null, intent: "running", can_open: true});
+  page.setSnap(runSnap);
+  const row = page.serviceRow(runProj, false);
+  check("R6: 运行中行只保留主操作（打开）+ 稳定日志入口 + ⋯",
+        row.includes(">打开<") && row.includes("loadLogs('domain-app')") && row.includes("toggleMenu(event,'svc:domain-app')"), "");
+  check("R6: 停止/重启/源码目录不在行内展开（收拢进 ⋯ 菜单）",
+        !row.includes(">停止<") && !row.includes(">重启<") && !row.includes(">源码目录<") && !row.includes("open-source"), "");
+  const menuItems = page.serviceMenuItems("domain-app").filter(i => !i.sep).map(i => i.label);
+  check("R6: ⋯ 菜单承载次要动作（编辑/日志/打开目录/停止/重启/移除）",
+        ["编辑", "日志", "打开目录", "停止", "重启", "移除登记…"].every(l => menuItems.includes(l)), menuItems.join(","));
+  check("R6: 行可键盘展开详情（role=button + aria-expanded）",
+        row.includes('role="button"') && row.includes('aria-expanded='), "");
+  page.setOpen({"domain-app": true});
+  const rowOpen = page.serviceRow(runProj, false);
+  const detail = page.detailsHtml(runProj);
+  check("R6: 详情分层（概览/入口/组件/日志 标题）",
+        detail.includes("概览") && detail.includes("入口") && detail.includes("组件") && detail.includes("日志"), "");
+  check("R6: 展开行呈现详情面板", rowOpen.includes("detail") && rowOpen.includes("运行意图"), "");
+  page.setOpen({});
+  page.setSnap(snapOrig);
+  const nav = html;
+  check("R6: 统一导航分区（服务/项目/管理 + 设置独立项）",
+        nav.includes('id="nav-all"') && nav.includes('id="nav-settings"') && nav.includes('id="navProjects"')
+        && nav.includes("设置") && !nav.includes("设置 / 草稿"), "");
+  check("R6: 草稿归入添加流程（添加页含草稿区；设置页不含草稿表单）",
+        nav.includes("＋ 添加服务"), "");
+  const addHtml = page.viewNewProject();
+  check("R6: 添加视图结构保留完整流程（目录与识别步骤）",
+        addHtml.includes("目录与项目") && (addHtml.includes("重新识别") || addHtml.includes("识别")), addHtml.slice(0, 80));
+  const draftArea = page.draftCards();
+  check("R6: 无草稿时草稿区为空", draftArea === "", "");
+  const group = page.viewAll();
+  check("R6: 分组为整组紧凑行容器（group + 细分隔行）",
+        group.includes('class="group"') && group.includes('class="svc'), group.slice(0, 80));
+} catch (e) { check("R6 workbench", false, e.message); }
 
 console.log(out.join("\n"));
 const fails = out.filter(l => l.startsWith("FAIL")).length;
