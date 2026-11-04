@@ -421,3 +421,7 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
   Host/Origin/token 规则不变，不因业务域名放宽。
 - 安装/卸载：`scripts/install-locove-system.sh`（用户级自动；系统级 `--system` 需 sudo）/
   `scripts/uninstall-locove-system.sh`；幂等、只管理自身文件。
+- 转发器顺序契约：root 绑定 80 → 降权 nobody → 用预绑定套接字服务（先降权后绑定会
+  EACCES；升级 root 属主副本用 `scripts/refresh-locove-entry.sh`）。
+- 代理兼容：系统代理环境需在绕行表加 `*.locove`（`scripts/locove-proxy-bypass.sh`，加法式），
+  否则网关按公网域名上游解析而 502；`lsctl endpoints` 的 dns/入口层会如实呈现。

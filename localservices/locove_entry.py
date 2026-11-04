@@ -76,13 +76,22 @@ def handle(client: socket.socket, target: tuple[str, int]) -> None:
         pass
 
 
-def serve(listen_port: int, target_port: int, host: str = "127.0.0.1") -> None:
+def make_listener(listen_port: int, host: str = "127.0.0.1") -> socket.socket:
+    """root 阶段绑定低端口（绑定成功后才允许降权）。"""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, listen_port))
     srv.listen(64)
+    return srv
+
+
+def serve(listen_port: int, target_port: int, host: str = "127.0.0.1",
+          listener: socket.socket | None = None) -> None:
+    """listener：root 预绑定的监听套接字（LaunchDaemon 路径）；缺省自行绑定（测试/普通端口）。"""
+    srv = listener or make_listener(listen_port, host)
     target = ("127.0.0.1", target_port)
-    print(f"[locove-entry] {host}:{listen_port} -> 127.0.0.1:{target_port}", flush=True)
+    print(f"[locove-entry] {host}:{listen_port} -> 127.0.0.1:{target_port}"
+          + (" (pre-bound as root, serving unprivileged)" if listener else ""), flush=True)
     while True:
         try:
             conn, _ = srv.accept()
@@ -94,8 +103,13 @@ def serve(listen_port: int, target_port: int, host: str = "127.0.0.1") -> None:
 def main() -> int:
     listen = int(os.environ.get("LOCOVE_ENTRY_PORT", "80"))
     target = int(os.environ.get("LOCOVE_ENTRY_TARGET", "47890"))
-    drop_privileges()
-    serve(listen, target)
+    listener = None
+    if os.geteuid() == 0:
+        # 顺序必须是：root 绑定低端口 → 降权 → 用已绑定套接字服务。
+        # 先降权再绑定会 EACCES（LaunchDaemon 崩溃循环的真实教训）。
+        listener = make_listener(listen)
+        drop_privileges()
+    serve(listen, target, listener=listener)
     return 0
 
 
