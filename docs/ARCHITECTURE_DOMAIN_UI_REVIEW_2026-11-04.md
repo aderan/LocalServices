@@ -8,7 +8,9 @@
 
 建议保留底座，优先消除 Project/Service 语义重叠和 state 写入职责重叠；以独立的本地入口路由模块支持域名；用 Magpie 的紧凑行和 CC Switch 的管理界面组织方式改造 Web UI。达到参考产品的界面品质，不要求迁移到它们的桌面框架。
 
-用户补充的硬要求：浏览器入口不出现端口，且使用产品专属后缀，例如 `buildbase.xxx`。建议新名称为 **Locove**（Local + Cove，本地服务的停靠湾；中文可称“洛湾”），入口示例 `http://buildbase.locove`。这是命名建议，尚未更名应用或仓库。
+用户补充的硬要求：浏览器入口不出现端口，且使用产品专属后缀，例如 `buildbase.xxx`。2026-11-04 用户已确认英文名称 **Locove**、中文名称 **洛湾**，目标入口为 `buildbase.locove`。名称已经确定，应用与仓库尚未执行更名。
+
+本报告是分析与实施建议；后续完整交付范围、已确认约束和验收以 [Locove 实施 Goal](goals/locove-foundation-domains-ui-goal.md) 为准。技术选型建议不因用户确认名称而自动成为固定要求。
 
 ## 1. 当前实现与值得保留的设计
 
@@ -68,11 +70,11 @@ flowchart LR
 
 ## 3. 新名称与 `buildbase.locove` 无端口入口
 
-### 命名建议
+### 已确认名称
 
-推荐 **Locove**：短、便于输入，既能表达本机工作上下文，也能承接“项目和服务集中停靠”的产品定位。统一使用 `buildbase.locove`、`shicha.locove`、`explore.locove`；备选 **DevPerch**（服务栖所），对应 `buildbase.devperch`。域名后缀为全局设置，服务域名前缀可单独修改，不直接从可变的项目显示名实时推导。
+用户已确认 **Locove／洛湾**，取代本轮早期的待定名称和 DevPerch 备选。服务入口使用 `buildbase.locove`、`shicha.locove`、`explore.locove`。域名后缀作为全局设置、服务域名前缀可单独修改是实现建议；前缀应保持稳定，避免项目显示名称变化导致链接失效。
 
-不采用 DevHarbor、LocalDeck 等候选：初步检索已存在高度相关的同类产品，分别见 [DevHarbor](https://devharbor.app/) 与 [Localdeck](https://www.localdeck.dev/)。Locove 只是本次命名建议，不表示已经取得公网顶级域或完成品牌注册。
+不采用 DevHarbor、LocalDeck 等候选：初步检索已存在高度相关的同类产品，分别见 [DevHarbor](https://devharbor.app/) 与 [Localdeck](https://www.localdeck.dev/)。名称确认不意味着取得公网顶级域；`.locove` 在本方案中是工具管理的本地后缀。
 
 产品名称与网络方案分别落地：先改变窗口/菜单栏/文案的显示名称，保留既有 state 位置、launchd label、服务 ID 与 `lsctl` 兼容入口，避免为了更名中断运行或丢失登记。
 
