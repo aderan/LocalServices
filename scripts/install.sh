@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install / update MyBrain Local Services for the current user (idempotent).
+# Install / update Locove／洛湾 (LocalServices) for the current user (idempotent).
 #   - control daemon: LaunchAgent com.mybrain.localservices.daemon (KeepAlive, runs from this repo)
 #   - menu bar app:   ~/Applications/MyBrain Services.app + login LaunchAgent (no KeepAlive, so "退出" sticks)
 #   - CLI:            ~/.local/bin/lsctl
@@ -88,6 +88,9 @@ chmod +x "$HOME/.local/bin/lsctl"
 
 # Codex skill (localservices): safe installer — never overwrites user-modified skills
 bash "$REPO/scripts/install-skill.sh" || echo "WARN: skill 安装未完成（不影响其余组件）"
+
+# Locove／洛湾 无端口访问：用户级网络件（DNS + Caddy 代理 agent）；系统级（/etc/resolver + :80）另行 sudo
+bash "$REPO/scripts/install-locove-system.sh" || echo "WARN: Locove 网络件未安装（不影响其余组件）"
 
 for job in daemon menubar; do
   launchctl bootout "gui/$UID_/com.mybrain.localservices.$job" 2>/dev/null || true

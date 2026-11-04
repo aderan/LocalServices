@@ -21,7 +21,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__, paths
-from . import agent_api, register_api, resources
+from . import agent_api, locove, register_api, resources
 from .controller import Controller
 
 WEB = Path(__file__).resolve().parent / "web"
@@ -119,6 +119,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if u.path == "/api/resources":
                 self._send(200, resources.inventory())
+                return
+            if u.path == "/api/locove":
+                self._send(200, locove.entry_status())
                 return
             if u.path == "/api/drafts":
                 self._send(*register_api.handle_drafts())
@@ -321,6 +324,14 @@ def main() -> int:
     ctl.refresh_snapshot()
     loop(ctl.reconcile, float(os.environ.get("LOCALSERVICES_RECONCILE", "5")), "reconcile")
     loop(ctl.refresh_snapshot, float(os.environ.get("LOCALSERVICES_STATUS", "3")), "status")
+    # Locove 无端口路由收敛：登记/运行事实变化 → routes.json/Caddyfile → Caddy 热加载
+    def _locove_sync():
+        locove.sync(ctl.projects, ctl.snapshot())
+    try:
+        _locove_sync()
+    except Exception:  # noqa: BLE001 — caddy 缺失等环境问题不阻塞控制面；loop 周期重试
+        traceback.print_exc()
+    loop(_locove_sync, float(os.environ.get("LOCALSERVICES_LOCOVE_SYNC", "5")), "locove")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

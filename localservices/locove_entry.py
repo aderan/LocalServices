@@ -1,0 +1,91 @@
+"""Locove 80 入口转发器（最小特权）：只做 127.0.0.1:80 → 127.0.0.1:<proxy_port> 的 TCP 字节转发。
+
+- 以 root LaunchDaemon 运行（唯一需要低端口权限的组件）；绑定成功后立即降权到 nobody。
+- 无配置文件、无 shell、无动态上游：目标端口编译期缺省 + 只读环境变量（安装时固定）。
+- 只监听回环；局域网不可见。代理未就绪时连接立即关闭（浏览器显示连接被拒，不挂起）。
+"""
+
+from __future__ import annotations
+
+import os
+import socket
+import threading
+
+BUF = 65536
+IDLE_TIMEOUT = 300.0
+
+
+def drop_privileges() -> None:
+    """绑定 80 后降权；降权失败必须退出（继续以 root 跑违背最小特权承诺）。"""
+    if os.geteuid() != 0:
+        return
+    try:
+        os.setgroups([])
+        os.setgid(4294967294 - 256)  # nobody gid (-2)
+        os.setuid(4294967294 - 256)  # nobody uid (-2)
+    except OSError as e:
+        raise SystemExit(f"[locove-entry] privilege drop failed, refusing to run as root: {e}")
+
+
+def pipe(a: socket.socket, b: socket.socket) -> None:
+    try:
+        while True:
+            data = a.recv(BUF)
+            if not data:
+                break
+            b.sendall(data)
+    except OSError:
+        pass
+    finally:
+        try:
+            a.shutdown(socket.SHUT_RD)
+        except OSError:
+            pass
+        try:
+            b.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
+def handle(client: socket.socket, target: tuple[str, int]) -> None:
+    try:
+        with client:
+            client.settimeout(IDLE_TIMEOUT)
+            upstream = socket.create_connection(target, timeout=10.0)
+            upstream.settimeout(IDLE_TIMEOUT)
+            with upstream:
+                t1 = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
+                t2 = threading.Thread(target=pipe, args=(upstream, client), daemon=True)
+                t1.start()
+                t2.start()
+                t1.join()
+                t2.join()
+    except OSError:
+        pass
+
+
+def serve(listen_port: int, target_port: int, host: str = "127.0.0.1") -> None:
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, listen_port))
+    srv.listen(64)
+    target = ("127.0.0.1", target_port)
+    print(f"[locove-entry] {host}:{listen_port} -> 127.0.0.1:{target_port}", flush=True)
+    while True:
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            continue
+        threading.Thread(target=handle, args=(conn, target), daemon=True).start()
+
+
+def main() -> int:
+    listen = int(os.environ.get("LOCOVE_ENTRY_PORT", "80"))
+    target = int(os.environ.get("LOCOVE_ENTRY_TARGET", "47890"))
+    drop_privileges()
+    serve(listen, target)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

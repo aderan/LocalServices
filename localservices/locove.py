@@ -22,10 +22,27 @@ from pathlib import Path
 
 from . import paths
 
-PROXY_PORT = int(os.environ.get("LOCOVE_PROXY_PORT", "47890"))
-DNS_PORT = int(os.environ.get("LOCOVE_DNS_PORT", "5354"))
-ENTRY_PORT = int(os.environ.get("LOCOVE_ENTRY_PORT", "80"))
-ADMIN_PORT = int(os.environ.get("LOCOVE_ADMIN_PORT", "47891"))
+DEFAULT_PROXY_PORT, DEFAULT_DNS_PORT, DEFAULT_ENTRY_PORT, DEFAULT_ADMIN_PORT = 47890, 5354, 80, 47891
+
+
+def _env_port(name: str, default: int) -> int:
+    return int(os.environ.get(name, str(default)))
+
+
+def proxy_port() -> int:
+    return _env_port("LOCOVE_PROXY_PORT", DEFAULT_PROXY_PORT)
+
+
+def dns_port() -> int:
+    return _env_port("LOCOVE_DNS_PORT", DEFAULT_DNS_PORT)
+
+
+def entry_port() -> int:
+    return _env_port("LOCOVE_ENTRY_PORT", DEFAULT_ENTRY_PORT)
+
+
+def admin_port() -> int:
+    return _env_port("LOCOVE_ADMIN_PORT", DEFAULT_ADMIN_PORT)
 
 PROXY_STATES = ("proxy", "unavailable")  # 路由模式：转发上游 / 明确不可用页
 
@@ -89,7 +106,7 @@ def desired_routes(projects: dict, snapshot: dict | None = None) -> dict:
 
 def routes_payload(routes: dict[str, Route]) -> dict:
     return {"schemaVersion": 1, "suffix": suffix(), "generated_at": time.time(),
-            "proxy_port": PROXY_PORT,
+            "proxy_port": proxy_port(),
             "routes": {h: r.to_json() for h, r in sorted(routes.items())}}
 
 
@@ -115,9 +132,9 @@ def render_caddyfile(routes: dict[str, Route]) -> str:
     """按精确 Host 生成站点；无匹配 Host 落到 catch-all 404（不代理任何未知主机）。"""
     parts = [
         "{",
-        f"\tadmin 127.0.0.1:{ADMIN_PORT}",
+        f"\tadmin 127.0.0.1:{admin_port()}",
         "\tauto_https off",
-        f"\thttp_port {PROXY_PORT}",
+        f"\thttp_port {proxy_port()}",
         "\tgrace_period 3s",
         "}",
     ]
@@ -174,8 +191,9 @@ def _reload() -> None:
 
 def apply_routes(routes: dict[str, Route]) -> dict:
     """把期望路由落为运行态。顺序：生成 → validate → 写 routes.json/Caddyfile → reload；
-    reload 失败则回滚两个文件到旧内容（运行中的 Caddy 从未接受坏配置，保持上次有效路由）。
-    Caddy 未运行时 reload 会失败——记录错误但保留文件（代理进程由 launchd 守护，恢复后即生效）。"""
+    validate 失败不动任何文件；reload 失败回滚两个文件到旧内容（运行中的 Caddy 从未
+    接受坏配置，保持上次有效路由）。Caddy 尚未运行（admin 端口无响应）时只落盘
+    （pending 激活，代理由 launchd 守护，起来后读到落盘配置即生效）。"""
     locove_dir().mkdir(parents=True, exist_ok=True)
     cfg = render_caddyfile(routes)
     payload = routes_payload(routes)
@@ -185,9 +203,14 @@ def apply_routes(routes: dict[str, Route]) -> dict:
         old_cfg = caddyfile().read_text(encoding="utf-8")
     except OSError:
         pass
-    _validate(cfg)
+    try:
+        _validate(cfg)
+    except ActivationError as e:
+        return {"ok": False, "changed": False, "error": str(e)}
     routes_file().write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     caddyfile().write_text(cfg, encoding="utf-8")
+    if not _port_open("127.0.0.1", admin_port()):
+        return {"ok": True, "changed": True, "hosts": len(routes), "pending": True}
     try:
         _reload()
     except ActivationError as e:
@@ -227,9 +250,9 @@ def _port_open(host: str, port: int, timeout: float = 0.6) -> bool:
 def entry_status() -> dict:
     """四层健康各报各的：dns=名字服务在答，proxy=Caddy 在监听，entry=80 入口在听，
     config=激活态与文件一致。任何一层失败都给出面向用户的原因，不互相掩盖。"""
-    dns_ok = _port_open("127.0.0.1", DNS_PORT)
-    proxy_ok = _port_open("127.0.0.1", PROXY_PORT)
-    entry_ok = _port_open("127.0.0.1", ENTRY_PORT)
+    dns_ok = _port_open("127.0.0.1", dns_port())
+    proxy_ok = _port_open("127.0.0.1", proxy_port())
+    entry_ok = _port_open("127.0.0.1", entry_port())
     installed_resolver = Path("/etc/resolver", suffix()).exists()
     data = read_routes()
     if entry_ok and not proxy_ok:
