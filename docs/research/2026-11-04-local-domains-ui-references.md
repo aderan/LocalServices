@@ -4,6 +4,8 @@
 
 需求更新：用户要求浏览器地址不出现端口号，并希望服务域名为「服务名.工具品牌」两段形式；2026-11-04 已确认品牌为 **Locove／洛湾**。§8 对应最新约束；前文 `.localhost` 是初始方案与已有实测，不作为更新后的默认建议。完整交付范围以 [实施 Goal](../goals/locove-foundation-domains-ui-goal.md) 为准。
 
+2026-11-05 接续说明：之后的权限讨论转为默认直连、域名可选且按需安装，采用 5670 高端口实施假设，80 不再是基础交付。当前范围以 Goal D1–D5 为准；本文关于无端口 80 的说明保留为原始方案及规范事实，不代表仍要求安装低端口入口。
+
 ## 1. 结论
 
 - `http://buildbase.localhost` 可实现。域名解析与端口路由是两件事：浏览器把域名解析到回环地址，不会自动知道应用正在监听的 3000 等端口。无端口 HTTP 访问需要本地 80 端口入口，再按 Host 转发；HTTPS 对应 443。[RFC 6761 §6.3](https://www.rfc-editor.org/rfc/rfc6761.html#section-6.3)、[RFC 9110 §4.2](https://www.rfc-editor.org/rfc/rfc9110.html#name-http-uri-scheme)
