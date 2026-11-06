@@ -130,7 +130,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, resources.inventory())
                 return
             if u.path == "/api/locove":
-                st = locove.module_status(_locove_settings())
+                settings = _locove_settings()
+                st = locove.module_status(settings)
+                st["settings"] = settings  # UI/CLI 的 use_domains/domain_form/domain_port 来源
                 st["optin"] = locove_optin.progress()
                 self._send(200, st)
                 return
@@ -189,7 +191,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}") if length else {}
             if u.path == "/api/locove/settings":
                 res = register_api.handle_locove_settings_post(body)
-                ctl._domain_settings_cache = (0.0, {})  # 设置变更立即生效（sync 门控/URL 端口）
+                self.ctl._domain_settings_cache = (0.0, {})  # 设置变更立即生效（sync 门控/URL 端口）
                 self._send(*res)
                 return
             if u.path in ("/api/locove/enable", "/api/locove/disable", "/api/locove/uninstall"):
@@ -214,8 +216,8 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:  # noqa: BLE001 — 进度面已记录错误
                         traceback.print_exc()
                     finally:
-                        ctl._domain_settings_cache = (0.0, {})  # 门控/URL 端口立即生效
-                        threading.Thread(target=ctl.refresh_snapshot, daemon=True).start()
+                        self.ctl._domain_settings_cache = (0.0, {})  # 门控/URL 端口立即生效
+                        threading.Thread(target=self.ctl.refresh_snapshot, daemon=True).start()
 
                 threading.Thread(target=_run_op, daemon=True).start()
                 self._send(200, {"ok": True, "started": op, "progress": locove_optin.progress()})

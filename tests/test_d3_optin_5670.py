@@ -200,6 +200,35 @@ class EnableFlowTest(OptInEnv):
         finally:
             locove_optin._progress.update({"active": False})
 
+    def test_empty_routes_probe_returns_none_and_enable_succeeds(self):
+        """真实机器踩过的坑：routes.json 为空时 _probe_host 曾抛 StopIteration，
+        异常 str 为空被误判为成功。空路由=无已登记入口 → 跳过解析探针，正常启用。"""
+        self._resolver_ours()
+        with patch.object(locove_optin, "_run", return_value=_completed()), \
+                patch.object(locove_optin, "_wait_port", return_value=True), \
+                patch.object(locove_optin, "_resolves", return_value=False), \
+                patch.object(locove_optin, "_listener_name", return_value=None), \
+                patch.object(locove, "_port_open", return_value=False), \
+                patch.object(locove, "module_status", return_value={"caddy_available": True}):
+            # 真实空路由路径（不走 mock）：临时清空 routes.json
+            import json as _json
+            loc_dir = Path(os.environ["LOCALSERVICES_HOME"]) / "locove"
+            loc_dir.mkdir(parents=True, exist_ok=True)
+            (loc_dir / "routes.json").write_text(_json.dumps(
+                {"schemaVersion": 1, "routes": {}}))
+            self.assertEqual(locove_optin._probe_host(), None)
+            res = locove_optin.enable()
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(Registry().locove_settings()["use_domains"])
+
+    def test_unexpected_exception_reported_nonempty(self):
+        """异常路径的错误信息永不空白（空 str 异常不得伪装成功）。"""
+        with patch.object(locove_optin, "preflight", side_effect=StopIteration()):
+            res = locove_optin.enable()
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["error"], "错误信息必须非空")
+        self.assertIn("StopIteration", res["error"])
+
 
 class DisableTest(OptInEnv):
     def test_disable_stops_agents_and_keeps_files(self):

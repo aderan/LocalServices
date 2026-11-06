@@ -28,9 +28,10 @@ from .locove_resolver import owned
 
 REPO = Path(__file__).resolve().parent.parent
 
-# 进度面（GET /api/locove 合并返回；enable 在后台线程执行）
+# 进度面（GET /api/locove 合并返回；enable 在后台线程执行）。
+# ok 三态：None=进行中/未知，True=操作成功，False=失败（error 给出原因）。
 _progress: dict = {"active": False, "op": None, "step": None, "steps": [],
-                   "at": 0.0, "error": None, "finished_at": None}
+                   "at": 0.0, "error": None, "ok": None, "finished_at": None}
 
 
 def progress() -> dict:
@@ -151,7 +152,8 @@ def _resolves(host: str, timeout: float = 5.0) -> bool:
 
 def _probe_host() -> str | None:
     routes = (locove.read_routes() or {}).get("routes") or {}
-    return next(iter(sorted(routes))) or None
+    hosts = sorted(routes)
+    return hosts[0] if hosts else None
 
 
 # ---------- enable / disable / uninstall ----------
@@ -161,13 +163,18 @@ def enable(port: int | None = None) -> dict:
     if _progress.get("active"):
         return {"ok": False, "reason": "busy", "error": "域名模块操作进行中，请稍候"}
     _progress.update({"active": True, "op": "enable", "step": None, "steps": [],
-                      "error": None, "finished_at": None})
+                      "error": None, "ok": None, "finished_at": None})
     try:
-        return _enable_inner(port)
+        res = _enable_inner(port)
+        _progress["ok"] = bool(res.get("ok"))
+        return res
     except Exception as e:  # noqa: BLE001 — 任何意外都如实报告；设置只在成功末尾写入，
-        # 失败路径不改写（此前若已启用则保持原设置，状态机如实呈现 failed/available）
-        _progress["error"] = f"{e}"
-        return {"ok": False, "reason": "error", "error": str(e), "progress": progress()}
+        # 失败路径不改写（此前若已启用则保持原设置，状态机如实呈现 failed/available）。
+        # str(e) 可能为空（如 StopIteration()）——补异常类型，绝不把失败伪装成无错
+        detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        _progress["error"] = detail
+        _progress["ok"] = False
+        return {"ok": False, "reason": "error", "error": detail, "progress": progress()}
     finally:
         _progress.update({"active": False, "finished_at": time.time()})
 
@@ -257,7 +264,7 @@ def disable() -> dict:
     """关闭域名：回直连。停止 DNS/代理 agent 与路由收敛；安装件与 resolver 保留。"""
     from .registry import Registry
     _progress.update({"active": True, "op": "disable", "step": None, "steps": [],
-                      "error": None, "finished_at": None})
+                      "error": None, "ok": None, "finished_at": None})
     try:
         _step("disable-settings")
         st = Registry().locove_settings_update({"use_domains": False})
@@ -267,11 +274,14 @@ def disable() -> dict:
             subprocess.run(["/bin/launchctl", "bootout", f"gui/{uid}/com.mybrain.ls.locove.{job}"],
                            capture_output=True, text=True, timeout=15)
         _step("done", "直连模式；已安装件保留（可在设置页查看/卸载）")
+        _progress["ok"] = True
         return {"ok": True, "settings": st, "state": locove.module_status(st).get("state"),
                 "progress": progress()}
     except Exception as e:  # noqa: BLE001
-        _progress["error"] = str(e)
-        return {"ok": False, "reason": "error", "error": str(e), "progress": progress()}
+        detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        _progress["error"] = detail
+        _progress["ok"] = False
+        return {"ok": False, "reason": "error", "error": detail, "progress": progress()}
     finally:
         _progress.update({"active": False, "finished_at": time.time()})
 
@@ -281,7 +291,7 @@ def uninstall(keep_resolver: bool = True) -> dict:
     （归属守卫生效；业务进程/数据/登记不动）。keep_resolver=True 时 resolver 保留。"""
     from .registry import Registry
     _progress.update({"active": True, "op": "uninstall", "step": None, "steps": [],
-                      "error": None, "finished_at": None})
+                      "error": None, "ok": None, "finished_at": None})
     try:
         _step("disable")
         try:
@@ -311,12 +321,15 @@ def uninstall(keep_resolver: bool = True) -> dict:
         if locove.legacy_80_present():
             remaining.append("旧 80 系统转发器（另行迁移：scripts/retire-locove-80.sh）")
         _step("done", "; ".join(remaining) or "全部移除")
+        _progress["ok"] = r.returncode == 0
         return {"ok": r.returncode == 0, "kept": remaining,
                 "state": locove.module_status({"use_domains": False}).get("state"),
                 "progress": progress()}
     except Exception as e:  # noqa: BLE001
-        _progress["error"] = str(e)
-        return {"ok": False, "reason": "error", "error": str(e), "progress": progress()}
+        detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        _progress["error"] = detail
+        _progress["ok"] = False
+        return {"ok": False, "reason": "error", "error": detail, "progress": progress()}
     finally:
         _progress.update({"active": False, "finished_at": time.time()})
 

@@ -604,8 +604,10 @@ try {
         def?.definition?.endpoints?.[0]?.host === "domain-app.locove"
         && def.definition.endpoints[0].open_path === "/zh", JSON.stringify(def?.definition?.endpoints));
   const [lc, lv] = await page.api("GET", "/api/locove");
-  check("V3: /api/locove 分层健康（dns/proxy/entry 各自报告）",
-        lc === 200 && lv.dns && lv.proxy && lv.entry && typeof lv.resolver_installed === "boolean",
+  check("V3: /api/locove 域名模块状态机（dns/proxy/resolver 分层 + state + legacy_80）",
+        lc === 200 && lv.dns && lv.proxy && lv.resolver && typeof lv.state === "string"
+        && typeof lv.legacy_80 === "boolean" && typeof lv.resolver_installed === "boolean"
+        && lv.domain_port === 5670,
         JSON.stringify(lv).slice(0, 120));
   // V3.5：默认本地 IP 直连
   check("V3.5: 默认设置 use_domains=false（本地 IP 直连）",
@@ -622,14 +624,15 @@ try {
         stOn?.ok && stOn.settings.use_domains === true, JSON.stringify(stOn).slice(0, 120));
   await page.api("POST", "/api/refresh");
   await page.refresh();
-  // 确定性驱动：健康入口 + 已收敛路由（隔离环境无 Caddy/80，不猜运行态）
-  page.setLocoveData({dns: {ok: true}, proxy: {ok: true}, entry: {ok: true},
+  // 确定性驱动：模块可用 + 已收敛路由（隔离环境无 Caddy，不猜运行态）
+  page.setLocoveData({state: "available", domain_port: 5670,
+                      dns: {ok: true}, proxy: {ok: true}, resolver: {ok: true},
                       routes: {"domain-app.locove": {service: "domain-app", component: "web", upstream_port: 18260, state: "proxy"}},
-                      settings: {use_domains: true, domain_form: "suffix"}});
+                      settings: {use_domains: true, domain_form: "suffix", domain_port: 5670}});
   html = page.viewAll();
-  check("V3: 开启后服务行显示无端口域名（domain chip）",
-        html.includes("domain-app.locove") && html.includes("无端口"), html.slice(html.indexOf("domain"), html.indexOf("domain") + 160));
-  check("V3: 域名 chip 可复制（copyText 绑定）", html.includes("copyText('http://domain-app.locove/zh'"), "");
+  check("D3: 开启后服务行显示带端口域名（domain chip host:5670）",
+        html.includes("domain-app.locove:5670") && html.includes("点击复制"), html.slice(html.indexOf("domain"), html.indexOf("domain") + 160));
+  check("D3: 域名 chip 可复制（copyText 绑定 :5670 URL）", html.includes("copyText('http://domain-app.locove:5670/zh'"), "");
   const [, stOff] = await page.api("POST", "/api/locove/settings", {use_domains: false});
   check("V3.5: 可关闭回到默认直连", stOff?.settings.use_domains === false, "");
   check("V3: 单服务项目不重复项目标题（slim header，仅收藏+菜单）",
@@ -637,25 +640,35 @@ try {
   page.setOpen({"domain-app": true});
   const proj = page.snapGet().projects.find(x => x.id === "domain-app");
   const det = page.detailsHtml(proj);
-  check("V3: 详情含入口区（public_url + 组件/落点）",
-        det.includes("http://domain-app.locove/zh") && det.includes("组件 web") && det.includes("/zh"), "");
+  check("V3: 详情含入口区（public_url 带端口 + 组件/落点）",
+        det.includes("http://domain-app.locove:5670/zh") && det.includes("组件 web") && det.includes("/zh"), "");
   check("V3: 详情直连地址标注为内部实现", det.includes("直连地址") && det.includes("内部端口"), "");
-  page.setLocoveData({dns: {ok: false, detail: "未安装 resolver"}, proxy: {ok: true}, entry: {ok: false, detail: "80 未监听"}, routes: {}});
+  page.setLocoveData({state: "failed", dns: {ok: false, detail: "本地 DNS 未运行"}, proxy: {ok: true}, resolver: {ok: false, detail: "未安装"},
+                      routes: {}, settings: {use_domains: true, domain_form: "suffix", domain_port: 5670}});
   page.renderHealth();
   const strip = documentStub.getElementById("locoveHealth").innerHTML;
-  check("R6: 健康条为一行摘要（故障层命名）+ 去设置入口，不再整段 shell 指令占据主区",
-        strip.includes("DNS") && strip.includes("80 入口") && strip.includes("setView('settings')")
+  check("R6/D2: 开启后健康条为一行摘要（故障层命名）+ 去设置入口",
+        strip.includes("DNS") && strip.includes("解析配置") && strip.includes("setView('settings')")
         && !strip.includes("sudo "), strip.slice(0, 90));
+  page.setLocoveData({state: "installed_off", domain_port: 5670,
+                      dns: {ok: false, detail: "本地 DNS 未运行"}, proxy: {ok: false, detail: "未监听"},
+                      resolver: {ok: true, detail: "正常"}, routes: {},
+                      settings: {use_domains: false, domain_form: "suffix", domain_port: 5670}});
   const settingsHtml = page.viewSettings();
-  check("R6: 安装/绕行指引完整收进设置视图",
-        settingsHtml.includes("install-locove-system") && settingsHtml.includes("域名入口诊断"), "");
-  page.setLocoveData({dns: {ok: true}, proxy: {ok: true}, entry: {ok: true}, routes: {}});
+  check("D3: 启用入口与诊断完整收进设置视图（不再引导 sudo 命令安装）",
+        settingsHtml.includes("启用域名访问") && settingsHtml.includes("域名诊断") && !settingsHtml.includes("sudo "), "");
+  page.setLocoveData({state: "available", dns: {ok: true}, proxy: {ok: true}, resolver: {ok: true}, routes: {},
+                      settings: {use_domains: true, domain_form: "suffix"}});
   page.renderHealth();
   check("V3: 全部健康时健康条隐藏", documentStub.getElementById("locoveHealth").innerHTML === "", "");
-  page.setLocoveData({dns: {ok: false, detail: "d"}, proxy: {ok: true}, entry: {ok: false, detail: "80 未监听"},
-                       routes: {}, settings: {use_domains: true, domain_form: "suffix"}});
-  const chipDown = page.domainChip({...proj, endpoints: [{host: "x.locove", public_url: "http://x.locove/", id: "default", component: "web", open_path: "/"}]});
-  check("V3: 入口未就绪时域名 chip 显示降级提示", chipDown.includes("域名入口未安装") && chipDown.includes("down"), chipDown.slice(0, 90));
+  page.setLocoveData({state: "not_installed", dns: {ok: null}, proxy: {ok: null}, resolver: {ok: null}, routes: {},
+                      settings: {use_domains: false, domain_form: "suffix"}});
+  page.renderHealth();
+  check("D2: 未安装域名件不产生告警（默认直连不是故障）", documentStub.getElementById("locoveHealth").innerHTML === "", "");
+  page.setLocoveData({state: "failed", dns: {ok: false, detail: "d"}, proxy: {ok: true}, resolver: {ok: true},
+                       routes: {}, settings: {use_domains: true, domain_form: "suffix", domain_port: 5670}});
+  const chipDown = page.domainChip({...proj, endpoints: [{host: "x.locove", public_url: "http://x.locove:5670/", id: "default", component: "web", open_path: "/"}]});
+  check("D3: 模块未就绪时域名 chip 显示降级提示（仍可直连）", chipDown.includes("域名模块未就绪") && chipDown.includes("down"), chipDown.slice(0, 90));
 } catch (e) { check("V3 域名 UI", false, e.message); }
 
 // ---------- R6：完整工作台改造（紧凑行 / 次要动作收拢 / 详情分层 / 设置草稿分离） ----------

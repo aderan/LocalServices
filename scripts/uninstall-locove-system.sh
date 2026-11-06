@@ -11,7 +11,7 @@
 set -uo pipefail
 GUI_UID="$(id -u)"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-RESOLVER_DIR="/etc/resolver"
+RESOLVER_DIR="${LOCOVE_RESOLVER_DIR:-/etc/resolver}"
 RESOLVER_SUFFIX="${LOCOVE_DOMAIN_SUFFIX:-locove}"
 ENTRY_PLIST="/Library/LaunchDaemons/com.mybrain.ls.locove.entry.plist"
 LIBEXEC_DIR="/Library/Application Support/Locove"
@@ -33,8 +33,15 @@ resolve_python() {
 remove_user_parts() {
   local job LA
   LA="${LOCOVE_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}"
+  # 隔离守卫：LOCOVE_LAUNCHAGENTS 被重定向（测试/验收）时绝不 launchctl 真实会话的 agent
+  if [ -z "${LOCOVE_LAUNCHAGENTS:-}" ]; then
+    for job in dns proxy; do
+      launchctl bootout "gui/$GUI_UID/com.mybrain.ls.locove.$job" 2>/dev/null || true
+    done
+  else
+    echo "  （隔离环境：跳过 launchctl bootout）"
+  fi
   for job in dns proxy; do
-    launchctl bootout "gui/$GUI_UID/com.mybrain.ls.locove.$job" 2>/dev/null || true
     rm -f "$LA/com.mybrain.ls.locove.$job.plist"
   done
   rm -rf "${LOCALSERVICES_HOME:-$HOME/Library/Application Support/LocalServices}/locove"

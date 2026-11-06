@@ -2502,6 +2502,7 @@ refresh();
 function logReading() {
   const pre = document.querySelector(".detail pre:hover");
   if (pre) return true;
+  if (typeof window.getSelection !== "function") return false;  // 无头/精简 DOM 无选区 API
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed) {
     for (let n = sel.anchorNode; n; n = n.parentElement)

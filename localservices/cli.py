@@ -477,12 +477,13 @@ def main(argv=None) -> int:
                 p = st.get("optin") or {}
                 if not p.get("active"):
                     err = p.get("error")
+                    failed = p.get("ok") is False or bool(err)
                     if a.json:
-                        print(json.dumps({"ok": not err, "state": st.get("state"),
+                        print(json.dumps({"ok": not failed, "state": st.get("state"),
                                           "optin": p}, ensure_ascii=False, indent=1))
-                        return 0 if not err else 1
-                    if err:
-                        print(f"未完成：{err}")
+                        return 0 if not failed else 1
+                    if failed:
+                        print(f"未完成：{err or '（未知错误，见设置页域名诊断）'}")
                         return 1
                     print(f"完成：模块状态 {st.get('state')}（端口 {st.get('domain_port')}）"
                           + ("；旧 80 入口仍在，退役：sudo scripts/retire-locove-80.sh --apply"

@@ -108,9 +108,10 @@ async function main() {
   // 交互 5：设置视图（草稿/诊断归位）
   await ev("document.getElementById('nav-settings').click()");
   await sleep(500);
-  check("设置视图（域名跳转 + 诊断 + 关于）",
-        await ev("document.getElementById('main')?.textContent.includes('域名跳转')")
-        && await ev("document.getElementById('main')?.textContent.includes('域名入口诊断')"));
+  check("设置视图（域名访问 + 诊断 + 关于）",
+        await ev("document.getElementById('main')?.textContent.includes('域名访问')")
+        && await ev("document.getElementById('main')?.textContent.includes('域名诊断')")
+        && await ev("document.getElementById('main')?.textContent.includes('关于')"));
   await shot("r6-after-settings-light.png");
 
   // 交互 6：暗色主题（模拟系统偏好）

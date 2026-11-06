@@ -56,10 +56,15 @@ install_user_parts() {
   [ -n "$CADDY" ] || { echo "ERROR: 未找到 caddy（数据面代理）。安装：brew install caddy" >&2; exit 1; }
 
   mkdir -p "$LA" "$LOGS" "$LOCOVE_DIR"
-  # 初始配置（无路由时只有 catch-all；daemon 起来后周期收敛真实路由）。
+  # 初始/迁移配置：全新安装 → 空路由（只有 catch-all）；既有安装（如 47890→5670
+  # 迁移）→ 保留 routes.json 里的路由事实，仅以目标端口重渲染 Caddyfile/payload。
+  # daemon 起来后周期收敛真实路由。
   (cd "$REPO" && env LOCALSERVICES_HOME="$LS_HOME" LOCOVE_PROXY_PORT="$PORT" "$PY" - <<PYEOF
 from localservices import locove
-locove.apply_routes({})
+data = locove.read_routes() or {}
+routes = {h: locove.Route(host=h, **{k: v for k, v in r.items() if k != "host"})
+          for h, r in (data.get("routes") or {}).items()}
+locove.apply_routes(routes)
 PYEOF
   ) >/dev/null 2>&1 || mkdir -p "$LOCOVE_DIR"  # caddy 不可用时至少建目录
 
@@ -99,18 +104,23 @@ PLIST
 </dict></plist>
 PLIST
 
-  # bootstrap 前先 bootout 旧实例（端口可能变化；等待完全退出再引导）
+  # bootstrap 前先 bootout 旧实例（端口可能变化；等待完全退出再引导）。
+  # 隔离守卫：LOCOVE_LAUNCHAGENTS 被重定向（测试/验收）时只写文件，不碰真实 launchd。
   local job
-  for job in dns proxy; do
-    launchctl bootout "gui/$UID_/com.mybrain.ls.locove.$job" 2>/dev/null || true
-    local i
-    for i in $(seq 1 20); do
-      launchctl print "gui/$UID_/com.mybrain.ls.locove.$job" >/dev/null 2>&1 || break
-      sleep 0.25
+  if [ -z "${LOCOVE_LAUNCHAGENTS:-}" ]; then
+    for job in dns proxy; do
+      launchctl bootout "gui/$UID_/com.mybrain.ls.locove.$job" 2>/dev/null || true
+      local i
+      for i in $(seq 1 20); do
+        launchctl print "gui/$UID_/com.mybrain.ls.locove.$job" >/dev/null 2>&1 || break
+        sleep 0.25
+      done
+      launchctl bootstrap "gui/$UID_" "$LA/com.mybrain.ls.locove.$job.plist"
     done
-    launchctl bootstrap "gui/$UID_" "$LA/com.mybrain.ls.locove.$job.plist"
-  done
-  echo "USER PARTS INSTALLED: dns(:$DNS_PORT) + proxy(caddy :$PORT)"
+    echo "USER PARTS INSTALLED: dns(:$DNS_PORT) + proxy(caddy :$PORT)"
+  else
+    echo "USER PARTS WRITTEN (isolated: $LA; dns :$DNS_PORT + proxy :$PORT, 未引导 launchd)"
+  fi
 }
 
 install_resolver() {

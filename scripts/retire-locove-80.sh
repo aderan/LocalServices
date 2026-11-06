@@ -17,7 +17,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ENTRY_LABEL="com.mybrain.ls.locove.entry"
 ENTRY_PLIST="/Library/LaunchDaemons/${ENTRY_LABEL}.plist"
 LIBEXEC_DIR="/Library/Application Support/Locove"
-RESOLVER="/etc/resolver/${LOCOVE_DOMAIN_SUFFIX:-locove}"
+RESOLVER="${LOCOVE_RESOLVER_DIR:-/etc/resolver}/${LOCOVE_DOMAIN_SUFFIX:-locove}"
 RESOLVED=0
 
 entry_plist_present() { [ -f "$ENTRY_PLIST" ]; }
@@ -70,7 +70,7 @@ apply_retire() {
   if [[ " $* " == *" --remove-resolver "* ]]; then
     echo "==> 移除 resolver（归属守卫生效）"
     (cd "$REPO" && python3 -m localservices.locove_resolver uninstall \
-       --dir /etc/resolver --suffix "${LOCOVE_DOMAIN_SUFFIX:-locove}") || true
+       --dir "${LOCOVE_RESOLVER_DIR:-/etc/resolver}" --suffix "${LOCOVE_DOMAIN_SUFFIX:-locove}") || true
   else
     echo "==> resolver 保留（默认；5670 域名访问仍需要 .locove 解析）"
   fi
