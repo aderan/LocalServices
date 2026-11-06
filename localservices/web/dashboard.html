@@ -376,19 +376,23 @@ function renderHealth() {
   const el = document.getElementById("locoveHealth");
   if (!el) return;
   const d = locoveData;
-  const pb = d?.proxy_bypass;
-  if (!d || (d.dns?.ok !== false && d.entry?.ok !== false && d.proxy?.ok !== false && pb?.ok !== false)) { el.innerHTML = ""; el.hidden = true; return; }
-  // R6：健康条只留一行摘要与去向；完整诊断、安装与绕行指引收进「设置」上下文披露
+  // D2：域名是可选能力——未安装/已关闭不产生任何告警；只在用户开启域名后才提示故障。
+  if (!d || !domainSettings().use_domains || d.state === "available") { el.innerHTML = ""; el.hidden = true; return; }
+  const pb = d.proxy_bypass;
   const bad = [];
   if (d.dns?.ok === false) bad.push("DNS");
   if (d.proxy?.ok === false) bad.push("代理");
-  if (d.entry?.ok === false) bad.push("80 入口");
+  if (d.resolver?.ok === false) bad.push("解析配置");
   if (pb?.ok === false) bad.push("代理绕行");
-  const useDomains = domainSettings().use_domains;
+  if (!bad.length && d.state === "starting") {
+    el.hidden = false;
+    el.innerHTML = `<b>域名模块启动中…</b><span class="fix">正在安装/验证（可能等待管理员授权）；打开动作暂时回退直连</span>`;
+    return;
+  }
   el.hidden = false;
-  el.innerHTML = `<b>域名入口异常：${esc(bad.join(" · "))}</b>`
-    + `<span class="fix">${useDomains ? "已开启域名跳转，打开动作将回退直连" : "默认直连不受影响；手动域名访问不可用"}</span>`
-    + `<button class="goto" onclick="setView('settings')">查看诊断与安装指引</button>`;
+  el.innerHTML = `<b>域名模块异常：${esc(bad.join(" · "))}</b>`
+    + `<span class="fix">已开启域名跳转，打开动作将回退直连</span>`
+    + `<button class="goto" onclick="setView('settings')">查看诊断与修复指引</button>`;
 }
 
 function render() {
@@ -471,21 +475,21 @@ function directUrl(p) {
 }
 
 function domainChip(p) {
-  // V3.5：默认本地 IP 直连；设置开启「使用域名」后按域名形式显示/跳转
+  // V3.5/D3：默认本地 IP 直连；开启域名后显示带端口（:5670）的域名入口
   const st = domainSettings();
   const eps = p.endpoints || [];
   if (st.use_domains) {
     const e = st.domain_form === "custom" ? (eps.find(x => !x.derived) || null) : eps[0];
     if (!e) return "";
     const route = locoveData?.routes?.[e.host];
-    const entryOk = locoveData?.entry?.ok !== false;
+    const ok = locoveData?.state === "available";
     const served = route && route.state === "proxy";
-    const sub = !entryOk ? "域名入口未安装（仍可直连）"
-      : served ? "无端口入口 · 点击复制" : "无端口 · 未运行时显示不可用页";
-    const url = `http://${e.host}${e.open_path}`;
-    return `<button class="domain${entryOk ? "" : " down"}" title="${esc(url)}（点击复制）"
+    const sub = !ok ? "域名模块未就绪（仍可直连）"
+      : served ? `:${locoveData?.domain_port || 5670} · 点击复制` : "未运行时显示不可用页";
+    const url = e.public_url || `http://${e.host}:${locoveData?.domain_port || 5670}${e.open_path}`;
+    return `<button class="domain${ok ? "" : " down"}" title="${esc(url)}（点击复制）"
       onclick="event.stopPropagation();copyText('${esc(url)}','${p.id}','地址')">
-      <b>${esc(e.host)}</b><small>${esc(sub)}</small></button>`;
+      <b>${esc(e.host)}:${locoveData?.domain_port || 5670}</b><small>${esc(sub)}</small></button>`;
   }
   const url = directUrl(p);
   if (!url) return "";
@@ -573,7 +577,7 @@ function detailsHtml(p) {
         <span class="note">（组件 ${esc(e.component)} · 落点 ${esc(e.open_path)}）</span></td>
       <td class="k">${esc(st)}</td><td></td></tr>`;
   }).join("");
-  const direct = p.observe_only ? "" : `<tr><td class="k">直连地址</td><td colspan="3">${esc(p.open || "—")}<span class="note">（内部端口实现细节；对外统一走无端口域名）</span></td></tr>`;
+  const direct = p.observe_only ? "" : `<tr><td class="k">直连地址</td><td colspan="3">${esc(p.open || "—")}<span class="note">（内部端口实现细节；域名形式为 http://域名:5670，在设置中启用）</span></td></tr>`;
   return `<div class="detail">
     <h4>概览</h4>
     <div class="table-scroll"><table>${extra}${intentRow}${src}${reasonRow}</table></div>
@@ -814,37 +818,121 @@ function draftSummary(payload) {
   return `服务 ${s.id || "(无 id)"} · ${s.name || "(未命名)"} · 源码 ${s.source || "?"} · 组件 ${(s.components || []).map(c => c.id).join(", ") || "无"}`;
 }
 
+function locoveStateChip(d) {
+  const map = {
+    not_installed: ["未安装", "mut"], installed_off: ["已安装 · 未开启", "mut"],
+    starting: ["启动中…", "warn"], available: ["可用", "ok"], failed: ["失败", "bad"],
+  };
+  const [label, cls] = map[d.state] || ["未知", "mut"];
+  return `<span class="badge ${cls}" id="locove-state">${label}</span>`;
+}
+
+function domainPreviewUrl(d) {
+  const ep = (snap?.projects || []).flatMap(p => p.endpoints || [])[0];
+  const host = ep ? ep.host : `<服务名>.${d.suffix}`;
+  return `http://${host}:${d.domain_port || 5670}${ep ? ep.open_path : "/"}`;
+}
+
 function locoveSettingsCard() {
   const d = locoveData;
   if (!d) return "";
   const st = d.settings || {use_domains: false, domain_form: "suffix"};
+  const opt = d.optin || {};
+  const port = d.domain_port || 5670;
+  const running = opt.active;
+  const stepLine = running || opt.error || (opt.steps || []).length
+    ? `<p class="note" role="status">${running ? `进行中：${opt.step || ""}…` : ""}
+       ${opt.error ? `<span class="reason bad">${esc(opt.error)}</span>` : ""}</p>` : "";
+  const enableBtn = st.use_domains ? "" :
+    `<button class="primary" ${running ? "disabled" : ""} onclick="askEnableDomain()">${running ? "操作进行中…" : "启用域名访问…"}</button>`;
+  const offBtns = !st.use_domains ? "" :
+    `<button ${running ? "disabled" : ""} onclick="locoveOp('disable')">关闭（回直连，停止 DNS/代理）</button>`;
   return `<div class="card" id="locove-settings">
-    <div class="card-head"><h3>域名跳转</h3><span class="note">默认本地 IP 直连；开启后打开服务改用无端口域名</span></div>
-    <div class="field"><label>使用域名</label>
-      <button class="${st.use_domains ? "primary" : ""}" onclick="locoveSetting('use_domains',${!st.use_domains})">${st.use_domains ? "已开启（经域名打开）" : "关闭（本地 IP 直连）"}</button>
-      <span class="inline-note">仅影响工具的打开/复制地址；DNS、入口与代理持续运行</span></div>
-    <div class="field"><label>域名形式</label>
+    <div class="card-head"><h3>域名访问（可选）</h3>${locoveStateChip(d)}
+      <span class="note">默认本地 IP 直连；域名是按需启用的高端口入口</span></div>
+    <div class="field"><label>访问形式</label>
+      <code class="mono">${esc(domainPreviewUrl(d))}</code>
+      <span class="inline-note">Caddy 直接监听回环 :${port}（普通用户运行，不经 80）；DNS 仅把 *.${esc(d.suffix)} 指到本机</span></div>
+    <div class="field"><label>端口</label>
+      <input type="number" min="1024" max="65535" value="${port}" style="max-width:110px"
+             aria-label="域名端口" onchange="locovePort(this.value)">
+      <span class="inline-note">启用前检查占用；控制面 47800/47891/5354 不可用。修改端口需重新启用/重启代理</span></div>
+    <div class="field"><label>操作</label>
+      ${enableBtn}${offBtns}
+      <button class="ghost" ${running ? "disabled" : ""} onclick="askUninstallDomain()">卸载域名件…</button></div>
+    ${st.use_domains ? `<div class="field"><label>域名形式</label>
       <span class="seg">
-        <button class="${st.domain_form === "suffix" ? "on" : ""}" ${st.use_domains ? "" : "disabled"} onclick="locoveSetting('domain_form','suffix')">后缀式</button>
-        <button class="${st.domain_form === "custom" ? "on" : ""}" ${st.use_domains ? "" : "disabled"} onclick="locoveSetting('domain_form','custom')">自定义</button>
+        <button class="${st.domain_form === "suffix" ? "on" : ""}" onclick="locoveSetting('domain_form','suffix')">后缀式</button>
+        <button class="${st.domain_form === "custom" ? "on" : ""}" onclick="locoveSetting('domain_form','custom')">自定义</button>
       </span>
-      <span class="inline-note">后缀式 = 每个服务派生 <code>&lt;service-id&gt;.${esc(d.suffix)}</code>；自定义 = 仅显式登记的域名</span></div>
-    <p class="note">手动在浏览器输入域名始终可用（不受此设置影响）；域名入口未就绪时打开动作自动回退直连并说明缺口。</p>
+      <span class="inline-note">后缀式 = 每个服务派生 <code>&lt;service-id&gt;.${esc(d.suffix)}</code>；自定义 = 仅显式登记的域名</span></div>` : ""}
+    ${stepLine}
+    <p class="note">启用需一次管理员授权（仅安装 .${esc(d.suffix)} 解析配置）；取消后继续直连，日常启停不再需要授权。DNS/代理仅本机回环可访问，不替换全局 DNS、不安装证书、不上云。</p>
     ${msgs["locove-settings"] ? `<p class="msg" role="status">${esc(msgs["locove-settings"])}</p>` : ""}
   </div>`;
+}
+
+async function locovePort(v) {
+  const port = parseInt(v, 10);
+  if (!port || port < 1024 || port > 65535) {
+    msgs["locove-settings"] = `端口 ${v} 无效（需 1024–65535）`; render(); return;
+  }
+  const [, res] = await api("POST", "/api/locove/settings", {domain_port: port});
+  msgs["locove-settings"] = res?.ok ? `域名端口已保存：${port}（生效需启用/重启域名模块）`
+                                     : `保存失败：${res?.error || ""}`;
+  await refresh(); render();
+}
+
+async function askEnableDomain() {
+  const d = locoveData || {};
+  const port = d.domain_port || 5670;
+  await showModal({title: "启用域名访问", okText: "安装并启用", bodyHtml: `
+    <p class="modal-line">启用后通过 <b>服务名.${esc(d.suffix || "locove")}:${port}</b> 访问。</p>
+    <p class="modal-line">需要安装仅针对 .${esc(d.suffix || "locove")} 的本地解析配置，并启动仅本机可访问的 DNS 和代理（回环 :${port}）。不会替换全局 DNS、安装证书或开放局域网访问。首次安装需要管理员确认；取消后可继续直连。</p>
+    <p class="modal-line muted">已安装的解析配置保留时，后续启用/关闭不再需要授权；卸载域名件可经设置页随时执行。</p>`,
+    onOk: async () => { await locoveOp("enable"); return true; }});
+}
+
+async function askUninstallDomain() {
+  await showModal({title: "卸载域名件", okText: "卸载", danger: true, bodyHtml: `
+    <p class="modal-line">将停止并移除本工具的 DNS/代理 agent 与路由配置；解析配置（resolver）默认保留——移除它需要再一次管理员确认。</p>
+    <p class="modal-line">服务登记、业务进程与数据不受影响；之后全部通过本地直连地址访问。</p>`,
+    onOk: async () => { await locoveOp("uninstall", {keep_resolver: true}); return true; }});
+}
+
+async function locoveOp(op, body = {}) {
+  pending["locove-op"] = true; msgs["locove-op"] = null; render();
+  try {
+    const [code, res] = await api("POST", `/api/locove/${op}`, body);
+    if (code === 200 && res?.ok) {
+      msgs["locove-settings"] = op === "enable" ? "域名模块启动中…（含管理员授权与验证，见下方进度）"
+        : op === "disable" ? "已关闭：直连模式，DNS/代理已停止（安装件保留）" : "卸载已启动（解析配置默认保留）";
+    } else {
+      msgs["locove-settings"] = `操作失败：${res?.error || code}`;
+    }
+  } catch (e) { msgs["locove-settings"] = "无法连接控制服务"; setConn(false); }
+  pending["locove-op"] = null;
+  await refresh(); render();
 }
 
 function locoveDiagnosticsCard() {
   const d = locoveData;
   if (!d) return "";
-  const row = (ok, name, detail) => `<tr><td class="k">${esc(name)}</td><td>${ok ? "✓ 正常" : "✗ " + esc(detail || "")}</td></tr>`;
+  const row = (ok, name, detail) => `<tr><td class="k">${esc(name)}</td><td>${ok === null || ok === undefined ? "—" : ok ? "✓ " + esc(detail || "正常") : "✗ " + esc(detail || "")}</td></tr>`;
   const pbRow = d.proxy_bypass ? row(d.proxy_bypass.ok, "代理绕行（浏览器路径）", d.proxy_bypass.detail) : "";
   const hosts = Object.entries(d.routes || {}).map(([h, r]) =>
     `<tr><td class="k">${esc(h)}</td><td>${r.state === "proxy" ? `代理中 → 127.0.0.1:${r.upstream_port}` : "明确不可用页（503）"}<span class="note">（${esc(r.service)}.${esc(r.component)}）</span></td></tr>`).join("");
-  return `<section class="card"><div class="card-head"><h3>域名入口诊断</h3><span class="note">*.${esc(d.suffix)} · 无端口访问 · 分层观测</span></div>
-    <div class="table-scroll"><table>${row(d.dns?.ok, "本地 DNS", d.dns?.detail)}${row(d.proxy?.ok, "代理（Caddy）", d.proxy?.detail)}${row(d.entry?.ok, "80 入口", d.entry?.detail)}${pbRow}${d.resolver_installed ? "" : `<tr><td class="k">split DNS</td><td>/etc/resolver/${esc(d.suffix)} 未安装。安装（一次管理员授权，只写本工具文件）：<br><code class="mono">sudo scripts/install-locove-system.sh --system</code></td></tr>`}</table></div>
-    ${pbRow && d.proxy_bypass?.ok === false ? `<p class="note">绕行立即修复：<code class="mono">sudo scripts/locove-proxy-bypass.sh ${esc(d.suffix)}</code>；永久修复需在网关客户端（如 Clash Verge → 设置 → 系统设置 → 代理绕过）加入 <code class="mono">*.${esc(d.suffix)}</code>。</p>` : ""}
-    ${hosts ? `<details ontoggle="if(this.isConnected)0"><summary>全部 ${Object.keys(d.routes || {}).length} 条路由</summary><div class="table-scroll"><table>${hosts}</table></div></details>` : `<p class="note">暂无登记公开入口的服务。</p>`}
+  const legacy = d.legacy_80
+    ? `<tr><td class="k">旧 80 入口</td><td>仍登记（V3.4 转发器）。退役：<code class="mono">sudo scripts/retire-locove-80.sh --apply</code>（旧无端口书签将失效，改用 :${d.domain_port} 地址）</td></tr>` : "";
+  return `<section class="card"><div class="card-head"><h3>域名诊断</h3><span class="note">*.${esc(d.suffix)}:${d.domain_port} · 仅在启用域名时相关</span></div>
+    <div class="table-scroll"><table>
+      ${row(d.dns?.ok, `本地 DNS（:${5354}）`, d.dns?.detail)}
+      ${row(d.proxy?.ok, `代理（Caddy :${d.domain_port}）`, d.proxy?.detail)}
+      ${row(d.resolver?.ok, `split DNS（/etc/resolver/${esc(d.suffix)}）`, d.resolver?.detail)}
+      ${d.state !== "not_installed" ? pbRow : ""}${legacy}
+    </table></div>
+    ${d.proxy_bypass?.ok === false && d.state !== "not_installed" ? `<p class="note">绕行立即修复：<code class="mono">sudo scripts/locove-proxy-bypass.sh ${esc(d.suffix)}</code>；永久修复需在网关客户端（如 Clash Verge → 设置 → 系统设置 → 代理绕过）加入 <code class="mono">*.${esc(d.suffix)}</code>。</p>` : ""}
+    ${hosts ? `<details><summary>全部 ${Object.keys(d.routes || {}).length} 条路由</summary><div class="table-scroll"><table>${hosts}</table></div></details>` : `<p class="note">暂无登记公开入口的服务。</p>`}
     </section>`;
 }
 

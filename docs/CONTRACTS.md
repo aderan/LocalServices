@@ -466,3 +466,48 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
 - GUI（R6 定稿）：统一侧栏（服务/项目 + 管理区），设置独立成页、草稿归入添加流程；
   服务行 = 一个主操作 + 稳定日志入口 + ⋯（次要动作收拢）；行可键盘展开分层详情
   （概览/入口/组件/依赖/日志）。域名健康条为一行摘要，完整诊断/安装指引在设置页披露。
+
+## V3.7 可靠性修复 + 可选 5670 域名模块（D1–D4，2026-11-06）
+
+**D1 可靠性（review 2026-11-05 S1/S2/S3/UX1/UX2）**：
+- S1 停止优先：`_schedule_updates` 提交更新操作前、以及被排队线程执行前都复核最新
+  `Store.intent_read()`；已停止服务绝不被旧快照重启（排队后停止 → 线程放弃并释放 op 槽）。
+- S2 resolver 读失败 ≠ 已确认归属：`uninstall` 在内容不可读时拒绝删除（reason=unreadable）。
+- S3 观测不写意图：`Store.intent_read()` 只读推导（V2.9 缺省语义不变）；写入口仅
+  `intent()`（reconcile/调度惰性播种）与 `set_intent()`。`project_status` 走只读。
+- UX1 行键盘展开仅在行自身聚焦时处理；地址 chip 的点击 stopPropagation——Enter/Space
+  在 chip 上是复制语义。UX2 `logReading()`（悬停或选区在 `.detail pre` 内）同时门控
+  3s 轮询与 `render()` 整树重建，选择/焦点/滚动不被打断。
+
+**D2 网络件退出默认路径**：
+- `scripts/install.sh` 不再安装/引导任何 locove 网络件（普通升级不偷偷重装）。
+- daemon 的路由收敛经 `locove.gated_sync(settings, ...)`：`use_domains=false`（默认/
+  未安装）时不运行任何收敛、不写任何 locove 文件。
+- `locove.module_status(settings)` 状态机：`not_installed / installed_off / starting /
+  available / failed`（starting=启用后 ENABLE_GRACE 宽限内未就绪）；分层报 dns/proxy/
+  resolver 各自原因；`legacy_80` 单独报告旧 80 转发器残留，不参与新数据面健康。
+  未安装/未开启不产生 UI 告警。
+
+**D3 可选 5670 按需启用**：
+- 业务代理端口：`settings.domain_port`（缺省 **5670**，1024–65535，禁控制面
+  47800/47891/5354）；`locove.effective_port()` 是唯一裁决（显式参数 > settings > env >
+  缺省）。Caddy 直接监听回环 `:domain_port`（`http_port`），**不再有 80 转发路径**。
+- 公开地址统一 `http://<host>:<domain_port><open_path>`：`project_status().endpoints[]
+  .public_url` 为单一事实源（UI chip/详情、`lsctl endpoints`、Skill 报告同源）；
+  `Project.public_urls(port)` 同步带端口。控制面 47800、DNS 5354、admin 47891 不变。
+- `POST /api/locove/enable {port?}` / `disable` / `uninstall {keep_resolver}`（后台线程
+  执行，进度并入 `GET /api/locove` 的 `optin` 面）；`localservices/locove_optin.py`：
+  preflight（端口占用按 lsof 进程名判定，caddy 缺失、resolver foreign/unreadable 先败）
+  → 安装用户件（`install-locove-system.sh --user --port N`）→ 本地验证 → resolver 缺失时
+  经 `osascript ... with administrator privileges` 当次授权安装（取消=取消授权）→ 系统
+  解析端到端验证 → 才写 `use_domains=true`+`domains_enabled_at`。全新安装被取消/早期
+  失败时回滚用户件（零安装副作用）；既有安装不因取消被拆；验证失败不写启用成功。
+- 关闭=设置 off + bootout dns/proxy agent（plists/resolver 保留，状态 installed_off）；
+  卸载=用户件必删，resolver 经授权可选删（S2 守卫），旧 80 件归 retire 脚本。
+- `lsctl locove-enable/locove-disable/locove-uninstall`；`locove-domains --port`；
+  `endpoints` 输出模块状态/端口/legacy_80。
+
+**D4 旧 80 迁移**：`scripts/retire-locove-80.sh`（默认 dry-run 盘点；`sudo ... --apply
+[--remove-resolver]` 只移除本工具专属命名的 entry plist/libexec/日志目录；resolver
+默认保留供 5670 使用；不碰业务进程/数据/登记/他人文件）。缺管理员授权时其余功能
+照常，残留如实记录，不伪称 80 已退役。

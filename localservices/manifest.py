@@ -169,9 +169,11 @@ class Project:
     def comp_cwd(self, c: Component) -> Path:
         return (self.source / c.cwd).resolve()
 
-    def public_urls(self) -> list[str]:
-        """无端口公开地址（http://<host><open_path>）；供打开入口与 UI 主地址使用。"""
-        return [f"http://{e.host}{_norm_open_path(e.open_path)}" for e in self.endpoints]
+    def public_urls(self, port: int | None = None) -> list[str]:
+        """公开地址（D3：带业务端口 http://<host>:<port><open_path>，缺省由调用方
+        传入 5670 等实际配置端口）；供打开入口与 UI 主地址使用。"""
+        suffix = f":{port}" if port else ""
+        return [f"http://{e.host}{suffix}{_norm_open_path(e.open_path)}" for e in self.endpoints]
 
     def component_by_id(self, cid: str) -> Component | None:
         return next((c for c in self.components if c.id == cid), None)

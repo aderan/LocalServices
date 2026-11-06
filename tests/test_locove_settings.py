@@ -50,7 +50,8 @@ class SettingsEnv(unittest.TestCase):
 class RegistrySettingsTest(SettingsEnv):
     def test_defaults_are_direct_ip(self):
         self.assertEqual(self.reg.locove_settings(),
-                         {"use_domains": False, "domain_form": "suffix"})
+                         {"use_domains": False, "domain_form": "suffix",
+                          "domain_port": 5670, "domains_enabled_at": None})
 
     def test_persist_and_roundtrip(self):
         st = self.reg.locove_settings_update({"use_domains": True, "domain_form": "custom"})
@@ -133,8 +134,8 @@ class OpenGatingTest(SettingsEnv):
              patch("localservices.controller.procs.probe", return_value=(False, "")), \
              patch("localservices.controller.procs.all_cwds", return_value={}), \
              patch.object(ctl, "domain_settings", return_value=settings), \
-             patch("localservices.locove.entry_status",
-                   return_value={"entry": {"ok": entry_ok}}), \
+             patch("localservices.locove.module_status",
+                   return_value={"state": "available" if entry_ok else "failed"}), \
              patch("localservices.controller.subprocess") as sub:
             res = ctl.open("snap")
             return res, sub.Popen.call_args[0][0][1]
@@ -147,13 +148,18 @@ class OpenGatingTest(SettingsEnv):
 
     def test_enabled_suffix_uses_domain(self):
         res, url = self._open(self._ctl(), {"use_domains": True, "domain_form": "suffix"})
-        self.assertEqual(url, "http://snap.locove/")
+        self.assertEqual(url, "http://snap.locove:5670/")
         self.assertNotIn("note", res)
 
     def test_enabled_custom_without_explicit_falls_back_direct(self):
         res, url = self._open(self._ctl(), {"use_domains": True, "domain_form": "custom"})
         self.assertEqual(url, "http://localhost:8821/")
         self.assertNotIn("note", res)  # 该服务本无显式域名：直连是正确行为，不是故障
+
+    def test_enabled_custom_port_uses_configured(self):
+        res, url = self._open(self._ctl(), {"use_domains": True, "domain_form": "suffix",
+                                            "domain_port": 6789})
+        self.assertEqual(url, "http://snap.locove:6789/")
 
     def test_enabled_entry_down_notes_gap(self):
         res, url = self._open(self._ctl(), {"use_domains": True, "domain_form": "suffix"},

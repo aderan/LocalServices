@@ -202,7 +202,7 @@ open_path = "/zh"
         snap = ctl.refresh_snapshot()
         proj = next(p for p in snap["projects"] if p["id"] == "snap")
         self.assertEqual(proj["endpoints"][0]["host"], "snap.locove")
-        self.assertEqual(proj["endpoints"][0]["public_url"], "http://snap.locove/zh")
+        self.assertEqual(proj["endpoints"][0]["public_url"], "http://snap.locove:5670/zh")
 
     def _open_with_patches(self, entry_ok: bool, use_domains: bool = True) -> tuple[dict, object]:
         ctl = self._controller_with_service()
@@ -212,10 +212,11 @@ open_path = "/zh"
         sub_mgr = patch("localservices.controller.subprocess")
         sub_mock = sub_mgr.start()
         self.addCleanup(sub_mgr.stop)
-        status = {"entry": {"ok": True}} if entry_ok else {"entry": {"ok": False, "detail": "80 未监听"}}
-        with patch("localservices.locove.entry_status", return_value=status), \
+        status = {"state": "available"} if entry_ok else {"state": "failed"}
+        with patch("localservices.locove.module_status", return_value=status), \
              patch.object(ctl, "domain_settings",
-                          return_value={"use_domains": use_domains, "domain_form": "suffix"}):
+                          return_value={"use_domains": use_domains, "domain_form": "suffix",
+                                        "domain_port": 5670}):
             res = ctl.open("snap")
         return res, sub_mock
 
@@ -231,7 +232,7 @@ open_path = "/zh"
     def test_open_prefers_public_url_when_entry_healthy(self):
         res, sub_patch = self._open_with_patches(entry_ok=True)
         self.assertTrue(res["ok"])
-        self.assertEqual(sub_patch.Popen.call_args[0][0][1], "http://snap.locove/zh")
+        self.assertEqual(sub_patch.Popen.call_args[0][0][1], "http://snap.locove:5670/zh")
         self.assertNotIn("note", res)
 
     def test_open_falls_back_to_direct_with_note_when_entry_down(self):

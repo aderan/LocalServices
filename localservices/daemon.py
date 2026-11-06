@@ -21,11 +21,20 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__, paths
-from . import agent_api, locove, register_api, resources
+from . import agent_api, locove, locove_optin, register_api, resources
 from .controller import Controller
 
 WEB = Path(__file__).resolve().parent / "web"
 STARTED = time.time()
+
+
+def _locove_settings() -> dict:
+    """域名模块设置读取（失败按默认直连处理，不拖垮健康面）。"""
+    try:
+        from .registry import Registry
+        return Registry().locove_settings()
+    except Exception:  # noqa: BLE001
+        return {"use_domains": False, "domain_form": "suffix", "domain_port": 5670}
 
 
 def load_token() -> str:
@@ -121,12 +130,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, resources.inventory())
                 return
             if u.path == "/api/locove":
-                st = locove.entry_status()
-                try:
-                    from .registry import Registry
-                    st["settings"] = Registry().locove_settings()
-                except Exception:  # noqa: BLE001 — 设置读取失败不拖垮健康面
-                    st["settings"] = {"use_domains": False, "domain_form": "suffix"}
+                st = locove.module_status(_locove_settings())
+                st["optin"] = locove_optin.progress()
                 self._send(200, st)
                 return
             if u.path == "/api/drafts":
@@ -183,7 +188,37 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}") if length else {}
             if u.path == "/api/locove/settings":
-                self._send(*register_api.handle_locove_settings_post(body))
+                res = register_api.handle_locove_settings_post(body)
+                ctl._domain_settings_cache = (0.0, {})  # 设置变更立即生效（sync 门控/URL 端口）
+                self._send(*res)
+                return
+            if u.path in ("/api/locove/enable", "/api/locove/disable", "/api/locove/uninstall"):
+                # D3：域名模块生命周期操作。enable 可能等待管理员当次授权（osascript
+                # 弹窗），一律后台执行；进度经 GET /api/locove 的 optin 面轮询。
+                if locove_optin.progress().get("active"):
+                    self._send(409, {"ok": False, "error": "域名模块操作进行中，请稍候"})
+                    return
+                op = u.path.rsplit("/", 1)[-1]
+                if op == "enable":
+                    port = body.get("port")
+                    fn = lambda: locove_optin.enable(int(port) if port is not None else None)  # noqa: E731
+                elif op == "disable":
+                    fn = locove_optin.disable
+                else:
+                    keep = bool(body.get("keep_resolver", True))
+                    fn = lambda: locove_optin.uninstall(keep_resolver=keep)  # noqa: E731
+
+                def _run_op():
+                    try:
+                        fn()
+                    except Exception:  # noqa: BLE001 — 进度面已记录错误
+                        traceback.print_exc()
+                    finally:
+                        ctl._domain_settings_cache = (0.0, {})  # 门控/URL 端口立即生效
+                        threading.Thread(target=ctl.refresh_snapshot, daemon=True).start()
+
+                threading.Thread(target=_run_op, daemon=True).start()
+                self._send(200, {"ok": True, "started": op, "progress": locove_optin.progress()})
                 return
             if u.path == "/api/refresh":
                 self._send(200, self.ctl.refresh_snapshot(wait=6))
@@ -333,16 +368,11 @@ def main() -> int:
     ctl.refresh_snapshot()
     loop(ctl.reconcile, float(os.environ.get("LOCALSERVICES_RECONCILE", "5")), "reconcile")
     loop(ctl.refresh_snapshot, float(os.environ.get("LOCALSERVICES_STATUS", "3")), "status")
-    # Locove 无端口路由收敛：登记/运行事实变化 → routes.json/Caddyfile → Caddy 热加载
+    # Locove 可选域名模块（D2/D3）：仅在用户开启域名时收敛路由（routes.json/Caddyfile
+    # → Caddy 热加载）。默认（未开启/未安装）不运行任何网络收敛、不写任何 locove 文件；
+    # 启用/关闭/卸载流程见 locove_optin（enable/disable/uninstall 端点）。
     def _locove_sync():
-        # V3.5：域名形式=custom 时只路由显式 endpoints；域名跳转开关只影响打开行为，
-        # 不影响已交付的基础设施收敛
-        settings = ctl.domain_settings()
-        locove.sync(ctl.projects, ctl.snapshot(), settings=settings)
-    try:
-        _locove_sync()
-    except Exception:  # noqa: BLE001 — caddy 缺失等环境问题不阻塞控制面；loop 周期重试
-        traceback.print_exc()
+        locove.gated_sync(ctl.domain_settings(), ctl.projects, ctl.snapshot())
     loop(_locove_sync, float(os.environ.get("LOCALSERVICES_LOCOVE_SYNC", "5")), "locove")
     try:
         srv.serve_forever()

@@ -209,7 +209,7 @@ def main(argv=None) -> int:
     sp = sub.add_parser("resources", help="shared docker/compose resource inventory")
     sp.add_argument("--json", action="store_true")
 
-    sp = sub.add_parser("endpoints", help="Locove 无端口公开入口与域名层健康（V3）")
+    sp = sub.add_parser("endpoints", help="Locove 公开入口与域名模块健康（V3/D3，域名带 :5670 端口）")
     sp.add_argument("--json", action="store_true")
 
     sp = sub.add_parser("locove-domains", help="域名跳转设置（V3.5：默认本地 IP 直连）")
@@ -217,6 +217,23 @@ def main(argv=None) -> int:
     mg.add_argument("--on", dest="use", action="store_true")
     mg.add_argument("--off", dest="use", action="store_false")
     sp.add_argument("--form", choices=["suffix", "custom"])
+    sp.add_argument("--port", type=int, help="业务域名端口（缺省 5670；修改后需重新启用）")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("locove-enable", help="按需启用域名模块（D3：预检→用户件→必要时管理员授权装 resolver→验证）")
+    sp.add_argument("--port", type=int)
+    sp.add_argument("--wait", type=int, default=90, help="等待启用完成秒数（含管理员授权等待）")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("locove-disable", help="关闭域名（回直连；停止 DNS/代理，安装件保留）")
+    sp.add_argument("--json", action="store_true")
+
+    sp = sub.add_parser("locove-uninstall", help="卸载域名件（用户级必删；resolver 默认保留）")
+    mg2 = sp.add_mutually_exclusive_group()
+    mg2.add_argument("--remove-resolver", dest="keep_resolver", action="store_false",
+                     help="连 .locove 解析配置一并移除（需管理员授权）")
+    mg2.add_argument("--keep-resolver", dest="keep_resolver", action="store_true")
+    sp.set_defaults(keep_resolver=True)
     sp.add_argument("--json", action="store_true")
 
     sp = sub.add_parser("export", help="export a shareable service definition (no credentials, no local state)")
@@ -428,14 +445,60 @@ def main(argv=None) -> int:
                 body["use_domains"] = a.use
             if a.form:
                 body["domain_form"] = a.form
+            if a.port:
+                body["domain_port"] = a.port
             code, res = call("POST", "/api/locove/settings", body) if body else call("GET", "/api/locove/settings")
             if a.json:
                 print(json.dumps(res, ensure_ascii=False, indent=1))
                 return 0 if res.get("ok") else 1
             st = res.get("settings") or {}
             form_label = "后缀式 <id>.locove" if st.get("domain_form") == "suffix" else "自定义（仅显式域名）"
-            print(f"域名跳转：{'开' if st.get('use_domains') else '关（默认，本地 IP 直连）'} · 形式：{form_label}")
+            print(f"域名跳转：{'开' if st.get('use_domains') else '关（默认，本地 IP 直连）'} · 形式：{form_label}"
+                  + f" · 端口：{st.get('domain_port') or 5670}")
             return 0 if res.get("ok") else 1
+        if a.cmd in ("locove-enable", "locove-disable", "locove-uninstall"):
+            op = a.cmd.removeprefix("locove-")
+            body = {}
+            if op == "enable" and a.port:
+                body["port"] = a.port
+            if op == "uninstall":
+                body["keep_resolver"] = bool(a.keep_resolver)
+            code, res = call("POST", f"/api/locove/{op}", body, timeout=15)
+            if code != 200 or not res.get("ok"):
+                print(json.dumps(res, ensure_ascii=False, indent=1) if a.json
+                      else f"操作未受理：{res.get('error') or res}")
+                return 1
+            if op == "enable" and not a.json:
+                print("域名模块启动中（含管理员授权与验证）。进度：")
+            deadline = time.time() + (a.wait if hasattr(a, "wait") and a.wait else 60)
+            last = None
+            while time.time() < deadline:
+                _, st = call("GET", "/api/locove", timeout=10)
+                p = st.get("optin") or {}
+                if not p.get("active"):
+                    err = p.get("error")
+                    if a.json:
+                        print(json.dumps({"ok": not err, "state": st.get("state"),
+                                          "optin": p}, ensure_ascii=False, indent=1))
+                        return 0 if not err else 1
+                    if err:
+                        print(f"未完成：{err}")
+                        return 1
+                    print(f"完成：模块状态 {st.get('state')}（端口 {st.get('domain_port')}）"
+                          + ("；旧 80 入口仍在，退役：sudo scripts/retire-locove-80.sh --apply"
+                             if st.get("legacy_80") else ""))
+                    return 0
+                line = f"  {p.get('step') or ''}"
+                if line != last:
+                    print(line)
+                    last = line
+                time.sleep(1)
+            if a.json:
+                print(json.dumps({"ok": False, "error": "timeout", "state": None},
+                                 ensure_ascii=False))
+            else:
+                print("仍在进行（如等待管理员授权）；稍后用 lsctl endpoints 查看状态")
+            return 0 if a.json else 0
         if a.cmd == "endpoints":
             _, snap = call("GET", "/api/status", timeout=15)
             _, st = call("GET", "/api/locove", timeout=10)
@@ -452,17 +515,24 @@ def main(argv=None) -> int:
                 print(f"{r['host']:<32} {str(r['service']):<20} {str(r['state']):<10} {r['public_url']}")
             if not rows:
                 print("（尚无登记了公开入口的服务）")
-            d, en, px = st.get("dns", {}), st.get("entry", {}), st.get("proxy", {})
+            d, rv, px = st.get("dns", {}), st.get("resolver", {}), st.get("proxy", {})
             pb = st.get("proxy_bypass", {})
+            state_labels = {"not_installed": "未安装（可选能力，默认直连）", "installed_off": "已安装 · 未开启",
+                            "starting": "启动中", "available": "可用", "failed": "失败"}
             mark = lambda ok: "✅" if ok else "❌"  # noqa: E731
-            st = st.get("settings") or {}
-            print(f"\n域名层：dns {mark(d.get('ok'))}（{d.get('detail', '')}）  "
-                  f"代理 {mark(px.get('ok'))}（{px.get('detail', '')}）  "
-                  f"入口 {mark(en.get('ok'))}（{en.get('detail', '')}）  "
-                  f"代理绕行 {mark(pb.get('ok', True))}（{pb.get('detail', '')}）")
-            print(f"域名跳转：{'开' if st.get('use_domains') else '关（默认，本地 IP 直连）'} · "
-                  f"形式：{'后缀式 <id>.locove' if st.get('domain_form') == 'suffix' else '自定义（仅显式域名）'}"
-                  + ("" if st.get("use_domains") else "（开启：lsctl locove-domains --on）"))
+            settings = st.get("settings") or {}
+            print(f"\n域名模块：{state_labels.get(st.get('state'), st.get('state'))}"
+                  f"（端口 {st.get('domain_port')}）")
+            if st.get("state") != "not_installed":
+                print(f"分层：dns {mark(d.get('ok'))}（{d.get('detail', '')}）  "
+                      f"代理 {mark(px.get('ok'))}（{px.get('detail', '')}）  "
+                      f"解析配置 {mark(rv.get('ok'))}（{rv.get('detail', '')}）  "
+                      f"代理绕行 {mark(pb.get('ok', True))}（{pb.get('detail', '')}）")
+            if st.get("legacy_80"):
+                print("旧 80 入口仍登记（V3.4 转发器）；退役：sudo scripts/retire-locove-80.sh --apply")
+            print(f"域名跳转：{'开' if settings.get('use_domains') else '关（默认，本地 IP 直连）'} · "
+                  f"形式：{'后缀式 <id>.locove' if settings.get('domain_form') == 'suffix' else '自定义（仅显式域名）'}"
+                  + ("" if settings.get("use_domains") else "（启用：lsctl locove-enable）"))
             return 0
         if a.cmd == "resources":
             code, res = call("GET", "/api/resources", timeout=20)

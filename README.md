@@ -3,33 +3,37 @@
 本机子项目的统一工作台（产品名 Locove／洛湾；`LocalServices` 为仓库名与兼容标识）：菜单栏 + 主窗口 App + 本地 Dashboard + `lsctl` CLI + Codex Skill。
 每个子项目从**当前源码目录**启动（不打包副本），源码变化按策略自动生效。
 工作台以 **Project**（多目录、多服务）组织，可用本机 Codex / Claude Code 识别项目启动方式并注册服务。
-每个可浏览服务获得稳定的**无端口专属域名**（如 `http://buildbase.locove/zh`）——浏览器主入口不出现端口。
+默认一切打开/复制动作用**本地直连地址**；域名是按需启用的高端口入口（`http://buildbase.locove:5670/zh`）。
 
-## 无端口域名（Locove domains）
+## 可选域名访问（Locove domains，默认不安装不运行）
 
-- **默认本地 IP 直连**：工具打开服务一律用直连地址。域名跳转为可选能力——在工作台
-  「设置 → 域名跳转」或 `lsctl locove-domains --on --form suffix|custom` 同时开启
-  「使用域名」与「域名形式」后才经域名打开（suffix=每个服务 `<id>.locove`；custom=仅显式登记的域名）。
-  域名基础设施保持运行，浏览器手动输入域名始终可用。编辑服务定义不会把派生入口意外固化为
-  显式声明（仅真正编辑入口时才固化）。
+- **默认本地 IP 直连**：普通安装不安装 DNS/Caddy/系统 resolver，daemon 不运行任何域名收敛。
+  查询、登记、打开、日志、启停完全不依赖网络件；未安装域名不是故障。
+- **按需启用**（设置页「域名访问」或 `lsctl locove-enable [--port 5670]`）：预检（端口占用/caddy/resolver
+  归属）→ 安装用户级 DNS + Caddy agent →（需要时）经 macOS 管理员**当次**授权安装仅 `.locove` 的
+  split-DNS resolver → 验证系统解析与代理 → 才标记启用成功。取消授权零安装副作用、继续直连；
+  绝不保存管理员密码。关闭（`lsctl locove-disable`）停止 DNS/代理并回直连（安装件保留、如实展示）；
+  卸载（设置页或 `lsctl locove-uninstall`）只删本工具文件。
 - 已登记服务自动获得 `<service-id>.locove`（稳定：锚定服务 id，显示名修改不影响；也可在注册 payload
-  `service.endpoints[]` 显式指定 host/组件/落点）。路由按**每个入口的目标组件**判定：
-  组件就绪（或已验证归属的外部实例实际端口）才转发；停止/未就绪显示明确不可用页（503），
-  移除登记即撤销路由——已停止组件的端口即使被无关程序占用也不会被转发。
+  `service.endpoints[]` 显式指定 host/组件/落点）。公开地址统一带业务端口（缺省 **5670**，可在设置中
+  更换并做冲突预检）。路由按**每个入口的目标组件**判定：组件就绪（或已验证归属的外部实例实际端口）
+  才转发；停止/未就绪显示明确不可用页（503），移除登记即撤销路由——已停止组件的端口即使被无关程序
+  占用也不会被转发。
 - 组成：用户级本地 DNS（`com.mybrain.ls.locove.dns`，127.0.0.1:5354，只回答已登记名字）+
-  Caddy 数据面（`com.mybrain.ls.locove.proxy`，**所有监听仅回环 127.0.0.1/::1**，按精确 Host 路由）+
-  80 端口最小特权转发器（root LaunchDaemon，绑定后降权 nobody，仅字节转发）。daemon 周期把
-  「登记 × 运行事实」收敛为路由，配置先校验再热加载，失败保持上次有效配置。
-- 系统级 wiring（`/etc/resolver/locove` split DNS + 80 入口）需要一次管理员授权：
-  `sudo scripts/install-locove-system.sh --system`（幂等；resolver 文件带管理标记，他人配置
-  绝不覆盖/删除；sudo 全安装时用户级件以目标用户身份落盘）。卸载 `scripts/uninstall-locove-system.sh`
-  只删除本工具自己的文件。健康分层查看：`lsctl endpoints` 或工作台「设置」页。
+  Caddy 数据面（`com.mybrain.ls.locove.proxy`，直接监听回环 **:5670**（普通用户可绑定，不经 80 转发），
+  **所有监听仅回环 127.0.0.1/::1**，按精确 Host 路由）。daemon 仅在域名开启时把「登记 × 运行事实」
+  收敛为路由，配置先校验再热加载，失败保持上次有效配置。
+- 系统级 wiring 仅一项：`/etc/resolver/locove` split DNS（resolver 文件带管理标记，他人配置绝不
+  覆盖/删除；读失败拒绝删除）。健康分层查看：`lsctl endpoints` 或工作台「设置」页（未安装/已装未开/
+  启动中/可用/失败各态如实区分，旧 80 入口残留单独提示）。
 - Vite 等按 Host 校验的开发服务器需在项目配置显式允许域名（如 `server.allowedHosts: ["xxx.locove"]`），
   不要设为 `true`；Next dev 无需额外配置。
 - **系统代理环境注意**：本机网关客户端（Clash Verge）会用自家模板重写系统代理绕行表，
   可能覆盖追加的 `*.locove` → 浏览器"无法访问"（服务器链路本身正常）。临时修复
   `sudo scripts/locove-proxy-bypass.sh`；永久修复在 Clash Verge → 设置 → 系统设置 →
   代理绕过中加入 `*.locove`。`lsctl endpoints` 的"代理绕行"层会如实显示该状态。
+- **旧 80 无端口入口（V3.4 时代）已退役为迁移项**：`scripts/retire-locove-80.sh`（先 dry-run 盘点）
+  经管理员授权移除 80 转发器；旧书签 `http://xxx.locove/` 请改用 `http://xxx.locove:5670/`。
 
 ## 安装 / 更新 / 卸载
 
@@ -64,7 +68,9 @@ lsctl start-group|stop-group|restart-group <group>          # 旧组命令兼容
 lsctl projects [--json]                                      # 工作台结构
 lsctl project-new --name N [--dir P]... ；lsctl project-rename <id> --name N
 lsctl dir-add <pid> --path P ；lsctl dir-remove <pid> <dir-id>
-lsctl endpoints [--json]                                     # 无端口域名清单 + dns/代理/入口分层健康
+lsctl endpoints [--json]                                     # 域名清单（含 :5670 端口）与域名模块分层健康
+lsctl locove-enable [--port 5670] [--wait N]                 # 按需启用域名模块（含当次管理员授权）
+lsctl locove-disable|locove-uninstall [--remove-resolver]    # 关闭回直连 / 卸载域名件
 lsctl register [--file F|--stdin] [--json]                   # 注册（机器可读；409→退出码 5；endpoints 可选）
 lsctl analyze <dir> --agent codex|claude [--focus ...] [--wait S] [--json]
 lsctl agents|agent-scan|agent-verify <kind>|jobs <id>|resources [--json]

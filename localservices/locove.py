@@ -1,13 +1,15 @@
-"""Locove 无端口访问面：路由事实（routes.json）、Caddy 配置生成/校验/激活/回退、分层健康。
+"""Locove 可选域名访问面（D2/D3）：路由事实（routes.json）、Caddy 配置生成/校验/激活/回退、分层健康。
 
-职责边界（Goal V3.4）：
-- DNS（locove_dns.py）只把已登记名字解析到回环；未知名 NXDOMAIN。
-- 入口转发（locove_entry.py，root）只做 127.0.0.1:80 → 127.0.0.1:<proxy_port> 的字节转发。
-- 数据面由 Caddy 承载：本模块生成 Caddyfile，先 `caddy validate` 再优雅 reload；
+职责边界（Goal V3.4 + D2/D3 修订）：
+- DNS（locove_dns.py）只把已登记名字解析到回环；未知名 NXDOMAIN（高端口 5354）。
+- 数据面由 Caddy 承载：直接监听回环业务端口（缺省 5670，普通用户可绑定，
+  不经 80 转发器）；本模块生成 Caddyfile，先 `caddy validate` 再优雅 reload；
   任一步失败保留上一次有效配置（文件与运行态都不动），错误可诊断。
+- 整个模块默认不安装不运行（D2）；启用/关闭/卸载流程见 locove_optin.py（D3）。
 - 上游端口永远来自登记组件的实际监听（内部端口是实现细节，不进入用户可见地址）。
 
-routes.json 是 DNS/代理/UI 共享的单一事实，由 daemon 周期收敛（sync）。"""
+routes.json 是 DNS/代理/UI 共享的单一事实，由 daemon 周期收敛（sync，仅在
+域名模块开启时运行）。"""
 
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from pathlib import Path
 
 from . import paths
 
-DEFAULT_PROXY_PORT, DEFAULT_DNS_PORT, DEFAULT_ENTRY_PORT, DEFAULT_ADMIN_PORT = 47890, 5354, 80, 47891
+DEFAULT_PROXY_PORT, DEFAULT_DNS_PORT, DEFAULT_ENTRY_PORT, DEFAULT_ADMIN_PORT = 5670, 5354, 80, 47891
 
 
 def _env_port(name: str, default: int) -> int:
@@ -56,6 +58,25 @@ def locove_dir() -> Path:
     return paths.home() / "locove"
 
 
+def launchagents_dir() -> Path:
+    """用户 LaunchAgents 目录（测试经 LOCOVE_LAUNCHAGENTS 重定向）。"""
+    return Path(os.environ.get("LOCOVE_LAUNCHAGENTS",
+                               str(Path.home() / "Library" / "LaunchAgents")))
+
+
+def agent_plist(job: str) -> Path:
+    """job ∈ {dns, proxy}；这些 plist 只由本工具的安装/启用流程写入。"""
+    return launchagents_dir() / f"com.mybrain.ls.locove.{job}.plist"
+
+
+LEGACY_ENTRY_PLIST = "/Library/LaunchDaemons/com.mybrain.ls.locove.entry.plist"
+
+
+def legacy_80_present() -> bool:
+    """旧 80 系统转发器（V3.4 时代）是否仍登记——迁移面事实，不代表当前数据面。"""
+    return Path(LEGACY_ENTRY_PLIST).exists()
+
+
 def routes_file() -> Path:
     return locove_dir() / "routes.json"
 
@@ -67,6 +88,16 @@ def caddyfile() -> Path:
 def suffix() -> str:
     from . import manifest
     return manifest.domain_suffix()
+
+
+def effective_port(port: int | None = None, settings: dict | None = None) -> int:
+    """业务代理端口（D3）的唯一裁决：显式参数 > settings.domain_port > 环境覆盖 >
+    缺省 5670。所有渲染/落盘/健康检查共用，避免各调用方拼出不同端口。"""
+    if port is not None:
+        return int(port)
+    if settings and settings.get("domain_port"):
+        return int(settings["domain_port"])
+    return proxy_port()
 
 
 # ---------- 期望路由（登记 × 运行事实） ----------
@@ -132,9 +163,11 @@ def desired_routes(projects: dict, snapshot: dict | None = None,
     return routes
 
 
-def routes_payload(routes: dict[str, Route]) -> dict:
+def routes_payload(routes: dict[str, Route], port: int | None = None,
+                   settings: dict | None = None) -> dict:
+    p = effective_port(port, settings)
     return {"schemaVersion": 1, "suffix": suffix(), "generated_at": time.time(),
-            "proxy_port": proxy_port(),
+            "proxy_port": p, "domain_port": p,
             "routes": {h: r.to_json() for h, r in sorted(routes.items())}}
 
 
@@ -156,16 +189,18 @@ div{{text-align:center}}h1{{font-size:17px;font-weight:600}}p{{color:#98989d;fon
 <body><div><h1>{host} 未运行</h1><p>服务已停止或未就绪。在 Locove／洛湾 工作台启动后即可访问。</p></div></body></html>"""
 
 
-def render_caddyfile(routes: dict[str, Route]) -> str:
+def render_caddyfile(routes: dict[str, Route], port: int | None = None,
+                     settings: dict | None = None) -> str:
     """按精确 Host 生成站点；无匹配 Host 落到 catch-all 404（不代理任何未知主机）。
 
     所有站点与 catch-all 经全局 default_bind 只监听回环（review R1）——admin 的
-    127.0.0.1 不约束业务 listener，必须显式绑定；否则数据面会开在所有网卡上。"""
+    127.0.0.1 不约束业务 listener，必须显式绑定；否则数据面会开在所有网卡上。
+    业务端口（缺省 5670）由 effective_port 统一裁决。"""
     parts = [
         "{",
         f"\tadmin 127.0.0.1:{admin_port()}",
         "\tauto_https off",
-        f"\thttp_port {proxy_port()}",
+        f"\thttp_port {effective_port(port, settings)}",
         "\tdefault_bind 127.0.0.1 ::1",
         "\tgrace_period 3s",
         "}",
@@ -230,14 +265,15 @@ def _caddy_control_enabled() -> bool:
     return not os.environ.get("LOCALSERVICES_HOME")
 
 
-def apply_routes(routes: dict[str, Route]) -> dict:
+def apply_routes(routes: dict[str, Route], port: int | None = None,
+                 settings: dict | None = None) -> dict:
     """把期望路由落为运行态。顺序：生成 → validate → 写 routes.json/Caddyfile → reload；
     validate 失败不动任何文件；reload 失败回滚两个文件到旧内容（运行中的 Caddy 从未
     接受坏配置，保持上次有效路由）。Caddy 尚未运行（admin 端口无响应）时只落盘
     （pending 激活，代理由 launchd 守护，起来后读到落盘配置即生效）。"""
     locove_dir().mkdir(parents=True, exist_ok=True)
-    cfg = render_caddyfile(routes)
-    payload = routes_payload(routes)
+    cfg = render_caddyfile(routes, port, settings)
+    payload = routes_payload(routes, port, settings)
     old_routes = read_routes()
     old_cfg = None
     try:
@@ -276,19 +312,29 @@ _last_applied = 0.0
 _FORCE_REAPPLY = float(os.environ.get("LOCOVE_FORCE_REAPPLY", "60"))
 
 
-def sync(projects: dict, snapshot: dict | None, settings: dict | None = None) -> dict:
-    """daemon 周期调用：期望 == 已落盘 → 无操作；否则走 apply_routes。
+def gated_sync(settings: dict | None, projects: dict, snapshot: dict | None) -> dict | None:
+    """daemon 周期入口（D2）：仅在用户开启域名时收敛路由；未开启（默认/未安装）时
+    不运行任何网络收敛、不写任何 locove 文件，返回 None。"""
+    if not (settings or {}).get("use_domains"):
+        return None
+    return sync(projects, snapshot, settings=settings)
+
+
+def sync(projects: dict, snapshot: dict | None, settings: dict | None = None,
+         port: int | None = None) -> dict:
+    """daemon 周期调用（仅域名模块开启时，D2）：期望 == 已落盘 → 无操作；否则走
+    apply_routes（端口经 effective_port 统一裁决）。
 
     另外每 _FORCE_REAPPLY 秒强制重激活一次：运行中的 Caddy 若被外部配置覆盖
     （漂移），落盘事实没变也照样收敛回来——重启/漂移后自动重建一致配置。"""
     global _last_applied
     routes = desired_routes(projects, snapshot, settings)
     current = (read_routes() or {}).get("routes")
-    want = routes_payload(routes)["routes"]
+    want = routes_payload(routes, port, settings)["routes"]
     now = time.time()
     if current == want and now - _last_applied < _FORCE_REAPPLY:
         return {"ok": True, "changed": False, "hosts": len(routes)}
-    res = apply_routes(routes)
+    res = apply_routes(routes, port, settings)
     if res.get("ok"):
         _last_applied = now
     return res
@@ -340,35 +386,104 @@ def proxy_bypass_status() -> dict:
                       "客户端重写系统代理时会沿用自家模板"}
 
 
-def entry_status() -> dict:
-    """四层健康各报各的：dns=名字服务在答，proxy=Caddy 在监听，entry=80 入口在听，
-    config=激活态与文件一致。任何一层失败都给出面向用户的原因，不互相掩盖。"""
+# ---------- 可选域名模块状态机（D2/D3：默认不安装；启用才运行） ----------
+
+def resolver_file() -> Path:
+    """生产为 /etc/resolver/<suffix>；测试经 LOCOVE_RESOLVER_DIR 重定向。"""
+    return Path(os.environ.get("LOCOVE_RESOLVER_DIR", "/etc/resolver")) / suffix()
+
+
+def _resolver_state(path: Path) -> str:
+    """absent（未安装）/ ours / foreign / unreadable——与 locove_resolver 的归属判定一致。"""
+    if not path.exists():
+        return "absent"
+    from .locove_resolver import owned
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "unreadable"
+    return "ours" if owned(content) else "foreign"
+
+
+# 启用后端口/依赖就绪的宽限期：期间未就绪报「启动中」而非「失败」
+ENABLE_GRACE = float(os.environ.get("LOCOVE_ENABLE_GRACE", "45"))
+
+MODULE_STATES = ("not_installed", "installed_off", "starting", "available", "failed")
+
+
+def module_status(settings: dict | None = None) -> dict:
+    """可选域名模块的分层观测（纯只读，不猜运行态）。
+
+    state：not_installed（用户级件与 resolver 均未安装）/ installed_off（有安装件
+    但 use_domains=false——直连）/ starting（刚启用，宽限期内）/ available（DNS、
+    代理、resolver 全就绪）/ failed（启用且过宽限期仍缺层）。一层失败不掩盖其他层；
+    旧 80 转发器以 legacy_80_present 单独报告，不参与新数据面健康。"""
+    settings = settings or {}
+    port = effective_port(settings=settings)
+    enabled = bool(settings.get("use_domains"))
+    installed = {
+        "dns_agent": agent_plist("dns").exists(),
+        "proxy_agent": agent_plist("proxy").exists(),
+        "resolver": _resolver_state(resolver_file()) == "ours",
+    }
+    resolver_state = _resolver_state(resolver_file())
     dns_ok = _port_open("127.0.0.1", dns_port())
-    proxy_ok = _port_open("127.0.0.1", proxy_port())
-    entry_ok = _port_open("127.0.0.1", entry_port())
-    installed_resolver = Path("/etc/resolver", suffix()).exists()
+    proxy_ok = _port_open("127.0.0.1", port)
     data = read_routes()
-    if entry_ok and not proxy_ok:
-        entry_detail = "80 入口在监听，但代理端口无响应（Caddy 未运行？）"
-    elif entry_ok:
-        entry_detail = "正常"
+
+    if not any(installed.values()) and resolver_state == "absent":
+        state = "not_installed"
+    elif not enabled:
+        state = "installed_off"
+    elif dns_ok and proxy_ok and installed["resolver"]:
+        state = "available"
     else:
-        entry_detail = ("80 未监听：系统转发器未安装或未运行（需要一次管理员授权安装，"
-                        "见 scripts/install-locove-system.sh）")
-    if not dns_ok:
+        enabled_at = float(settings.get("domains_enabled_at") or 0)
+        state = "starting" if (enabled_at and time.time() - enabled_at < ENABLE_GRACE) else "failed"
+
+    if state == "not_installed":
+        dns_detail = proxy_detail = "域名模块未安装（可选功能，默认直连不受影响）"
+    elif not dns_ok:
         dns_detail = "本地 DNS 未运行（launchd agent com.mybrain.ls.locove.dns）"
-    elif not installed_resolver:
-        dns_detail = f"DNS 在答，但 /etc/resolver/{suffix()} 未安装（需要管理员授权）"
     else:
         dns_detail = "正常"
+    if state == "not_installed":
+        proxy_detail = "域名模块未安装（可选功能，默认直连不受影响）"
+    elif not proxy_ok:
+        proxy_detail = f"Caddy 未监听 127.0.0.1:{port}（agent 未启动或端口冲突）"
+    else:
+        proxy_detail = f"正常（127.0.0.1:{port}）"
+    if resolver_state == "ours":
+        resolver_detail = "正常（仅 .{s} 定向到本地 DNS）".format(s=suffix())
+    elif resolver_state == "foreign":
+        resolver_detail = f"/etc/resolver/{suffix()} 属于他人配置，本工具不接管；启用将失败"
+    elif resolver_state == "unreadable":
+        resolver_detail = f"/etc/resolver/{suffix()} 不可读，无法确认归属"
+    elif enabled:
+        resolver_detail = f"/etc/resolver/{suffix()} 未安装（启用流程会请求一次管理员授权）"
+    else:
+        resolver_detail = "未安装（启用时经管理员当次授权安装）"
+
     return {
         "suffix": suffix(),
+        "domain_port": port,
+        "state": state,
+        "enabled": enabled,
+        "installed": installed,
+        "resolver_state": resolver_state,
         "proxy_bypass": proxy_bypass_status(),
-        "dns": {"ok": dns_ok and installed_resolver, "detail": dns_detail},
-        "entry": {"ok": entry_ok and proxy_ok, "detail": entry_detail},
-        "proxy": {"ok": proxy_ok, "detail": "正常" if proxy_ok else "Caddy 未运行（launchd agent com.mybrain.ls.locove.proxy）"},
-        "resolver_installed": installed_resolver,
+        "dns": {"ok": dns_ok if state != "not_installed" else None, "detail": dns_detail},
+        "proxy": {"ok": proxy_ok if state != "not_installed" else None, "detail": proxy_detail},
+        "resolver_installed": installed["resolver"],
+        "resolver": {"ok": installed["resolver"] if state != "not_installed" else None,
+                     "detail": resolver_detail},
+        "legacy_80": legacy_80_present(),
         "hosts": len((data or {}).get("routes", {})),
         "routes": (data or {}).get("routes", {}),
         "caddy_available": shutil.which(caddy_bin()) is not None or Path(caddy_bin()).exists(),
     }
+
+
+# 向后兼容旧名（V3.4 时代的 80 入口分层已由 module_status 的 legacy_80/代理层取代）
+def entry_status(settings: dict | None = None) -> dict:
+    return module_status(settings)

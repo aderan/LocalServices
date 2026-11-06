@@ -1881,26 +1881,45 @@ class Registry:
                         "open_path": manifest._norm_open_path(open_path)})
         return out
 
-    # ---------- Locove 域名设置（V3.5：默认直连 IP，域名跳转需显式开启） ----------
+    # ---------- Locove 域名设置（V3.5：默认直连 IP；D3：可选 5670 域名模块） ----------
 
     LOCOVE_FORMS = ("suffix", "custom")
+    # 业务代理端口禁区：控制面 47800、Caddy admin 47891、本地 DNS 5354；
+    # <1024 需 root 绑定，违背「普通用户运行」前提。缺省 5670。
+    LOCOVE_PORT_FORBIDDEN = {47800, 47891, 5354}
+    LOCOVE_PORT_DEFAULT = 5670
+
+    @classmethod
+    def locove_port_valid(cls, port: object) -> bool:
+        return (isinstance(port, int) and not isinstance(port, bool)
+                and 1024 <= port <= 65535 and port not in cls.LOCOVE_PORT_FORBIDDEN)
 
     def locove_settings(self) -> dict:
-        """{"use_domains": bool, "domain_form": "suffix"|"custom"}；缺省全部关闭/后缀式。"""
+        """{"use_domains", "domain_form", "domain_port"}；缺省全部关闭/后缀式/5670。"""
         with _file_lock():
             data = self._load()
         st = data.get("settings") or {}
+        port = st.get("domain_port", self.LOCOVE_PORT_DEFAULT)
         return {"use_domains": bool(st.get("use_domains", False)),
-                "domain_form": st.get("domain_form", "suffix") if st.get("domain_form") in ("suffix", "custom") else "suffix"}
+                "domain_form": st.get("domain_form", "suffix") if st.get("domain_form") in ("suffix", "custom") else "suffix",
+                "domain_port": port if self.locove_port_valid(port) else self.LOCOVE_PORT_DEFAULT,
+                "domains_enabled_at": float(st.get("domains_enabled_at") or 0) or None}
 
     def locove_settings_update(self, body: dict) -> dict:
         body = body if isinstance(body, dict) else {}
         use = body.get("use_domains")
         form = body.get("domain_form")
+        port = body.get("domain_port")
+        enabled_at = body.get("domains_enabled_at")
         if use is not None and not isinstance(use, bool):
             raise RegistryError("use_domains 必须是布尔值")
         if form is not None and form not in self.LOCOVE_FORMS:
             raise RegistryError(f"domain_form 必须是 {'/'.join(self.LOCOVE_FORMS)}")
+        if port is not None and not self.locove_port_valid(port):
+            raise RegistryError(f"domain_port 必须是 1024–65535 的整数且不得使用控制面端口"
+                                f"（{sorted(self.LOCOVE_PORT_FORBIDDEN)}）；缺省 {self.LOCOVE_PORT_DEFAULT}")
+        if enabled_at is not None and not isinstance(enabled_at, (int, float)):
+            raise RegistryError("domains_enabled_at 必须是数字时间戳（启用流程内部写入）")
         # 开启域名跳转必须同时有明确形式（缺省视为 suffix，显式传 null 拒绝）
         with _file_lock():
             data = self._load()
@@ -1911,6 +1930,10 @@ class Registry:
                 st["use_domains"] = use
             if form is not None:
                 st["domain_form"] = form
+            if port is not None:
+                st["domain_port"] = port
+            if enabled_at is not None:
+                st["domains_enabled_at"] = float(enabled_at)
             st["updated_at"] = _now()
             self._save(data)
         return self.locove_settings()

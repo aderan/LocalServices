@@ -162,7 +162,8 @@ class Controller:
     def __init__(self):
         paths.ensure()
         self._autostart_cache: tuple[float, dict[str, bool]] = (0.0, {})
-        self._domain_settings_cache: tuple[float, dict] = (0.0, {"use_domains": False, "domain_form": "suffix"})
+        self._domain_settings_cache: tuple[float, dict] = (
+            0.0, {"use_domains": False, "domain_form": "suffix", "domain_port": 5670})
         self.store = Store(autostart=self._registry_autostart_map)
         self.lock = threading.RLock()
         self.projects: dict[str, Project] = {}
@@ -222,17 +223,17 @@ class Controller:
                     pass
 
     def domain_settings(self) -> dict:
-        """V3.5 域名跳转设置（Registry.locove_settings 的短缓存读）。默认关闭。"""
+        """V3.5/D3 域名设置（Registry.locove_settings 的短缓存读）。默认关闭/直连/5670。"""
         now = time.monotonic()
         ts, cached = self._domain_settings_cache
         if now - ts < AUTOSTART_CACHE_TTL:
             return cached
-        cached = {"use_domains": False, "domain_form": "suffix"}
+        cached = {"use_domains": False, "domain_form": "suffix", "domain_port": 5670}
         try:
             from .registry import Registry
             cached = Registry().locove_settings()
         except Exception:  # noqa: BLE001 — 设置不可读按默认（直连）处理
-            cached = {"use_domains": False, "domain_form": "suffix"}
+            cached = {"use_domains": False, "domain_form": "suffix", "domain_port": 5670}
         self._domain_settings_cache = (now, cached)
         return cached
 
@@ -1126,8 +1127,9 @@ class Controller:
             adopt, ports = self._adoptable(p, self.external_instances(p, fresh=False))
             if adopt:
                 url = self._external_url(p, ports)
-        # V3.5：默认本地 IP 直连。仅当设置开启「使用域名」且配置了域名形式时，
-        # 入口层健康才经域名打开；域名开启但入口故障 → 回退直连并说明缺口。
+        # V3.5/D3：默认本地 IP 直连。仅当用户开启「使用域名」且域名模块可用
+        # （DNS+代理+resolver）时经 http://<host>:5670 打开；开启但模块故障 →
+        # 回退直连并说明缺口。
         entry_note = None
         st = self.domain_settings()
         if st.get("use_domains"):
@@ -1137,7 +1139,7 @@ class Controller:
             elif self._form_endpoints(p, st):
                 # 只有「该服务在当前域名形式下确有域名」才提示入口缺口；
                 # custom 形式下无显式域名的服务本来就应直连，不算故障
-                entry_note = "域名入口未就绪（系统件未安装或代理未运行），已打开直连地址；详见工作台域名诊断"
+                entry_note = "域名模块未就绪（未启用完成或组件未运行），已打开直连地址；详见设置页域名诊断"
         if not url:
             return {"ok": False, "error": "没有可打开的地址"}
         subprocess.Popen(["/usr/bin/open", url])
@@ -1152,24 +1154,27 @@ class Controller:
         return eps
 
     def _public_open_url(self, p: Project, settings: dict | None = None) -> str | None:
-        """入口层健康且服务处于可打开状态时返回无端口公开地址。
+        """域名模块整体可用（DNS+代理+resolver，D3 状态机 available）且服务处于可打开
+        状态时，返回带业务端口的公开地址（http://<host>:<port><open_path>，缺省 5670）。
 
         V3.5：domain_form=custom 只跳转显式登记的入口（派生入口不算）。"""
-        eps = self._form_endpoints(p, settings or self.domain_settings())
+        settings = settings or self.domain_settings()
+        eps = self._form_endpoints(p, settings)
         if not eps:
             return None
         from . import locove
         try:
-            st = locove.entry_status()
+            st = locove.module_status(settings)
         except Exception:  # noqa: BLE001 — 域名层故障不阻塞直连打开
             return None
-        if not st.get("entry", {}).get("ok"):
+        if st.get("state") != "available":
             return None
         snap = next((s for s in self.snapshot().get("projects", [])
                      if s.get("id") == p.id), None)
         if snap is None or snap.get("state") not in ("available", "partial", "external"):
             return None
-        return f"http://{eps[0].host}{eps[0].open_path}"
+        port = settings.get("domain_port") or 5670
+        return f"http://{eps[0].host}:{port}{eps[0].open_path}"
 
     def open_source(self, pid: str) -> dict:
         p = self.projects.get(pid)
@@ -1422,12 +1427,15 @@ class Controller:
     # ---------- status ----------
     def project_status(self, p: Project, ps: dict | None = None, listen: dict | None = None) -> dict:
         ad = self.adapters[p.id]
+        # D3：公开地址统一含业务端口（缺省 5670）；host、打开路径与上游内部端口仍独立。
+        settings = self.domain_settings()
+        port = settings.get("domain_port") or 5670
         base = {"id": p.id, "name": p.name, "source": str(p.source), "observe_only": p.observe_only,
                 "description": p.description, "group": p.group,
                 "group_name": p.group_name, "group_order": p.group_order,
                 "endpoints": [{"id": e.id, "host": e.host, "component": e.component,
                                "open_path": e.open_path, "derived": e.derived,
-                               "public_url": f"http://{e.host}{e.open_path}"}
+                               "public_url": f"http://{e.host}:{port}{e.open_path}"}
                               for e in p.endpoints]}
         if p.observe_only:
             try:
