@@ -79,7 +79,11 @@ def uninstall(resolver_dir: str | Path, suffix: str = "locove") -> dict:
     if not path.exists():
         return {"ok": True, "path": str(path), "action": "absent"}
     content = _read(path)
-    if content is not None and not owned(content):
+    if content is None:
+        # S2（review 2026-11-05）：读失败 ≠ 已确认归属——I/O/权限失败时绝不删除
+        return {"ok": False, "path": str(path), "reason": "unreadable",
+                "error": f"无法读取 {path}（权限或 I/O 失败），无法确认归属，拒绝删除；文件保持原样。"}
+    if not owned(content):
         return {"ok": False, "path": str(path), "reason": "foreign",
                 "error": f"{path} 内容不属于 Locove（缺少管理标记），拒绝删除；文件保持原样。"}
     try:

@@ -120,13 +120,23 @@ class Store:
         with self.lock:
             return self.data["projects"].setdefault(pid, {})
 
+    def intent_read(self, project: Project) -> str:
+        """只读意图（S3，review 2026-11-05）：与 intent() 相同的取值（含 V2.9 缺省推导），
+        但绝不写 state.json。观测路径（project_status/refresh_snapshot）必须用这个；
+        写入口只有 intent()（调度/显式初始化惰性播种）与 set_intent()。"""
+        with self.lock:
+            d = self.data["projects"].get(project.id) or {}
+            if "intent" in d:
+                return d["intent"]
+            default = bool(project.autostart) or self._registry_autostart(project.id)
+            return "running" if default else "stopped"
+
     def intent(self, project: Project) -> str:
         with self.lock:
             d = self.proj(project.id)
             if "intent" not in d:
                 # V2.9: 初始缺省 = running 当且仅当 清单 autostart 或 registry 项目 autostart。
-                default = bool(project.autostart) or self._registry_autostart(project.id)
-                d["intent"] = "running" if default else "stopped"
+                d["intent"] = self.intent_read(project)
                 d["intent_at"] = time.time()
                 d["intent_by"] = "default"
                 self.save()
@@ -1320,6 +1330,11 @@ class Controller:
             self.update_state.pop(f"{p.id}.{cid}", None)
         if self._begin(p.id, "starting"):
             def run():
+                # S1：排队到执行之间用户仍可能停止——执行前最后复核最新意图，
+                # 已停止则释放操作槽并放弃（不进入 _do_restart 的 starting 路径）
+                if self.store.intent_read(p) != "running":
+                    self._end(p.id)
+                    return
                 self._do_restart(p, need)
             threading.Thread(target=run, daemon=True).start()
 
@@ -1426,7 +1441,7 @@ class Controller:
             base["managed_by"] = "external"
             return base
         ps = ps if ps is not None else procs.snapshot()
-        intent = self.store.intent(p)
+        intent = self.store.intent_read(p)  # S3：观测只读意图，不落盘初始化
         op = self.ops.get(p.id)
         comps = []
         comp_map = {}
@@ -1623,13 +1638,19 @@ class Controller:
 
     def _schedule_updates(self) -> None:
         """调度层（reconcile 周期）：按最新快照驱动源码更新调度。读取快照里的组件
-        running/code 事实；观测（refresh）不再承担调度副作用，两层只经快照传递数据。"""
+        running/code 事实；观测（refresh）不再承担调度副作用，两层只经快照传递数据。
+
+        S1（review 2026-11-05）：快照里的 intent 可能落后于 Store（停止发生在观测与
+        调度之间是正常并发）。提交更新操作前复核当前意图——用户停止优先，绝不凭
+        旧快照重启已停止的服务。"""
         snap_projects = {s.get("id"): s for s in (self._snapshot or {}).get("projects", [])}
         for p in list(self.projects.values()):
             if p.observe_only:
                 continue
             st = snap_projects.get(p.id)
             if not st or st.get("intent") != "running":
+                continue
+            if self.store.intent_read(p) != "running":
                 continue
             try:
                 self._tick_updates(p, {c["id"]: c for c in st.get("components", [])

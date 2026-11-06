@@ -60,6 +60,10 @@ class UpdatePolicyTest(unittest.TestCase):
         cls.ctl = Controller()
         cls.adapter = FakeAdapter()
         cls.ctl.adapters["fxupd"] = cls.adapter
+        # S1（review 2026-11-05）：更新调度在提交与执行前复核最新运行意图——
+        # 已停止的服务不再可被 _tick_updates 重启。本组用例考察调度策略本身，
+        # 前提是服务处于运行意图。
+        cls.ctl.store.set_intent("fxupd", "running", by="test")
 
     @classmethod
     def tearDownClass(cls):

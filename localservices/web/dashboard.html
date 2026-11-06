@@ -400,6 +400,9 @@ function render() {
   if (a && main.contains(a) && ["INPUT", "SELECT", "TEXTAREA"].includes(a.tagName)) return;
   // V2.11：模态/菜单打开时轮询刷新只更新内部状态，绝不重建内容区 DOM
   if (uiLocked()) return;
+  // UX2（review 2026-11-05）：用户正阅读/选择日志区（悬停或持有选区）时，
+  // 后台触发的整树重建一律延后——选择、焦点与滚动位置不允许被打断。
+  if (logReading()) return;
   document.getElementById("viewTitle").textContent =
       view.startsWith("project:") ? (projectGroups().find(g => g.pj.id === view.slice(8))?.pj.name || "项目")
                                   : (VIEW_TITLES[view] || "服务");
@@ -481,7 +484,7 @@ function domainChip(p) {
       : served ? "无端口入口 · 点击复制" : "无端口 · 未运行时显示不可用页";
     const url = `http://${e.host}${e.open_path}`;
     return `<button class="domain${entryOk ? "" : " down"}" title="${esc(url)}（点击复制）"
-      onclick="copyText('${esc(url)}','${p.id}','地址')">
+      onclick="event.stopPropagation();copyText('${esc(url)}','${p.id}','地址')">
       <b>${esc(e.host)}</b><small>${esc(sub)}</small></button>`;
   }
   const url = directUrl(p);
@@ -489,7 +492,7 @@ function domainChip(p) {
   let label = url;
   try { const u = new URL(url); label = u.host; } catch (err) {}
   return `<button class="domain" title="${esc(url)}（点击复制）"
-    onclick="copyText('${esc(url)}','${p.id}','地址')">
+    onclick="event.stopPropagation();copyText('${esc(url)}','${p.id}','地址')">
     <b>${esc(label)}</b><small>本地直连 · 点击复制（域名需在设置中开启）</small></button>`;
 }
 
@@ -594,7 +597,7 @@ function serviceRow(p, showProject) {
     <div class="line" role="button" tabindex="0" aria-expanded="${expanded}"
          aria-label="服务 ${esc(p.name)}（点击展开详情）"
          onclick="toggleDetail('${esc(p.id)}')"
-         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleDetail('${esc(p.id)}')}">
+         onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleDetail('${esc(p.id)}')}">
       <div class="name">${esc(p.name)}<small>${sub}</small></div>
       ${domainChip(p)}
       <div class="state s-${p.state}">${esc(p.label)}</div>
@@ -2404,7 +2407,21 @@ document.addEventListener("keydown", e => {
   if (btns[next] && btns[next].focus) btns[next].focus();
 });
 refresh();
-setInterval(() => { if (!document.querySelector("details[open] pre:hover")) refresh(); }, 3000);
+// UX2（review 2026-11-05）：日志区是 .detail 内的 <pre>（不再是旧 details[open]）。
+// 悬停阅读或正持有文本选区时暂停轮询刷新与后台重建——整树 innerHTML 替换会打断
+// 选择、焦点与滚动位置；离开/释放选区后下一周期自动恢复。render() 也引用本函数，
+// 函数声明提升保证可用。
+function logReading() {
+  const pre = document.querySelector(".detail pre:hover");
+  if (pre) return true;
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) {
+    for (let n = sel.anchorNode; n; n = n.parentElement)
+      if (n.tagName === "PRE" && n.closest(".detail")) return true;
+  }
+  return false;
+}
+setInterval(() => { if (!logReading()) refresh(); }, 3000);
 </script>
 </body>
 </html>
