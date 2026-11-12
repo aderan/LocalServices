@@ -174,6 +174,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let head = NSMenuItem(title: "Locove／洛湾", action: nil, keyEquivalent: "")
         head.isEnabled = false
         menu.addItem(head)
+        add("刷新状态", #selector(refreshNow), "r", symbol: "arrow.clockwise")
+        add("打开主窗口", #selector(showMainWindow), "n", symbol: "macwindow")
+        add("设置…", #selector(showSettings), ",", symbol: "gearshape")
         menu.addItem(.separator())
         if !connected {
             let m = NSMenuItem(title: "⚠︎ \(lastError.isEmpty ? "无法连接控制服务" : lastError)（项目状态未知）", action: nil, keyEquivalent: "")
@@ -201,10 +204,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
         add("添加项目…", #selector(newProject), "")
-        add("打开主窗口", #selector(showMainWindow), "n")
-        menu.addItem(.separator())
-        add("打开 Dashboard", #selector(openDashboard), "d")
-        add("刷新状态", #selector(refreshNow), "r")
+        add("在浏览器中打开", #selector(openDashboard), "d")
         add("退出菜单栏（后台服务继续运行）", #selector(quit), "q")
     }
 
@@ -317,9 +317,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func add(_ t: String, _ s: Selector, _ k: String) {
+    func add(_ t: String, _ s: Selector, _ k: String, symbol: String? = nil) {
         let m = NSMenuItem(title: t, action: s, keyEquivalent: k)
         m.target = self
+        if let symbol {
+            m.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        }
         menu.addItem(m)
     }
 
@@ -343,6 +346,11 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func showMainWindow() { mainWindow.show() }
 
+    @objc func showSettings() {
+        showMainWindow()
+        mainWindow.evaluate("window.lsOpenView && window.lsOpenView('settings')")
+    }
+
     @objc func openDashboard() {
         NSWorkspace.shared.open(URL(string: base.absoluteString + "/")!)
     }
@@ -359,8 +367,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let appItem = NSMenuItem(title: "MyBrain Services", action: nil, keyEquivalent: "")
         let appSub = NSMenu()
         for (t, s, k) in [("打开主窗口", #selector(showMainWindow), "n"),
+                          ("设置…", #selector(showSettings), ","),
                           ("添加项目…", #selector(newProject), ""),
-                          ("打开 Dashboard", #selector(openDashboard), "d"),
+                          ("在浏览器中打开", #selector(openDashboard), "d"),
                           ("刷新状态", #selector(refreshNow), "r")] {
             let m = NSMenuItem(title: t, action: s, keyEquivalent: k)
             m.target = self

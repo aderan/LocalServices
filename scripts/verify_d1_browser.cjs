@@ -89,6 +89,47 @@ async function main() {
   })()`);
   check("故障服务的「查看原因」展开详情并聚焦诊断", reasonShown);
 
+  const navigation = await ev(`(() => {
+    const previous = {snap, registry, view};
+    const services = [
+      {id: "ready", name: "Ready", state: "available"},
+      {id: "off", name: "Off", state: "stopped"},
+      {id: "degraded", name: "Degraded", state: "partial"},
+      {id: "blocked", name: "Blocked", state: "conflict"},
+    ];
+    try {
+      snap = {...snap, projects: services};
+      registry = {registry: {projects: [
+        {id: "healthy", name: "正常项目", services: ["ready", "off"]},
+        {id: "partial", name: "部分项目", services: ["degraded"]},
+        {id: "failure", name: "冲突项目", services: ["degraded", "blocked"]},
+      ]}};
+      setView("all");
+      const projects = [...document.querySelectorAll("#navProjects button")];
+      const find = name => projects.find(button => button.textContent.trim() === name);
+      const settings = document.getElementById("nav-settings");
+      const inToolbar = !!settings?.closest(".topbar");
+      settings?.click();
+      return {
+        healthy: !!find("正常项目") && !find("正常项目").querySelector(".project-alert"),
+        partial: find("部分项目")?.getAttribute("aria-label") === "部分项目，部分可用" &&
+          !!find("部分项目").querySelector(".project-alert.partial"),
+        failure: find("冲突项目")?.getAttribute("aria-label") === "冲突项目，需要处理" &&
+          !!find("冲突项目").querySelector(".project-alert:not(.partial)"),
+        attentionCount: document.getElementById("attentionBadge").textContent,
+        settings: inToolbar && document.getElementById("viewTitle").textContent === "设置" &&
+          settings.getAttribute("aria-pressed") === "true",
+      };
+    } finally {
+      snap = previous.snap;
+      registry = previous.registry;
+      setView(previous.view);
+    }
+  })()`);
+  check("项目侧栏只标记异常并保留全局待处理数", navigation.healthy &&
+        navigation.partial && navigation.failure && navigation.attentionCount === "2", JSON.stringify(navigation));
+  check("设置入口位于顶部工具栏并打开设置", navigation.settings);
+
   // ---------------- UX1：地址 chip 的完整独立事件语义 ----------------
   const chipExists = await ev("!!document.querySelector('.svc .line button.domain')");
   check("地址 chip 存在于服务行", chipExists);
