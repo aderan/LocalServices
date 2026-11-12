@@ -52,7 +52,8 @@
   #nav-settings[aria-pressed="true"] { color: var(--btn); border-color: currentColor; }
   #globalSearch { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 7px;
                   border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 220px; }
-  main { padding: 4px 26px 56px; max-width: 1080px; width: 100%; }
+  main { padding: 4px 26px 56px; max-width: 1080px; width: 100%; container-type: inline-size;
+         container-name: mainc; }
   /* —— 分组：一个项目一组紧凑行（Magpie 语法：细分隔、整组一体） —— */
   .group { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
            margin: 0 0 14px; overflow: hidden; }
@@ -76,9 +77,12 @@
   .svc { border-top: 1px solid var(--hair); }
   .svc:first-of-type { border-top: 0; }
   .svc.expanded { background: color-mix(in srgb, var(--soft) 45%, var(--card)); }
-  .line { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .95fr) 92px minmax(0, .8fr) auto;
+  /* W1：状态与构建状态合并为同一列（两行主副文本），地址列不再溢出盖住状态 */
+  .line { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(64px, 112px) max-content;
           gap: 12px; align-items: center; padding: 7px 14px; cursor: pointer; }
+  .line > * { min-width: 0; }
   .line:focus-visible { outline: 2px solid var(--btn); outline-offset: -2px; }
+  .statecell { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
   .name { font-weight: 600; font-size: 13.5px; overflow-wrap: anywhere; min-width: 0;
           display: flex; flex-direction: column; gap: 1px; }
   .name small { display: block; font-weight: 400; color: var(--mute); font-size: 11.5px;
@@ -92,7 +96,7 @@
   .s-failed::before, .s-conflict::before { background: var(--bad); }
   .s-starting::before, .s-stopping::before, .s-preparing::before { background: var(--btn); }
   .s-external::before { background: var(--ok); box-shadow: 0 0 0 2px var(--card), 0 0 0 3px var(--ok); }
-  .code { color: var(--mute); font-size: 11.5px; }
+  .code { color: var(--mute); font-size: 11.5px; overflow-wrap: anywhere; line-height: 1.3; }
   .code.pending, .code.failed { font-weight: 600; }
   .code.pending { color: var(--warn); } .code.failed { color: var(--bad); }
   .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
@@ -102,9 +106,9 @@
     padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; background: transparent;
     color: var(--fg); font: inherit; text-align: left; min-width: 0; cursor: copy; }
   .domain:hover { border-color: var(--btn); }
-  .domain b { font-size: 12px; font-weight: 600; max-width: 220px; overflow: hidden;
+  .domain b { font-size: 12px; font-weight: 600; max-width: 100%; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
-  .domain small { color: var(--mute); font-size: 10.5px; max-width: 220px; overflow: hidden;
+  .domain small { color: var(--mute); font-size: 10.5px; max-width: 100%; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
   .domain.down { border-color: var(--warn); }
   .domain.down small { color: var(--warn); }
@@ -200,6 +204,10 @@
   @media (max-width: 920px) {
     .settings-grid { grid-template-columns: 1fr; }
   }
+  /* W1：设置双栏按内容区宽度（容器查询）收缩——960 原生窗（视口不触发旧 920 断点）也能单列读长诊断 */
+  @container mainc (max-width: 780px) {
+    .settings-grid { grid-template-columns: 1fr; }
+  }
   @media (max-width: 860px) {
     .shell { grid-template-columns: 1fr; }
     nav { position: static; max-height: none; flex-direction: row; flex-wrap: wrap; border-right: 0;
@@ -208,7 +216,7 @@
     .navitem { width: auto; }
     main, .topbar { padding-left: 14px; padding-right: 14px; }
     .line { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-    .domain, .code, .acts { grid-column: 1 / -1; }
+    .domain, .statecell, .acts { grid-column: 1 / -1; }
     .acts { justify-content: flex-start; }
     button { min-height: 36px; }
   }
@@ -425,8 +433,8 @@ function render({preserveLogReading = true} = {}) {
   // 后台触发的整树重建一律延后——选择、焦点与滚动位置不允许被打断。
   if (preserveLogReading && logReading()) return;
   document.getElementById("viewTitle").textContent =
-      view.startsWith("project:") ? (projectGroups().find(g => g.pj.id === view.slice(8))?.pj.name || "项目")
-                                  : (VIEW_TITLES[view] || "服务");
+    view.startsWith("project:") ? (projectGroups().find(g => g.pj.id === view.slice(8))?.pj.name || "项目")
+                                : (VIEW_TITLES[view] || "服务");
   document.getElementById("viewSubtitle").textContent = viewSubtitle();
   let html = "";
   if (view === "all") html = viewAll();
@@ -437,11 +445,94 @@ function render({preserveLogReading = true} = {}) {
   else if (view === "agents") html = viewAgents();
   else if (view === "settings") html = viewSettings();
   else if (view === "new-project") html = viewNewProject();
-  main.innerHTML = html;
+  // W1：与上次写入内容一致且期间无外部改写时跳过重建——同轮询周期内状态不变则
+  // 焦点/选区/滚动/悬停节点身份天然保持；变化（或 #main 被外部改写）时按锚点与
+  // DOM 路径恢复滚动和焦点（见 replaceMain）
+  if (html !== __lastWritten || __mainDirty) replaceMain(main, html, a);
   if (location.hash.startsWith("#p-")) {
     const el = document.getElementById(location.hash.slice(1));
-    if (el) el.scrollIntoView({block: "center"});
+    if (el && el.scrollIntoView) el.scrollIntoView({block: "center"});
+    try { history.replaceState(null, "", location.pathname + location.search); } catch (e) { /* 无头环境无 history */ }
   }
+}
+
+// —— W1 轮询稳定性：整树重建不可避免时，焦点/滚动/日志滚动位置按锚点恢复 ——
+let __lastWritten = null;   // 上次 replaceMain 写入的 html
+let __mainDirty = false;    // #main 被 replaceMain 之外改写（如测试/注入）→ 下次 render 强制重建
+let __replacing = false;
+try {
+  if (typeof MutationObserver === "function") {
+    new MutationObserver(() => { if (!__replacing) __mainDirty = true; })
+      .observe(document.getElementById("main"), {childList: true});
+  }
+} catch (e) { /* 无头桩环境无 MutationObserver */ }
+// DOM 路径 = main 内子元素下标链；重建后同一路径且同 tagName 的元素恢复焦点
+// （文本变化也接受按钮——如「启动并打开→启动中…」，焦点留在原位比丢失好）。
+function domPath(root, el) {
+  const path = [];
+  try {
+    let n = el;
+    while (n && n !== root) {
+      const parent = n.parentElement || n.parent;
+      if (!parent) return null;
+      const kids = parent.children || [];
+      let idx = -1;
+      for (let i = 0; i < kids.length; i++) if (kids[i] === n) { idx = i; break; }
+      if (idx < 0) return null;
+      path.unshift(idx);
+      n = parent;
+    }
+  } catch (e) { return null; }
+  return path.length ? path : null;
+}
+function findByDomPath(root, path, tag) {
+  try {
+    let n = root;
+    for (const idx of path) {
+      const kids = n.children || [];
+      if (idx >= kids.length) return null;
+      n = kids[idx];
+    }
+    return (!tag || n.tagName === tag) ? n : null;
+  } catch (e) { return null; }
+}
+// 滚动锚点 = 视口内第一个可见的带 id 块（服务行/分组/卡片）；重建后校正 dy，抵消上方内容高度变化
+function scrollAnchor() {
+  try {
+    for (const el of document.querySelectorAll("main section[id], main .card")) {
+      const top = el.getBoundingClientRect().top;
+      if (top >= -2) return {id: el.id, top};
+    }
+  } catch (e) { /* 无头桩 DOM 无布局 */ }
+  return null;
+}
+
+function replaceMain(main, html, activeEl) {
+  const focusInfo = activeEl && main.contains(activeEl) && activeEl.tagName !== "BODY"
+    ? {path: domPath(main, activeEl), tag: activeEl.tagName} : null;
+  const anchor = scrollAnchor();
+  const preTops = [];
+  try { main.querySelectorAll("pre[id]").forEach(pre => preTops.push([pre.id, pre.scrollTop])); } catch (e) {}
+  __replacing = true;
+  main.innerHTML = html;
+  __lastWritten = html;
+  __mainDirty = false;
+  // 微任务序：本 observer 回调先于标志清除（替换自身的变更不算外部改写）
+  Promise.resolve().then(() => { __replacing = false; });
+  try {
+    for (const [id, top] of preTops) { const pre = document.getElementById(id); if (pre) pre.scrollTop = top; }
+    if (anchor && anchor.id && typeof window.scrollBy === "function") {
+      const el = document.getElementById(anchor.id);
+      if (el && el.getBoundingClientRect) {
+        const dy = el.getBoundingClientRect().top - anchor.top;
+        if (dy) window.scrollBy(0, dy);
+      }
+    }
+    if (focusInfo && focusInfo.path) {
+      const el = findByDomPath(main, focusInfo.path, focusInfo.tag);
+      if (el && el.focus) { try { el.focus({preventScroll: true}); } catch (e) { el.focus(); } }
+    }
+  } catch (e) { /* 无头桩环境：恢复步骤尽力而为，不阻塞渲染 */ }
 }
 
 function renderNav() {
@@ -536,14 +627,14 @@ async function locoveSetting(key, value) {
 
 function primary(p) {
   if (p.observe_only) return "";
-  if (connOk === false || p.state === "unknown") return `<button class="primary" disabled>状态未知</button>`;
+  if (connOk === false || p.state === "unknown") return `<button class="primary" data-act="unknown" disabled>状态未知</button>`;
   const isBusy = busy(p.id) || busy("g-" + p.group) || p.op || ["starting", "stopping", "preparing"].includes(p.state);
-  if (isBusy) return `<button class="primary" disabled>${p.state === "preparing" ? "准备环境…" : p.state === "stopping" || pending[p.id] === "stop" ? "停止中…" : "启动中…"}</button>`;
+  if (isBusy) return `<button class="primary" data-act="busy" disabled>${p.state === "preparing" ? "准备环境…" : p.state === "stopping" || pending[p.id] === "stop" ? "停止中…" : "启动中…"}</button>`;
   if (["available", "partial", "external"].includes(p.state))
-    return p.can_open ? `<button class="primary" onclick="act('${p.id}','open')">打开</button>` : "";
+    return p.can_open ? `<button class="primary" data-act="open" onclick="act('${p.id}','open')">打开</button>` : "";
   if (["failed", "conflict"].includes(p.state))
-    return `<button class="primary" onclick="showServiceReason('${esc(p.id)}')">查看原因</button>`;
-  return `<button class="primary" onclick="act('${p.id}','start',{open:true})">启动并打开</button>`;
+    return `<button class="primary" data-act="reason" onclick="showServiceReason('${esc(p.id)}')">查看原因</button>`;
+  return `<button class="primary" data-act="start-open" onclick="act('${p.id}','start',{open:true})">启动并打开</button>`;
 }
 
 // R6：次要操作（接管/重试/停止/重启/源码目录）按交互层级收拢进 ⋯ 菜单；
@@ -636,10 +727,13 @@ function serviceRow(p, showProject) {
          onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleDetail('${esc(p.id)}')}">
       <div class="name">${esc(p.name)}<small>${sub}</small></div>
       ${domainChip(p)}
-      <div class="state s-${p.state}">${esc(p.label)}</div>
-      <div class="code ${code.state}">${["pending", "failed"].includes(code.state) ? esc(code.label) + "：" + esc((code.detail || "").split("\n")[0]) : ""}</div>
+      <div class="statecell">
+        <div class="state s-${p.state}">${esc(p.label)}</div>
+        ${["pending", "failed"].includes(code.state)
+          ? `<div class="code ${code.state}" title="${esc(code.label)}：${esc(code.detail || "")}">${esc(code.label)}</div>` : ""}
+      </div>
       <div class="acts" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()">
-        ${primary(p)}<button class="ghost" onclick="loadLogs('${esc(p.id)}')" aria-label="查看日志">日志</button><button class="kebab" aria-haspopup="menu" aria-label="服务菜单（编辑 / 日志 / 打开目录 / 生命周期 / 移除登记）" onclick="toggleMenu(event,'svc:${esc(p.id)}')">⋯</button>
+        ${primary(p)}<button class="ghost" data-act="logs" onclick="loadLogs('${esc(p.id)}')" aria-label="查看日志">日志</button><button class="kebab" data-act="menu" aria-haspopup="menu" aria-label="服务菜单（编辑 / 日志 / 打开目录 / 生命周期 / 移除登记）" onclick="toggleMenu(event,'svc:${esc(p.id)}')">⋯</button>
       </div>
     </div>${msg}${expanded ? detailsHtml(p) : ""}</section>`;
 }
@@ -2475,6 +2569,11 @@ window.lsFocusService = function(id) {
   view = "all"; open[id] = true; render();
   requestAnimationFrame(() => document.getElementById("p-" + id)?.scrollIntoView({block: "center"}));
 };
+// W2：从菜单栏「查看原因」直达诊断行（展开 + 聚焦 + 滚动到诊断，与浏览器内路径同一函数）
+window.lsDiagnose = function(id) {
+  view = "all"; open[id] = true;
+  showServiceReason(id);
+};
 
 // ------------------------------------------------------------ 刷新循环
 
@@ -2526,6 +2625,8 @@ document.addEventListener("keydown", e => {
   const next = e.key === "ArrowDown" ? (i + 1) % btns.length : (i <= 0 ? btns.length - 1 : i - 1);
   if (btns[next] && btns[next].focus) btns[next].focus();
 });
+// W1/W2 深链：#p-<id> 载入即展开定位该服务（浏览器书签 / 原生 / Agent 同一事实源）
+{ const m = location.hash.match(/^#p-(.+)$/); if (m) open[m[1]] = true; }
 refresh();
 // UX2（review 2026-11-05）：日志区是 .detail 内的 <pre>（不再是旧 details[open]）。
 // 悬停阅读或正持有文本选区时暂停轮询刷新与后台重建——整树 innerHTML 替换会打断

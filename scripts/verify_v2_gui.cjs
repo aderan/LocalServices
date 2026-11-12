@@ -87,6 +87,25 @@ const documentStub = {
   activeElement: null,
   body: makeEl("body"),
 };
+// W1 桩语义：写 #main.innerHTML = 替换全部子节点 → 同步触发 childList observer（模拟真实浏览器）
+globalThis.MutationObserver = class {
+  constructor(cb) { this.cb = cb; }
+  observe() { globalThis.__lsMainObserver = this; }
+  disconnect() { if (globalThis.__lsMainObserver === this) globalThis.__lsMainObserver = null; }
+};
+{
+  const mainEl = documentStub.getElementById("main");
+  let mainHtml = "";
+  Object.defineProperty(mainEl, "innerHTML", {
+    get: () => mainHtml,
+    set(v) {
+      mainHtml = String(v ?? "");
+      mainEl.children.length = 0;
+      if (globalThis.__lsMainObserver) globalThis.__lsMainObserver.cb();
+    },
+    configurable: true,
+  });
+}
 globalThis.window = globalThis;
 globalThis.innerWidth = 1280; globalThis.innerHeight = 800;
 globalThis.location = {hash: "", href: base + "/", origin: base, pathname: "/", search: ""};
@@ -113,7 +132,7 @@ const dispatchKey = (key, target) => {
     fn({key, target: target || null, preventDefault() {}, stopPropagation() {}});
 };
 
-const runner = new Function(script + "\n; return {render, api, refresh, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}};");
+const runner = new Function(script + "\n; return {render, api, refresh, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
 const page = runner();
 const out = [];
 const SECTIONS = [];
@@ -715,6 +734,38 @@ try {
   check("R6: 分组为整组紧凑行容器（group + 细分隔行）",
         group.includes('class="group"') && group.includes('class="svc'), group.slice(0, 80));
 } catch (e) { check("R6 workbench", false, e.message); }
+
+// ---------- W1：轮询稳定性 + 稳定操作标识（共享工作台重构） ----------
+section("W1 workbench");
+try {
+  const main = documentStub.getElementById("main");
+  page.setViewRaw("all");
+  page.render();
+  let writes = 0, val = main.innerHTML;
+  Object.defineProperty(main, "innerHTML", {get: () => val, set(v) { writes += 1; val = v; }, configurable: true});
+  page.render();
+  check("W1: 状态未变时轮询 render 不重写内容区（节点身份保持）", writes === 0, `writes=${writes}`);
+  const snapW1 = page.snapGet();
+  const w1snap = JSON.parse(JSON.stringify(snapW1));
+  if (w1snap.projects.length) w1snap.projects[0].label = "W1-CHANGED";
+  page.setSnap(w1snap);
+  page.render();
+  check("W1: 状态变化时 render 重建内容区（自愈外部改写）", writes >= 1, `writes=${writes}`);
+  Object.defineProperty(main, "innerHTML", {get: () => val, set(v) { val = v; if (globalThis.__lsMainObserver) globalThis.__lsMainObserver.cb(); }, configurable: true});
+  page.setSnap(snapW1);
+  page.render();
+  const rowHtml = main.innerHTML;
+  check("W1: 服务行操作带稳定 data-act 标识（logs/menu）",
+        rowHtml.includes('data-act="logs"') && rowHtml.includes('data-act="menu"'), "");
+  check("W1: 状态列合并构建状态（statecell，地址列不再单列互挤）", rowHtml.includes("statecell"), "");
+  check("W1: lsDiagnose 原生诊断入口存在（W2 桥接）", typeof page.lsDiagnose === "function", typeof page.lsDiagnose);
+  const root = makeEl("main");
+  const c1 = makeEl("button"), c2 = makeEl("div"), g = makeEl("section");
+  root.appendChild(c1); root.appendChild(c2); c2.appendChild(g);
+  const path = page.domPath(root, g);
+  check("W1: domPath/findByDomPath 往返定位（焦点恢复基础）",
+        JSON.stringify(path) === "[1,0]" && page.findByDomPath(root, path, "SECTION") === g, JSON.stringify(path));
+} catch (e) { check("W1 workbench", false, e.message); }
 
 console.log(out.join("\n"));
 const fails = out.filter(l => l.startsWith("FAIL")).length;
