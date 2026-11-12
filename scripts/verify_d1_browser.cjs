@@ -68,6 +68,27 @@ async function main() {
   check("真实页面加载", await ev("document.querySelectorAll('.svc').length") > 0,
         await ev("document.querySelectorAll('.svc').length"));
 
+  const reasonShown = await ev(`(() => {
+    const original = snap;
+    const originalView = view;
+    const reason = "必要依赖未就绪：Colima 恢复失败";
+    const failed = {id: "diagnosis-fixture", name: "ShiCha", state: "failed", label: "故障", reason};
+    try {
+      snap = {...snap, projects: [failed]};
+      setView("attention");
+      const button = [...document.querySelectorAll("#p-diagnosis-fixture button")]
+        .find(button => button.textContent === "查看原因");
+      button.click();
+      const detail = document.querySelector("#p-diagnosis-fixture .detail");
+      return !!detail?.textContent.includes(reason) &&
+        detail.contains(document.activeElement) && document.activeElement.textContent.includes(reason);
+    } finally {
+      snap = original;
+      setView(originalView);
+    }
+  })()`);
+  check("故障服务的「查看原因」展开详情并聚焦诊断", reasonShown);
+
   // ---------------- UX1：地址 chip 的完整独立事件语义 ----------------
   const chipExists = await ev("!!document.querySelector('.svc .line button.domain')");
   check("地址 chip 存在于服务行", chipExists);

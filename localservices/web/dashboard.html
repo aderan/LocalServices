@@ -395,7 +395,7 @@ function renderHealth() {
     + `<button class="goto" onclick="setView('settings')">查看诊断与修复指引</button>`;
 }
 
-function render() {
+function render({preserveLogReading = true} = {}) {
   renderNav();
   renderHealth();
   const main = document.getElementById("main");
@@ -406,7 +406,7 @@ function render() {
   if (uiLocked()) return;
   // UX2（review 2026-11-05）：用户正阅读/选择日志区（悬停或持有选区）时，
   // 后台触发的整树重建一律延后——选择、焦点与滚动位置不允许被打断。
-  if (logReading()) return;
+  if (preserveLogReading && logReading()) return;
   document.getElementById("viewTitle").textContent =
       view.startsWith("project:") ? (projectGroups().find(g => g.pj.id === view.slice(8))?.pj.name || "项目")
                                   : (VIEW_TITLES[view] || "服务");
@@ -518,7 +518,7 @@ function primary(p) {
   if (["available", "partial", "external"].includes(p.state))
     return p.can_open ? `<button class="primary" onclick="act('${p.id}','open')">打开</button>` : "";
   if (["failed", "conflict"].includes(p.state))
-    return `<button class="primary" onclick="open['${p.id}']=true;render()">查看原因</button>`;
+    return `<button class="primary" onclick="showServiceReason('${esc(p.id)}')">查看原因</button>`;
   return `<button class="primary" onclick="act('${p.id}','start',{open:true})">启动并打开</button>`;
 }
 
@@ -565,7 +565,7 @@ function detailsHtml(p) {
   const extra = p.observe_only ? `<tr><td class="k">状态</td><td colspan="3">${esc(p.detail || "")}</td></tr>` : "";
   const src = `<tr><td class="k">源码</td><td colspan="3">${esc(p.source)}${p.code && p.code.process_started ? " · 进程启动于 " + t(p.code.process_started) : ""}${p.code && p.code.newest_change ? " · 最近源码修改 " + t(p.code.newest_change) : ""}</td></tr>`;
   const intentRow = `<tr><td class="k">运行意图</td><td colspan="3">${p.intent === "running" ? "运行" : "停止"}${p.intent_by ? " · 由 " + esc(p.intent_by) + " 设置" : ""}${p.managed_by === "external" ? " · 外部管理" : ""}</td></tr>`;
-  const reasonRow = p.reason ? `<tr><td class="k">诊断</td><td colspan="3" class="${["failed","conflict"].includes(p.state) ? "" : "muted"}" style="white-space:pre-wrap">${esc(p.reason)}</td></tr>` : "";
+  const reasonRow = p.reason ? `<tr id="reason-${esc(p.id)}" tabindex="-1"><td class="k">诊断</td><td colspan="3" class="${["failed","conflict"].includes(p.state) ? "" : "muted"}" style="white-space:pre-wrap">${esc(p.reason)}</td></tr>` : "";
   const lg = logs[p.id] !== undefined ? `<pre id="logs-${p.id}">${esc(logs[p.id] || "(无日志)")}</pre>`
     : `<p class="inline-note">日志随「日志」按钮加载到此处（最近 200 行）。</p>`;
   const eps = (p.endpoints || []).map(e => {
@@ -578,9 +578,9 @@ function detailsHtml(p) {
       <td class="k">${esc(st)}</td><td></td></tr>`;
   }).join("");
   const direct = p.observe_only ? "" : `<tr><td class="k">直连地址</td><td colspan="3">${esc(p.open || "—")}<span class="note">（内部端口实现细节；域名形式为 http://域名:5670，在设置中启用）</span></td></tr>`;
-  return `<div class="detail">
+  return `<div class="detail" id="detail-${esc(p.id)}" tabindex="-1">
     <h4>概览</h4>
-    <div class="table-scroll"><table>${extra}${intentRow}${src}${reasonRow}</table></div>
+    <div class="table-scroll"><table>${reasonRow}${extra}${intentRow}${src}</table></div>
     ${eps ? `<h4>入口</h4><div class="table-scroll"><table>${eps}${direct}</table></div>` : ""}
     ${rows ? `<h4>组件</h4><div class="table-scroll"><table>${rows}</table></div>` : ""}
     ${deps ? `<h4>依赖</h4><div class="table-scroll"><table>${deps}</table></div>` : ""}
@@ -589,6 +589,14 @@ function detailsHtml(p) {
 }
 
 function toggleDetail(id) { open[id] = !open[id]; render(); }
+
+function showServiceReason(id) {
+  open[id] = true;
+  render({preserveLogReading: false});
+  const target = document.getElementById("reason-" + id) || document.getElementById("detail-" + id);
+  target?.focus({preventScroll: true});
+  target?.scrollIntoView({block: "nearest"});
+}
 
 function serviceRow(p, showProject) {
   const code = p.code || {};
