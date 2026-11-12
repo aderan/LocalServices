@@ -6,7 +6,11 @@ import AppKit
 
 let port = ProcessInfo.processInfo.environment["LOCALSERVICES_PORT"] ?? "47800"
 let base = URL(string: "http://127.0.0.1:\(port)")!
-let tokenPath = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/LocalServices/token")
+// token 与 daemon 的 paths.home()/token 同源：生产缺省 ~/Library/Application Support/LocalServices，
+// 隔离验证可经 LOCALSERVICES_HOME 指向测试目录（scripts/verify_w3_native.sh）。
+let tokenDir = ProcessInfo.processInfo.environment["LOCALSERVICES_HOME"]
+    ?? (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/LocalServices")
+let tokenPath = (tokenDir as NSString).appendingPathComponent("token")
 
 struct Service {
     let id: String, name: String, state: String, label: String, intent: String
@@ -43,6 +47,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var attention = false
     var lastError = ""
     var warnings: [String] = []
+    var menuIsOpen = false
+    var rebuildPending = false
     let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.connectionProxyDictionary = [:]
@@ -168,7 +174,18 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.button?.toolTip = desc
     }
 
-    func menuWillOpen(_ menu: NSMenu) { refresh() }
+    func menuWillOpen(_ menu: NSMenu) {
+        if menu === self.menu { menuIsOpen = true }
+        refresh()
+    }
+
+    // W3：全菜单打开期间不做整树重建——5s 定时刷新的 removeAllItems 会销毁正在跟踪的
+    // 菜单会话（项目/子菜单悬停被清掉）；挂起到 menuDidClose 后再应用。
+    func menuDidClose(_ menu: NSMenu) {
+        guard menu === self.menu else { return }
+        menuIsOpen = false
+        if rebuildPending { rebuildPending = false; rebuild() }
+    }
 
     // MARK: 菜单栏结构（工作台：Project 分组）
 
@@ -211,6 +228,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func rebuild() {
+        if menuIsOpen { rebuildPending = true; return }
         menu.removeAllItems()
         let head = NSMenuItem(title: "Locove／洛湾", action: nil, keyEquivalent: "")
         head.isEnabled = false
@@ -375,8 +393,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "stopped" where !p.observeOnly:
             request("POST", "api/projects/\(id)/start", body: ["open": true]) { [weak self] _, _ in self?.refresh() }
         default:
+            // W2/W3：失败/冲突「查看原因」与浏览器同一诊断路径（展开 + 聚焦诊断行）
             showMainWindow()
-            mainWindow.evaluate("window.lsFocusService && window.lsFocusService('\(id)')")
+            mainWindow.evaluate("window.lsDiagnose && window.lsDiagnose('\(id)')")
         }
     }
 
