@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import shutil
 import signal
 import socket
@@ -176,6 +177,13 @@ class DaemonEndToEndTest(unittest.TestCase):
         self.assertIn(f'const TOKEN = "{self.token}"', html)
         self.assertIn("globalSearch", html)
 
+    def test_dashboard_logo_loads_without_api_token(self):
+        with urllib.request.urlopen(f"{self.base}/", timeout=10) as r:
+            self.assertIn('src="/locove-logo.png"', r.read().decode("utf-8"))
+        with urllib.request.urlopen(f"{self.base}/locove-logo.png", timeout=10) as r:
+            self.assertEqual(r.headers.get_content_type(), "image/png")
+            self.assertEqual(r.read(), (REPO_ROOT / "assets" / "locove-logo.png").read_bytes())
+
     # ---- 安全模型 ----
 
     def test_api_without_token_is_401(self):
@@ -269,6 +277,9 @@ class MenubarBuildTest(unittest.TestCase):
         self.assertTrue((app / "Contents" / "Info.plist").exists())
         plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
         self.assertIn("0.2.0", plist)
+        icon_name = plistlib.loads(plist.encode())["CFBundleIconFile"]
+        icon = app / "Contents" / "Resources" / icon_name
+        self.assertEqual(icon.read_bytes()[:4], b"icns")
 
 
 if __name__ == "__main__":

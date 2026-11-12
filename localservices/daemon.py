@@ -112,6 +112,11 @@ class Handler(BaseHTTPRequestHandler):
                 html = (WEB / "dashboard.html").read_text(encoding="utf-8").replace("__TOKEN__", self.token)
                 self._send(200, html.encode(), "text/html; charset=utf-8")
                 return
+            if u.path == "/locove-logo.png":
+                if self._guard(need_token=False):
+                    logo = WEB.parent.parent / "assets" / "locove-logo.png"
+                    self._send(200, logo.read_bytes(), "image/png")
+                return
             if not self._guard():
                 return
             if u.path == "/api/status":
