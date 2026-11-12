@@ -33,7 +33,7 @@ os.environ.update({
 })
 sys.path.insert(0, str(REPO))
 
-from localservices import launchd, procs, runner  # noqa: E402
+from localservices import controller, launchd, procs, runner  # noqa: E402
 from localservices.controller import Controller  # noqa: E402
 
 FIXTURE = REPO / "tests" / "fixture_server.py"
@@ -165,6 +165,42 @@ class LifecycleTest(Base):
         self.crash.unlink()
         self.ctl.start("fx")
         self.assertTrue(self.wait_state("available"))
+
+    def test_2b_gave_up_slow_retry(self):
+        """gave_up 慢周期自愈：无源码变化，外部原因消失后按 GAVE_UP_RETRY_SECONDS 重试收敛。"""
+        self.ctl.start("fx")
+        self.assertTrue(self.wait_state("available"))
+        comp = self.ctl.projects["fx"].components[0]
+        label = self.ctl.label(self.ctl.projects["fx"], comp)
+        time.sleep(4.5)  # 过 HEALTHY_AFTER：崩溃走退避/放弃路径
+        self.crash.write_text("1")
+        os.kill(launchd.info(label).pid, signal.SIGKILL)
+        rec = wait(lambda: runner.read_record("fx", "api").get("gave_up") and runner.read_record("fx", "api"), 60)
+        self.assertTrue(rec, runner.read_record("fx", "api"))
+        self.assertEqual(self.status()["state"], "failed")
+        runs = launchd.info(label).runs
+        orig = controller.GAVE_UP_RETRY_SECONDS
+        try:
+            # 0 = 关闭慢周期：放弃后不自动恢复（旧行为）
+            controller.GAVE_UP_RETRY_SECONDS = 0
+            for _ in range(2):
+                self.cycle()
+                time.sleep(0.3)
+            self.assertEqual(self.status()["state"], "failed")
+            self.assertEqual(launchd.info(label).runs, runs, "周期为 0 不应触发重启")
+            # 外部原因消失 + 注入短周期 → reconcile 自愈（无源码变化，纯周期触发）
+            self.crash.unlink()
+            controller.GAVE_UP_RETRY_SECONDS = 1.0
+            ok = False
+            for _ in range(6):
+                self.cycle()
+                if self.wait_state("available", timeout=8):
+                    ok = True
+                    break
+                time.sleep(0.5)
+            self.assertTrue(ok, self.status())
+        finally:
+            controller.GAVE_UP_RETRY_SECONDS = orig
 
     def test_3_external_instance_adopt_takeover_and_foreign(self):
         self.ctl.stop("fx")

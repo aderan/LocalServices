@@ -22,6 +22,11 @@ from . import adapters, compose, dockerctx, launchd, manifest, paths, procs, run
 from .manifest import Component, Project
 from .infrastructure import DependencyError, Infrastructure
 
+# gave_up 组件的慢速自愈周期（秒）：放弃自动恢复 ≠ 永久放弃。端口被占、依赖不可用等
+# 外部原因可能在放弃后自行消失，reconcile 在此周期上重试收敛（防崩溃热循环的兜底由
+# runner 的 MAX_FAILURES/退避承担）。0 = 关闭，回到放弃后不再自动恢复的旧行为。
+GAVE_UP_RETRY_SECONDS = float(os.environ.get("LOCALSERVICES_GAVE_UP_RETRY_SECONDS", "600"))
+
 STATE_LABELS = {
     "stopped": "已停止",
     "starting": "启动中",
@@ -1391,12 +1396,19 @@ class Controller:
                         continue
                     ji = launchd.info(self.label(p, c))
                     rec = runner.read_record(p.id, c.id)
-                    if rec.get("gave_up") and c.watch and not ji.running:
-                        changed, _ = sourcewatch.newest(p.comp_cwd(c), c.watch + c.restart_on, c.ignore)
-                        if changed > float(rec.get("gave_up_at") or rec.get("started_at") or 0):
-                            # source edited after we gave up: the fix may be in, try once more
-                            if self._begin(p.id, "starting"):
-                                threading.Thread(target=self._do_restart, args=(p, [c.id]), daemon=True).start()
+                    if rec.get("gave_up") and not ji.running:
+                        due = False
+                        if c.watch:
+                            changed, _ = sourcewatch.newest(p.comp_cwd(c), c.watch + c.restart_on, c.ignore)
+                            if changed > float(rec.get("gave_up_at") or rec.get("started_at") or 0):
+                                # source edited after we gave up: the fix may be in, try once more
+                                due = True
+                        if not due and GAVE_UP_RETRY_SECONDS > 0 and time.time() - float(
+                                rec.get("gave_up_at") or rec.get("started_at") or 0) >= GAVE_UP_RETRY_SECONDS:
+                            # 外部原因（端口被占、依赖不可用）可能在放弃后自行消失：慢周期重试收敛
+                            due = True
+                        if due and self._begin(p.id, "starting"):
+                            threading.Thread(target=self._do_restart, args=(p, [c.id]), daemon=True).start()
                             break
                     if not ji.loaded and not rec.get("gave_up"):
                         if self._begin(p.id, "starting"):
