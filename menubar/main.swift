@@ -27,6 +27,14 @@ struct WorkspaceProject {
 final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
+    private lazy var quickMenu: NSMenu = {
+        let menu = NSMenu()
+        let open = menu.addItem(withTitle: "打开主窗口", action: #selector(showMainWindow), keyEquivalent: "")
+        open.target = self
+        let quit = menu.addItem(withTitle: "退出菜单栏（后台服务继续运行）", action: #selector(quit), keyEquivalent: "")
+        quit.target = self
+        return menu
+    }()
     let mainWindow = MainWindowController(base: base, portString: port)
     var services: [Service] = []
     var projects: [WorkspaceProject] = []
@@ -43,13 +51,27 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         menu.delegate = self
-        item.menu = menu
+        if let button = item.button {
+            button.target = self
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseDown, .rightMouseUp])
+        }
         installMainMenu() // ⌘N/⌘R/⌘Q 等在主窗口聚焦时生效
         updateIcon()
         rebuild()
         refresh()
         mainWindow.show()
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
+    }
+
+    @objc private func statusItemClicked(_ button: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        let secondaryClick = event?.type == .rightMouseUp
+            || (event?.type == .leftMouseDown && event?.modifierFlags.contains(.control) == true)
+        // 菜单打开期间交给 AppKit 跟踪，关闭后恢复按钮的点击处理。
+        item.menu = secondaryClick ? quickMenu : menu
+        defer { item.menu = nil }
+        button.performClick(nil)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
