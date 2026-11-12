@@ -280,6 +280,8 @@ class MenubarBuildTest(unittest.TestCase):
         icon_name = plistlib.loads(plist.encode())["CFBundleIconFile"]
         icon = app / "Contents" / "Resources" / icon_name
         self.assertEqual(icon.read_bytes()[:4], b"icns")
+        status_logo = app / "Contents" / "Resources" / "LocoveStatus.png"
+        self.assertEqual(status_logo.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ for size in 16 32 128 256 512; do
   sips -z "$retina_size" "$retina_size" ../assets/locove-logo.png --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$iconset" -o "$APP/Contents/Resources/Locove.icns"
+cp "$iconset/icon_128x128.png" "$APP/Contents/Resources/LocoveStatus.png"
 swiftc -O -o "$APP/Contents/MacOS/MyBrainServices" main.swift MainWindow.swift
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

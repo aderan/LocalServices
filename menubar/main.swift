@@ -27,6 +27,7 @@ struct WorkspaceProject {
 final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
+    private let statusLogo = NSImage(named: "LocoveStatus")
     private lazy var quickMenu: NSMenu = {
         let menu = NSMenu()
         let open = menu.addItem(withTitle: "打开主窗口", action: #selector(showMainWindow), keyEquivalent: "")
@@ -139,13 +140,31 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func updateIcon() {
-        let name: String, desc: String
-        if !connected { name = "questionmark.circle"; desc = "Locove／洛湾：无法连接控制服务" }
-        else if attention { name = "exclamationmark.triangle"; desc = "Locove／洛湾：有项目需要处理" }
-        else { name = "square.stack.3d.up"; desc = "Locove／洛湾" }
-        let img = NSImage(systemSymbolName: name, accessibilityDescription: desc)
-        img?.isTemplate = true
-        item.button?.image = img
+        let desc: String
+        if !connected {
+            desc = "Locove／洛湾：无法连接控制服务"
+        } else if attention {
+            desc = "Locove／洛湾：有项目需要处理"
+        } else {
+            desc = "Locove／洛湾"
+        }
+
+        let disconnectBadge = connected ? nil : NSImage(systemSymbolName: "questionmark.circle",
+                                                         accessibilityDescription: nil)
+        let image: NSImage?
+        if let statusLogo {
+            image = NSImage(size: NSSize(width: 23, height: 19), flipped: false) { _ in
+                // 原图有透明留白，断连徽标放在湾口上方。
+                statusLogo.draw(in: NSRect(x: 0, y: -2, width: 24, height: 24))
+                disconnectBadge?.draw(in: NSRect(x: 14, y: 9, width: 9, height: 9))
+                return true
+            }
+        } else {
+            image = disconnectBadge ?? NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: nil)
+        }
+        image?.isTemplate = true
+        item.button?.image = image
+        item.button?.setAccessibilityLabel(desc)
         item.button?.toolTip = desc
     }
 
