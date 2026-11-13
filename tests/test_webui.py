@@ -102,6 +102,10 @@ class DaemonEndToEndTest(unittest.TestCase):
         cls.src = root / "src"
         cls.services.mkdir(parents=True)
         cls.src.mkdir()
+        shutil.copytree(REPO_ROOT / "localservices", root / "localservices",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(REPO_ROOT / "assets", root / "assets")
+        cls.dashboard = root / "localservices" / "web" / "dashboard.html"
         cls.port = free_port()
         env = dict(os.environ,
                    LOCALSERVICES_HOME=str(cls.home),
@@ -109,7 +113,7 @@ class DaemonEndToEndTest(unittest.TestCase):
                    LOCALSERVICES_PORT=str(cls.port))
         cls.proc = subprocess.Popen(
             [sys.executable, "-m", "localservices.daemon"],
-            cwd=REPO_ROOT, env=env,
+            cwd=root, env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls.token = ""
         deadline = time.monotonic() + 20
@@ -187,6 +191,24 @@ class DaemonEndToEndTest(unittest.TestCase):
         with urllib.request.urlopen(f"{self.base}/locove-logo.png", timeout=10) as r:
             self.assertEqual(r.headers.get_content_type(), "image/png")
             self.assertEqual(r.read(), (REPO_ROOT / "assets" / "locove-logo.png").read_bytes())
+
+    def test_open_workbench_can_detect_dashboard_changes(self):
+        def loaded_revision(path):
+            with urllib.request.urlopen(self.base + path, timeout=10) as response:
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                html = response.read().decode()
+                return html.split('const DASHBOARD_REVISION = "', 1)[1].split('"', 1)[0]
+
+        original = self.dashboard.read_bytes()
+        before = loaded_revision("/")
+        self.assertEqual(before, self.call("GET", "/api/status")[1]["dashboard_revision"])
+        try:
+            self.dashboard.write_bytes(original + b"\n<!-- updated dashboard -->\n")
+            after = self.call("GET", "/api/status")[1]["dashboard_revision"]
+            self.assertNotEqual(before, after)
+            self.assertEqual(after, loaded_revision("/index.html"))
+        finally:
+            self.dashboard.write_bytes(original)
 
     # ---- 安全模型 ----
 

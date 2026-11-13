@@ -21,6 +21,7 @@
             font-weight: 600; padding: 8px 20px; text-align: center; }
   .banner:not([hidden]) { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; }
   .banner.stale { color: var(--warn); }
+  .banner.update { color: var(--fg); }
   .shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
   nav { background: var(--bg); border-right: 1px solid var(--line); padding: 14px 10px;
         display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; align-self: start;
@@ -307,6 +308,10 @@
   <span id="bannerMessage" role="status"></span>
   <button id="refreshBtn" onclick="refresh(true)" aria-disabled="false">立即刷新</button>
 </div>
+<div id="dashboardUpdate" class="banner update" hidden>
+  <span id="dashboardUpdateMessage" role="status"></span>
+  <button id="dashboardReload" onclick="reloadDashboard(true)"></button>
+</div>
 <div class="shell">
 <nav aria-label="工作台导航">
   <div class="brand">
@@ -340,6 +345,7 @@
 <script>
 "use strict";
 const TOKEN = "__TOKEN__";
+const DASHBOARD_REVISION = "__DASHBOARD_REVISION__";
 const H = {"X-LocalServices-Token": TOKEN, "Content-Type": "application/json"};
 const pending = {};   // key -> in-flight action label（防重复点击）
 const msgs = {};
@@ -354,6 +360,8 @@ let view = "all";     // all | project:<id> | attention | removed | resources | 
 let connOk = null;
 let manualRefresh = false;
 let refreshFailed = false;
+let reloadingDashboard = false;
+let pendingWrites = 0;
 const STALE_SNAPSHOT_MS = 30_000;
 let pendingDiagnosis = null;
 let draftEdit = {};         // draft id -> 编辑中的 service 字段
@@ -379,10 +387,15 @@ function newWizard() {
 // ------------------------------------------------------------ 基础设施
 
 async function api(method, path, body) {
-  const r = await fetch(path, {method, headers: H, body: body ? JSON.stringify(body) : undefined});
-  let data = null;
-  try { data = await r.json(); } catch (e) { /* 非 JSON 响应 */ }
-  return [r.status, data];
+  if (method !== "GET") pendingWrites++;
+  try {
+    const r = await fetch(path, {method, headers: H, body: body ? JSON.stringify(body) : undefined});
+    let data = null;
+    try { data = await r.json(); } catch (e) { /* 非 JSON 响应 */ }
+    return [r.status, data];
+  } finally {
+    if (method !== "GET") pendingWrites--;
+  }
 }
 
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -2459,7 +2472,10 @@ async function draftRegister(id) {
   try {
     const [code, res] = await api("POST", `/api/drafts/${id}/register`, {service});
     msgs["draft-" + id] = code === 200 ? {text: `已注册（${res.action}，服务 ${res.service_id}）`} : {text: res?.error || "注册失败", bad: true};
-    if (code === 200) await loadDrafts();
+    if (code === 200) {
+      delete draftEdit[id];
+      await loadDrafts();
+    }
   } catch (e2) { msgs["draft-" + id] = {text: "无法连接控制服务", bad: true}; setConn(false); }
   pending["draft-" + id] = null;
   await refresh(); render();
@@ -3064,6 +3080,52 @@ function setView(v) {
   render();
 }
 
+function dashboardUpdateInProgress() {
+  return pendingWrites > 0 || manualRefresh || Object.values(pending).some(Boolean) || recognitionTasks.some(task =>
+    task.registering || task.manualRegistering || task.verifying || ["queued", "running"].includes(task.job?.state));
+}
+
+function dashboardHasEdits() {
+  const active = document.activeElement;
+  return uiLocked() || Boolean(window.__lsPickCb) || logReading() ||
+    (["INPUT", "SELECT", "TEXTAREA"].includes(active?.tagName) && active.id !== "globalSearch") ||
+    Object.keys(draftEdit).length > 0 ||
+    recognitionTasks.some(task => (!task.registered && (task.dir || task.name || task.manual)) ||
+      task.candidates.some((candidate, i) => candidate._sel !== false &&
+        !(task.results[i]?.res?.service_id || task.results[i]?.res?.draft_id)));
+}
+
+function reloadDashboard(requested = false) {
+  if (reloadingDashboard || dashboardUpdateInProgress()) return;
+  if (dashboardHasEdits() && (!requested || !confirm(tr(
+    "更新工作台会丢弃尚未保存的页面编辑。现在更新？",
+    "Reloading the workbench will discard unsaved edits. Reload now?")))) return;
+  reloadingDashboard = true;
+  try {
+    window.sessionStorage.setItem("locove-dashboard-reload", JSON.stringify({
+      view, search: document.getElementById("globalSearch").value,
+      expanded: Object.keys(open).filter(id => open[id]),
+    }));
+  } catch (e) { /* 页面仍可更新，即使浏览器禁用会话存储 */ }
+  location.reload();
+}
+
+function renderDashboardUpdate(revision) {
+  const update = document.getElementById("dashboardUpdate");
+  update.hidden = !revision || revision === DASHBOARD_REVISION;
+  if (update.hidden) return;
+  const busy = dashboardUpdateInProgress();
+  const message = busy
+    ? tr("工作台有更新，将等待当前操作完成。", "A workbench update is ready. Waiting for the current operation.")
+    : tr("工作台有更新。可以先完成当前编辑。", "A workbench update is ready. You can finish editing first.");
+  const status = document.getElementById("dashboardUpdateMessage");
+  if (status.textContent !== message) status.textContent = message;
+  const button = document.getElementById("dashboardReload");
+  button.textContent = tr("更新工作台", "Reload workbench");
+  button.disabled = busy;
+  if (!busy) reloadDashboard();
+}
+
 async function refresh(manual) {
   if (manual) {
     if (manualRefresh) return;
@@ -3104,6 +3166,7 @@ async function refresh(manual) {
     setConn(false);
     if (snap) for (const p of snap.projects) { p.state = "unknown"; p.label = "未知"; p.op = null; p.can_open = false; p.reason = ""; }
   }
+  if (connOk) renderDashboardUpdate(snap.dashboard_revision);
   if (connOk && pendingDiagnosis) {
     const id = pendingDiagnosis;
     pendingDiagnosis = null;
@@ -3114,6 +3177,9 @@ async function refresh(manual) {
 }
 
 document.getElementById("globalSearch").addEventListener("input", render);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && !manualRefresh && !logReading()) refresh();
+});
 // ⋯ 菜单键盘可达：Esc 关闭，↑/↓ 在菜单项间移动（V2.11）
 document.addEventListener("keydown", e => {
   if (!menuState) return;
@@ -3129,6 +3195,16 @@ document.addEventListener("keydown", e => {
 });
 // W1/W2 深链：#p-<id> 载入即展开定位该服务（浏览器书签 / 原生 / Agent 同一事实源）
 { const m = location.hash.match(/^#p-(.+)$/); if (m) open[m[1]] = true; }
+try {
+  const saved = window.sessionStorage.getItem("locove-dashboard-reload");
+  if (saved) {
+    window.sessionStorage.removeItem("locove-dashboard-reload");
+    const state = JSON.parse(saved);
+    document.getElementById("globalSearch").value = state.search;
+    for (const id of state.expanded) open[id] = true;
+    setView(state.view);
+  }
+} catch (e) { /* 禁用存储或会话数据损坏时使用默认视图 */ }
 refresh();
 // UX2（review 2026-11-05）：日志区是 .detail 内的 <pre>（不再是旧 details[open]）。
 // 悬停阅读或正持有文本选区时暂停轮询刷新与后台重建——整树 innerHTML 替换会打断

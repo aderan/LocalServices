@@ -1,6 +1,6 @@
 // 主窗口：WKWebView 承载 daemon 的工作台 Dashboard。
 // 只信任 http://127.0.0.1:<port> 这一个 origin；其余链接交给系统浏览器；
-// 控制层不可达（ping 失败）时显示原生错误页，恢复后自动重载。
+// 控制层不可达（ping 失败）时显示原生错误页；已加载的页面恢复后继续轮询。
 // 原生桥（仅此受控页面）：lsbridge 消息 {action:"pickDirectory"|"openExternally"}。
 
 import AppKit
@@ -48,7 +48,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
         overlay.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         overlayTitle.font = .boldSystemFont(ofSize: 20)
         overlayDetail = NSTextField(wrappingLabelWithString:
-            "服务状态未知——不代表项目已停止。控制服务恢复后将自动重载。")
+            "服务状态暂时未知。控制服务恢复后会自动更新。")
         overlayDetail.font = .systemFont(ofSize: 13)
         overlayDetail.textColor = .secondaryLabelColor
         overlayDetail.alignment = .center
@@ -87,8 +87,8 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
         window.title = language.productName
         overlayTitle.stringValue = language.text("控制层不可用", "Daemon unavailable")
         overlayDetail.stringValue = language.text(
-            "服务状态未知——不代表项目已停止。控制服务恢复后将自动重载。",
-            "Service status is unknown. The workbench reloads automatically when the daemon recovers.")
+            "服务状态暂时未知。控制服务恢复后会自动更新。",
+            "Service status is unknown. The workbench updates automatically when the daemon recovers.")
         retryButton.title = language.text("立即重试", "Retry now")
     }
 
@@ -121,10 +121,10 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
 
     private func setReachable(_ ok: Bool) {
         if ok {
-            if !overlay.isHidden { // daemon 恢复后自动重载
-                overlay.isHidden = true
+            if !dashboardLoaded && !webView.isLoading {
                 webView.load(URLRequest(url: base))
             }
+            overlay.isHidden = true
             reachable = true
         } else {
             reachable = false
@@ -169,6 +169,11 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: Error) {
+        ping()
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        dashboardLoaded = false
         ping()
     }
 

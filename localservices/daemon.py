@@ -7,6 +7,7 @@ additionally reject foreign Origins. Only fixed, registered operations exist.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -26,6 +27,10 @@ from .controller import Controller
 
 WEB = Path(__file__).resolve().parent / "web"
 STARTED = time.time()
+
+
+def dashboard_revision(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
 
 
 def _locove_settings() -> dict:
@@ -109,8 +114,9 @@ class Handler(BaseHTTPRequestHandler):
                 if self.headers.get("Sec-Fetch-Site") not in (None, "none", "same-origin"):
                     self._send(403, {"ok": False, "error": "cross-site navigation refused"})
                     return
-                html = (WEB / "dashboard.html").read_text(encoding="utf-8").replace("__TOKEN__", self.token)
-                self._send(200, html.encode(), "text/html; charset=utf-8")
+                content = (WEB / "dashboard.html").read_bytes()
+                html = content.replace(b"__DASHBOARD_REVISION__", dashboard_revision(content).encode())
+                self._send(200, html.replace(b"__TOKEN__", self.token.encode()), "text/html; charset=utf-8")
                 return
             if u.path == "/locove-logo.png":
                 if self._guard(need_token=False):
@@ -120,7 +126,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._guard():
                 return
             if u.path == "/api/status":
-                self._send(200, self.ctl.snapshot())
+                snapshot = self.ctl.snapshot()
+                try:
+                    revision = dashboard_revision((WEB / "dashboard.html").read_bytes())
+                except OSError:
+                    # Status is still available during a dashboard file replacement.
+                    revision = None
+                self._send(200, {**snapshot, "dashboard_revision": revision})
                 return
             if u.path == "/api/registry":
                 self._send(*register_api.handle_registry_get(self.ctl))
