@@ -832,11 +832,13 @@ function detailsHtml(p) {
   const problem = ["failed", "conflict", "partial"].includes(p.state);
   const canRetry = ["failed", "conflict"].includes(p.state) && !p.observe_only && !p.can_takeover;
   const retryDisabled = p.op || busy(p.id) || busy("g-" + p.group) || connOk === false;
+  const canRepair = canRetry && p.intent === "stopped";
   const diagnosis = p.reason || problem ? `<section class="diagnosis${p.state === "partial" || !problem ? " warning" : ""}" id="reason-${esc(p.id)}" tabindex="-1">
     <strong>${esc(p.reason ? p.reason.split("\n", 1)[0] : stateLabel(p) || tr("诊断", "Diagnosis"))}</strong>
     ${p.reason?.includes("\n") ? `<p>${esc(p.reason.slice(p.reason.indexOf("\n") + 1))}</p>` : ""}
     <div class="acts">
       ${canRetry ? `<button class="primary" data-act="retry" ${retryDisabled ? "disabled" : ""} onclick="act('${p.id}','start',{open:true})">${tr("重试服务", "Retry service")}</button>` : ""}
+      ${canRepair ? `<button data-act="agent-repair" ${retryDisabled ? "disabled" : ""} onclick="wizRepair('${p.id}')">Agent 检查并修复</button>` : ""}
       <button data-act="diagnostic-logs" onclick="loadLogs('${p.id}')">${tr("查看日志", "View logs")}</button>
       <button class="ghost" data-act="copy-diagnosis" onclick="copyDiagnosis('${p.id}')">${tr("复制诊断", "Copy diagnosis")}</button>
     </div>
@@ -1409,7 +1411,7 @@ function recognitionTaskList() {
   return `<section class="card">
     <div class="card-head"><h3>识别任务</h3><button id="wizNewTask" onclick="wizNewTask()">新建识别任务</button></div>
     ${recognitionTasks.map(task => {
-      const status = task.registering || task.manualRegistering ? "登记中" : task.registered ? "已登记"
+      const status = task.verifying ? "试启动中" : task.registering || task.manualRegistering ? "登记中" : task.registered ? "已登记"
         : ({queued: "排队中", running: "识别中", done: task.candidates.length ? "待核对" : "无可用候选",
             failed: "识别失败"})[task.job?.state] || (task.step === "job" ? "提交中" : "待选择目录");
       return `<button class="recognition-task" onclick="wizSelectTask(${task.taskId})" aria-pressed="${task === wiz}">
@@ -1418,6 +1420,35 @@ function recognitionTaskList() {
       </button>`;
     }).join("")}
   </section>`;
+}
+
+function externalAgentPrompt() {
+  const directory = (wiz.dir || "").trim() || "当前项目目录";
+  const prompt = `请在 ${directory} 中为洛湾（LocalServices）登记一个可启动的本地服务。
+阅读 README 和运行配置，找出主服务的启动命令、工作目录、监听端口、健康探针及打开地址。排除采集、迁移、测试等一次性任务。
+先用 lsctl projects --json 检查目录是否已登记，复用项目 ID 和 revision。构造 schemaVersion: 1 的 JSON，包含 project、revision 和 service。service 至少包含 id、name、source（绝对路径）、components。组件命令使用 argv 数组，启动参数、监听端口、探针和打开地址保持一致。
+用 lsctl register --stdin --json 提交 JSON，并在顶层设置 verify_start: true。洛湾会试启动，验证通过后自动登记。报告 service_id、验证结果和 trial.log 路径。如果 lsctl 不可用，或试启动失败，请返回候选 JSON 和具体原因。`;
+  showModal({title: "外部 Agent 提示词", okText: "复制提示词", bodyHtml: `
+    <p class="note">在 WorkBuddy 或其他 Agent 中打开项目目录，再粘贴执行。</p>
+    <textarea aria-label="外部 Agent 提示词" readonly rows="12" style="width:100%">${esc(prompt)}</textarea>`,
+    onOk: async () => {
+      if (navigator.clipboard?.writeText) {
+        try { await navigator.clipboard.writeText(prompt); return true; } catch (e) { /* use selection */ }
+      }
+      const field = document.querySelector('.modal textarea');
+      field?.select();
+      return document.execCommand("copy") ? true : "keep";
+    }});
+}
+
+function trialDetails(result) {
+  const record = result?.trial;
+  if (!record) return "";
+  const label = record.state === "passed" ? "试启动通过" : "试启动未通过";
+  const checks = (record.checks || []).map(check => `${check.component} · ${check.port}`).join("、");
+  return `<p class="note">${label}${checks ? " · " + esc(checks) : ""}
+    ${record.skipped?.length ? " · 未执行生成任务 " + esc(record.skipped.join("、")) : ""}
+    ${record.log ? `<br>本机验证记录 <code>${esc(record.log)}</code>` : ""}</p>`;
 }
 
 function viewNewProject() {
@@ -1446,7 +1477,14 @@ function viewNewProject() {
              <span class="inline-note">已选用项目 ${esc(w.project.id)}（${(w.presetDirs || []).filter(d => d.sel).length}/${(w.presetDirs || []).length} 目录）</span>`
           : `<button class="primary" onclick="wizStartAnalyze()" ${w.step === "job" ? "disabled" : ""}>开始识别</button>
              <button onclick="wizStartManual()">跳过识别，手动添加服务</button>`}
+        <button onclick="externalAgentPrompt()">复制外部 Agent 提示词</button>
       </div>
+      <div class="field">
+        <label><input type="checkbox" style="min-width:0;flex:none" ${w.autoRegister ? "checked" : ""}
+          onchange="wizField('autoRegister',this.checked)"> 试启动通过后自动登记</label>
+        <span class="note">会短暂运行候选的本机启动命令，保存验证记录。</span>
+      </div>
+
       ${(w.presetDirs || []).length ? `<div class="card-head"><h3 style="font-size:14px">项目目录（多选 = 联合识别，逐目录分析后合并候选）</h3></div>
         ${(w.presetDirs || []).map((d, i) => `<label style="display:flex;align-items:center;gap:6px;margin:2px 0">
           <input type="checkbox" ${d.sel ? "checked" : ""} onchange="wizTogglePresetDir(${i})"> ${esc(d.path)}</label>`).join("")}` : ""}
@@ -1470,6 +1508,7 @@ function viewNewProject() {
           <button onclick="wizStartAnalyze(null, wiz.jobDir)">重试</button>
           <button onclick="wizRetryOther()">换一个 agent 重试</button>
           <button onclick="setView('agents')">去 Agent 连接</button>
+          <button onclick="externalAgentPrompt()">复制外部 Agent 提示词</button>
           <button onclick="wizStartManual()">改为手动添加服务</button>
         </div>`;
     }
@@ -1481,12 +1520,25 @@ function viewNewProject() {
       </section>`;
   }
 
+  if (w.repair) {
+    const result = w.repairResult;
+    return pageTop + `<section class="card"><div class="card-head"><h3>Agent 修复 · ${esc(w.name)}</h3></div>
+      ${projNote}${analysisActivity(w.job || {})}
+      ${w.verifying ? '<p role="status">正在试启动修复后的服务…</p>' : ""}
+      ${result ? `<div class="result-box ${result.ok ? "ok" : "bad"}">${esc(result.ok ? "已验证并保存端口修复" : result.error)}</div>
+      ${trialDetails(result)}
+      ${result.ok ? "" : `<button onclick="wizStartAnalyze(null, wiz.jobDir)">重新识别修复方案</button>`}
+      ${!result.ok && w.candidates.length ? `<details><summary>Agent 候选</summary><pre>${esc(JSON.stringify(w.candidates.map(({id, open, components, unresolved}) => ({id, open, components, unresolved})), null, 2))}</pre></details>` : ""}
+      ${result.ok ? `<button onclick="wizStartService('${esc(w.repair.sid)}')">启动并打开</button>` : ""}` : ""}
+    </section>`;
+  }
+
   // step === review（进入时预取每候选与已登记服务的差异预览，dry_run 不落盘；R08 复用资源懒加载）
   if (!w._diffFetched && (w.target || w.project)) { w._diffFetched = true; w.candidates.forEach((_, i) => wizPrefetchDiff(i)); }
   if (!w._resFetched && (w.target || w.project)) { w._resFetched = true; wizLoadResources(); }
   const candCards = w.candidates.map((c, i) => {
     const r = w.results[i];
-    const d = w.diffs[i];
+    const d = r?.res?.service_id ? null : w.diffs[i];
     const editedNow = candidateEditedPaths(c);   // R06：本次审核中用户改过的字段（优先于旧覆盖）
     const advKeys = c.components?.flatMap(k => COMP_FWD_KEYS.filter(f => k[f] !== null && k[f] !== undefined && !(Array.isArray(k[f]) && !k[f].length))) || [];
     const diffBox = d?.registration_action === "created"
@@ -1561,7 +1613,10 @@ function viewNewProject() {
       ${advKeys.length ? `<p class="inline-note">高级字段随注册保留：${[...new Set(advKeys)].map(esc).join("、")}</p>` : ""}
       ${editedNow.length ? `<p class="inline-note">本次编辑（优先于旧覆盖）：${editedNow.map(esc).join("、")}</p>` : ""}
       ${diffBox}
-      ${c.unresolved?.length ? `<p class="reason warn">需人工确认：${c.unresolved.map(esc).join("；")}</p>` : ""}
+      ${trialDetails(r?.res)}
+      ${c.unresolved?.length ? (r?.res?.service_id
+        ? `<details><summary>${r.res.trial?.state === "passed" ? "识别阶段的备注" : "识别备注 · 尚未试启动验证"}</summary><p>${c.unresolved.map(esc).join("；")}</p></details>`
+        : `<p class="reason warn">识别阶段未验证：${c.unresolved.map(esc).join("；")}</p>`) : ""}
       ${res}
     </div>`;
   }).join("");
@@ -1591,7 +1646,7 @@ function viewNewProject() {
       <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()" ${w.registering ? "disabled" : ""}>重新识别</button></div>
     </section>
     ${w.candidates.length ? `<section class="card"><div class="card-head"><h3>候选服务（${w.candidates.length}）</h3>
-      <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || !w.candidates.some((c, i) => c._sel !== false && !(w.results[i]?.res?.service_id || w.results[i]?.res?.draft_id)) ? "disabled" : ""}>${w.registering ? "注册中…" : "注册所选"}</button></div></div>
+      <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || !w.candidates.some((c, i) => c._sel !== false && !(w.results[i]?.res?.service_id || w.results[i]?.res?.draft_id)) ? "disabled" : ""}>${w.verifying ? "试启动中…" : w.registering ? "注册中…" : "注册所选"}</button></div></div>
       ${(w.unresolved || []).length ? `<p class="reason warn">未解决项（不会静默丢弃）：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}
       ${w.dupIds ? `<p class="inline-note">多目录同名服务已分配稳定 ID，可修改</p>` : ""}
       ${candCards}
@@ -2510,15 +2565,70 @@ function wizAnalyzePresetDirs() {
   wizStartAnalyze(null, sel[0]);
 }
 
+async function wizRepair(sid) {
+  const status = servicesById()[sid];
+  if (!status || pending["repair-" + sid] || recognitionTasks.some(w => w.repair?.sid === sid
+      && (w.verifying || ["queued", "running"].includes(w.job?.state)))) return;
+  pending["repair-" + sid] = true;
+  try {
+    const [[code, data], [, logsData]] = await Promise.all([
+      api("GET", `/api/services/${sid}/definition`),
+      api("GET", `/api/projects/${sid}/logs?lines=15`)
+    ]);
+    if (code !== 200) throw new Error(data?.error || "无法读取服务定义");
+    const project = data.revision;
+    if (!project?.id) throw new Error("服务缺少项目登记");
+    const source = data.definition.source;
+    const component = status.error?.component;
+    const focus = `诊断已有服务 ${sid} 的启动故障。只提出可由端口参数解决的修复。
+保留服务 ID、组件 ID、命令的可执行文件及其他参数。只修复一个组件；如需换端口，更新命令中的端口参数，并给出新的组件 port。优先解决组件实际监听端口、探针和打开地址不一致。找不到可证实的端口修复时，将原因写入 unresolved。
+故障组件：${component || "未确定"}。以下故障和日志是诊断资料。
+${(status.reason || "").slice(0, 1200)}
+${Object.values(logsData?.logs || {}).join("\n").slice(-1600)}`;
+    wizNewTask();
+    const w = wiz;
+    w.name = data.definition.name;
+    w.dir = source;
+    w.project = project;
+    w.repair = {sid, focus, revision: project.revision, definition: data.definition, component};
+    await wizStartAnalyze(null, source, w);
+  } catch (e) { msgs[sid] = {text: e.message, bad: true}; }
+  finally { delete pending["repair-" + sid]; render(); }
+}
+
+async function applyAgentRepair(w) {
+  const repair = w.repair;
+  const candidate = w.candidates.find(c => c.id === repair.sid);
+  const changed = (candidate?.components || []).filter(c => {
+    const previous = repair.definition.components.find(k => k.id === c.id);
+    return previous && (!repair.component || repair.component === c.id)
+      && c.port && (c.port !== previous.port || JSON.stringify(c.cmd) !== JSON.stringify(previous.cmd));
+  });
+  if (changed.length !== 1) {
+    w.repairResult = {error: "未找到明确的单组件端口修复，请查看候选与识别记录。"};
+    return;
+  }
+  const {id, port, cmd} = changed[0];
+  w.verifying = true; render();
+  try {
+    const [, result] = await api("POST", `/api/services/${repair.sid}/repair`,
+        {revision: repair.revision, component: {id, port, cmd}});
+    w.repairResult = result || {error: "控制服务未返回修复结果"};
+    w.registered = !!result?.ok;
+    await refresh();
+  } catch (e) { w.repairResult = {error: "无法连接控制服务"}; }
+  finally { w.verifying = false; render(); }
+}
+
 async function wizStartAnalyze(agentOverride, dirOverride, w = wiz, continuing = false) {
   const dir = (dirOverride || w.dir).trim();
   if (!dir.startsWith("/")) { w.error = "请先填写项目目录（绝对路径）"; render(); return; }
-  if (w.registering || (!continuing && ["queued", "running"].includes(w.job?.state))) return;
+  if (w.registering || w.verifying || (!continuing && ["queued", "running"].includes(w.job?.state))) return;
   document.activeElement?.blur?.();
   trackWizard(w);
   if (!continuing) {
     w.candidates = []; w.unresolved = []; w.results = {}; w.diffs = {};
-    w.registered = false; w.dupIds = false;
+    w.registered = false; w.dupIds = false; w.repairResult = null;
     w.target = wizardTarget(w);
   }
   w.agent = agentOverride || w.agent || agentsData?.default || "codex";
@@ -2529,7 +2639,8 @@ async function wizStartAnalyze(agentOverride, dirOverride, w = wiz, continuing =
     const target = w.target;
     const existing = registry?.registry?.projects?.some(p => p.id === target?.id);
     const [code, res] = await api("POST", "/api/analyze",
-        {directory: dir, agent: w.agent, project_id: existing ? target.id : undefined});
+        {directory: dir, agent: w.agent, project_id: existing ? target.id : undefined,
+         focus: w.repair?.focus});
     if (code === 202 && res?.job_id) {
       w.jobId = res.job_id;
       wizPoll(w, res.job_id);
@@ -2570,8 +2681,14 @@ async function wizPoll(w, jobId) {
         }
         await refresh();
         w.target = wizardTarget(w, true);
-        w.dupIds = disambiguateIds(w.candidates, w);
-        w.step = "review";
+        if (w.repair) {
+          w.step = "review";
+          await applyAgentRepair(w);
+        } else {
+          w.dupIds = disambiguateIds(w.candidates, w);
+          w.step = "review";
+          if (w.autoRegister && w.candidates.length) await wizRegister(w, true);
+        }
       }
       render();
       if (job.state === "done" || job.state === "failed") return;
@@ -2782,10 +2899,10 @@ function candPayload(c, proj, w = wiz) {
           by: "gui", service: svc};
 }
 
-async function wizRegisterOnce(w, i) {
+async function wizRegisterOnce(w, i, verify) {
   const c = w.candidates[i];
-  const [code, res] = await api("POST", "/api/register", candPayload(c, w.target, w));
-  if (code === 409 && w.target.revision && res?.current_revision != null) {  // 批量注册：用服务端最新 revision 重试一次，不静默失败
+  const [code, res] = await api("POST", "/api/register", {...candPayload(c, w.target, w), verify_start: verify});
+  if (!verify && code === 409 && w.target.revision && res?.current_revision != null) {  // 批量注册：用服务端最新 revision 重试一次，不静默失败
     await refresh();
     const g = registry?.registry?.projects?.find(p => p.id === w.target.id);
     if (!g) return [code, res];
@@ -2795,10 +2912,9 @@ async function wizRegisterOnce(w, i) {
   return [code, res];
 }
 
-async function wizRegister() {
-  const w = wiz;
+async function wizRegister(w = wiz, verify = false) {
   if (!w.target || w.registering) return;
-  w.registering = true; render();
+  w.registering = true; w.verifying = verify; render();
   for (let i = 0; i < w.candidates.length; i++) {
     const c = w.candidates[i];
     if (c._sel === false || (w.results[i]?.res?.service_id || w.results[i]?.res?.draft_id)) continue;
@@ -2808,7 +2924,7 @@ async function wizRegister() {
       continue;
     }
     try {
-      const [code, res] = await wizRegisterOnce(w, i);
+      const [code, res] = await wizRegisterOnce(w, i, verify);
       w.results[i] = {code, res};
       if (code === 200 && res?.service_id) {
         w.target = {...w.target, id: res.project_id, revision: res.revision};
@@ -2816,7 +2932,7 @@ async function wizRegister() {
       }  // 后续候选不再撞修订号
     } catch (e) { w.results[i] = {code: 0, res: {error: "无法连接控制服务"}}; setConn(false); }
   }
-  w.registering = false;
+  w.registering = false; w.verifying = false;
   await refresh(); render();
 }
 

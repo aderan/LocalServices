@@ -8,8 +8,20 @@ Registry 为模块级单例（进程内共享；Registry 自身无缓存，读�
 
 from __future__ import annotations
 
-from . import manifest
-from .registry import ID_RE, Registry, RegistryError
+import copy
+import json
+import os
+import threading
+import time
+import tomllib
+import uuid
+from urllib.parse import urlsplit, urlunsplit
+
+from . import manifest, paths, trial
+from .controller import redact
+from .registry import ID_RE, Registry, RegistryError, dumps_toml
+
+_trial_lock = threading.Lock()
 
 _registry = Registry()  # 进程内单例
 
@@ -30,11 +42,152 @@ def _register_status(res: dict) -> tuple[int, dict]:
 
 # ---------------------------------------------------------------- 注册
 
+def _verified_register(body: dict, ctl, repair_sid: str | None = None) -> tuple[int, dict]:
+    """Capture, trial and compare the effective manifest before committing."""
+    if not _trial_lock.acquire(blocking=False):
+        return 409, {"ok": False, "error": "已有服务正在试启动，请稍后重试"}
+    try:
+        expected = None
+
+        def capture(action, definition, existing):
+            nonlocal expected
+            if repair_sid:
+                if action != "updated" or existing is None or existing.id != repair_sid:
+                    raise RegistryError("修复目标已变更，请重新识别", status=409)
+                _check_repair_target(ctl, repair_sid)
+            elif action != "created":
+                raise RegistryError("已有登记，请使用服务的 Agent 修复入口")
+            effective = {key: value for key, value in definition.items() if key != "registered"}
+            if expected is None:
+                expected = copy.deepcopy(effective)
+            elif expected != effective:
+                raise RegistryError("试启动期间定义已变更，请重新验证", status=409)
+
+        preview = _registry.register_service(body, dry_run=True, trial=capture)
+        if not preview.get("ok") or expected is None:
+            return _register_status(preview)
+        log_dir = paths.logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        record = log_dir / f'{preview["service_id"]}.trial-{uuid.uuid4().hex[:12]}.log'
+        fd = os.open(record, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+        report = trial.run(dumps_toml(expected).encode(), record, repair=bool(repair_sid))
+        if report["state"] == "passed":
+            result = _registry.register_service(body, trial=capture)
+        else:
+            result = {"ok": False, "error": report["error"]}
+        report.update(log=str(record), at=time.time(), registration=result.get("action", "failed"))
+        if result.get("error"):
+            report["error"] = redact(result["error"])
+        with record.open("a", encoding="utf-8") as stream:
+            stream.write(redact(json.dumps(report, ensure_ascii=False)) + "\n")
+        return _register_status({**result, "trial": report})
+    finally:
+        _trial_lock.release()
+
+
+def _check_repair_target(ctl, sid: str) -> None:
+    project = ctl.projects.get(sid) if ctl else None
+    if project is None:
+        raise RegistryError("未找到服务", status=404)
+    state = ctl.project_status(project)
+    if (project.observe_only or state.get("state") not in ("failed", "conflict", "stopped")
+            or state.get("intent") != "stopped" or state.get("op")
+            or state.get("can_takeover")):
+        raise RegistryError("仅可自动修复已停止的服务，请先检查运行状态", status=409)
+
+
+def handle_service_repair(sid: str, body: dict, ctl) -> tuple[int, dict]:
+    """Apply only a port correction for the existing service, after a real trial."""
+    try:
+        if not isinstance(body, dict):
+            raise RegistryError("缺少修复参数")
+        _check_repair_target(ctl, sid)
+        current = manifest.load_all().get(sid)
+        if current is None:
+            raise RegistryError("服务已移除", status=404)
+        code, definition = handle_service_definition(sid)
+        if code != 200:
+            return code, definition
+        project = definition["revision"]
+        if not project or body.get("revision") != project.get("revision"):
+            raise RegistryError("revision conflict", status=409)
+        service = definition["definition"]
+        # Keep fields that the edit projection omits (including explicit defaults).
+        service["components"] = tomllib.loads(current.file.read_text(encoding="utf-8"))["components"]
+        fix = body.get("component")
+        if not isinstance(fix, dict):
+            raise RegistryError("缺少组件修复参数")
+        component = next((c for c in service["components"] if c["id"] == fix.get("id")), None)
+        port, cmd = fix.get("port"), fix.get("cmd")
+        if (component is None or type(port) is not int or not 1024 <= port <= 65535
+                or not isinstance(cmd, list) or not cmd or not all(isinstance(x, str) for x in cmd)):
+            raise RegistryError("候选需要提供原组件 ID、监听端口与启动命令")
+        if cmd[0] != component["cmd"][0]:
+            raise RegistryError("自动修复只调整当前启动命令的端口参数")
+        old = component.get("port")
+        _check_port_command(component["cmd"], cmd, old, port)
+        component.update(cmd=cmd, port=port)
+        changes = [f'components[{component["id"]}].{field}' for field in ("cmd", "port")]
+        ready = component.get("ready") or {}
+        if ready.get("http"):
+            ready["http"] = _with_port(ready["http"], port)
+            changes.append(f'components[{component["id"]}].ready.http')
+        if ready.get("tcp"):
+            ready["tcp"] = ready["tcp"].rpartition(":")[0] + f":{port}"
+            changes.append(f'components[{component["id"]}].ready.tcp')
+        if service.get("open") and (trial.local_url(service["open"])[1] == old
+                                    or sum(bool(c.get("port")) for c in service["components"]) == 1):
+            service["open"] = _with_port(service["open"], port)
+            changes.append("open")
+        service["edited"] = changes
+        return _verified_register({"schemaVersion": 1, "revision": project["revision"],
+                                   "project": {"id": project["id"]}, "service": service,
+                                   "by": "gui"}, ctl, repair_sid=sid)
+    except ValueError as error:
+        return 400, {"ok": False, "error": str(error)}
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+def _with_port(url: str, port: int) -> str:
+    host, _ = trial.local_url(url)
+    parts = urlsplit(url)
+    host = f"[{host}]" if ":" in host else host
+    return urlunsplit(parts._replace(netloc=f"{host}:{port}"))
+
+
+def _check_port_command(old_cmd: list[str], new_cmd: list[str], old: int | None, port: int) -> None:
+    """Allow a supported port flag or replacement of the old port argument."""
+    if old == port and old_cmd == new_cmd:
+        return
+    if old is not None and any(
+        new_cmd == old_cmd[:i] + [str(port)] + old_cmd[i + 1:]
+        for i, arg in enumerate(old_cmd)
+        if i and arg == str(old) and (old_cmd[i - 1] in ("--port", "-p")
+                                      or (i == 3 and old_cmd[1:3] == ["-m", "http.server"]))
+    ):
+        return
+    if new_cmd in (old_cmd + ["--port", str(port)], old_cmd + ["-p", str(port)],
+                   old_cmd + ["--", "--port", str(port)], old_cmd + ["--", "-p", str(port)]):
+        return
+    if old is not None and any(
+        new_cmd == old_cmd[:i] + [f"--port={port}"] + old_cmd[i + 1:]
+        for i, arg in enumerate(old_cmd) if i and arg == f"--port={old}"
+    ):
+        return
+    raise RegistryError("Agent 提议修改了端口以外的启动参数，请手动核对")
+
+
 def handle_register(body: dict, ctl) -> tuple[int, dict]:
     """POST /api/register。body.dry_run=true 时只返回字段级差异，不落盘（重新识别预览）。"""
     try:
         if not isinstance(body, dict):
             return 400, {"ok": False, "error": "body 必须是对象"}
+        if "verify_start" in body and not isinstance(body["verify_start"], bool):
+            return 400, {"ok": False, "error": "verify_start 必须是布尔值"}
+        if body.get("verify_start") is True and not body.get("dry_run"):
+            return _verified_register(body, ctl)
         return _register_status(_registry.register_service(body, dry_run=bool(body.get("dry_run"))))
     except Exception as e:  # noqa: BLE001
         return _fail(e)

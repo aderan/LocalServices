@@ -132,7 +132,7 @@ const dispatchKey = (key, target) => {
     fn({key, target: target || null, preventDefault() {}, stopPropagation() {}});
 };
 
-const runner = new Function(script + "\n; return {render, api, refresh, wizField, wizNewTask, wizSelectTask, wizardTarget, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
+const runner = new Function(script + "\n; return {render, api, refresh, wizField, wizNewTask, wizSelectTask, wizardTarget, wizRegister, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
 const page = runner();
 const out = [];
 const SECTIONS = [];
@@ -772,6 +772,28 @@ section("independent recognition tasks");
     page.setWiz(oldWizard);
     page.setRegistry(oldRegistry);
   }
+}
+
+section("verified registration");
+{
+  const oldWizard = page.wizGet();
+  const trialProject = {id: "trial-fixture", name: "Trial fixture", revision: 0};
+  try {
+    page.setWiz({step: "review", dir: srcA, agent: "codex", target: trialProject,
+      _diffFetched: true, _resFetched: true, results: {}, diffs: {}, candidates: [{
+        id: "trial-fixture", name: "Trial fixture", open: "http://127.0.0.1:48229/",
+        components: [{id: "web", cmd: ["/usr/bin/false"], port: 48229}],
+        unresolved: ["Check Python version"],
+      }]});
+    await page.wizRegister(page.wizGet(), true);
+    const result = page.wizGet().results[0]?.res;
+    check("自动登记必须通过试启动", result?.trial?.state === "failed" && !result.service_id);
+    check("自动登记失败保留本机验证记录", page.viewNewProject().includes("本机验证记录"));
+    page.setWiz({step: "dir", dir: srcA, agent: "", name: "Trial fixture", presetDirs: []});
+    const initial = page.viewNewProject();
+    check("添加页可启用试启动后自动登记", initial.includes("试启动通过后自动登记"));
+    check("未配置 Agent 时仍可获取外部提示词", initial.includes("复制外部 Agent 提示词"));
+  } finally { page.setWiz(oldWizard); }
 }
 
 section("analysis activity");

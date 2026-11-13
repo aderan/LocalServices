@@ -711,7 +711,8 @@ class Controller:
             procs.wait_until(lambda: not alive(), 5)
         return ok, err
 
-    def _order(self, p: Project) -> list[Component]:
+    @staticmethod
+    def _order(p: Project) -> list[Component]:
         comps = p.managed_components()
         done: list[Component] = []
         names = {c.id for c in comps}

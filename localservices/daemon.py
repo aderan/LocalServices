@@ -238,6 +238,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._registry_changed(res[1])
                 self._send(*res)
                 return
+            m = re.fullmatch(r"/api/services/([a-z0-9-]+)/repair", u.path)
+            if m:
+                sid = m.group(1)
+                res = register_api.handle_service_repair(sid, body, self.ctl)
+                if res[1].get("ok"):
+                    self.ctl.errors.pop(sid, None)
+                self._registry_changed(res[1])
+                self._send(*res)
+                return
             if u.path == "/api/projects":
                 self._send(*register_api.handle_project_upsert(body))
                 return

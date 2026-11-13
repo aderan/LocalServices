@@ -697,15 +697,15 @@ class Registry:
 
     # ---------- 注册（CONTRACTS §2） ----------
 
-    def register_service(self, payload: dict, dry_run: bool = False) -> dict:
+    def register_service(self, payload: dict, dry_run: bool = False, *, trial=None) -> dict:
         try:
-            return self._register(payload, dry_run=dry_run)
+            return self._register(payload, dry_run=dry_run, trial=trial)
         except RegistryError as e:
             out = dict(e.payload)
             out.setdefault("details", [])
             return out
 
-    def _register(self, payload: dict, dry_run: bool = False) -> dict:
+    def _register(self, payload: dict, dry_run: bool = False, *, trial=None) -> dict:
         if not isinstance(payload, dict):
             return {"ok": False, "error": "payload 必须是对象", "details": []}
         if payload.get("schemaVersion") != 1:
@@ -734,6 +734,8 @@ class Registry:
                       or not comps_in
                       or not all(_component_complete(c) for c in comps_in))
         if incomplete:
+            if trial is not None:
+                raise RegistryError("候选定义不完整，无法试启动", details=_missing_fields(svc, comps_in))
             if dry_run:
                 # V2.4：dry_run 零写入——草稿只由非 dry_run 请求产生
                 return {"ok": True, "action": "incomplete",
@@ -780,7 +782,7 @@ class Registry:
                 final_def = (self._merge_existing(Path(existing.file), toml)
                              if existing.file else toml)
                 # 比较对象 = 实际将写盘的合并定义（merge 保留未提供的顶层键，预览 = 实际）
-                if ident == _identity(ex_src, existing.components) and self._content_equal(final_def, existing):
+                if trial is None and ident == _identity(ex_src, existing.components) and self._content_equal(final_def, existing):
                     if dry_run:
                         return {"ok": True, "action": "diff", "registration_action": "unchanged",
                                 "service_id": sid, "project_id": pid,
@@ -801,6 +803,8 @@ class Registry:
                     if in_proj and _identity(_resolved(lp.source), lp.components) == ident:
                         dup = lp.id
                         break
+                if dup and trial is not None:
+                    raise RegistryError(f"已有相同服务 {dup}，请在原服务上运行验证")
                 if dup:
                     if dry_run:
                         # V2.4：dry_run 与实际一致——返回 duplicate 动作 + 字段级 diff，不写盘
@@ -878,6 +882,8 @@ class Registry:
             target = (Path(existing.file) if existing is not None and existing.file
                       else paths.user_services_dir() / f"{sid}.toml")
             text = dumps_toml(final_def).encode("utf-8")
+            if trial is not None:
+                trial(action, final_def, existing)
             if dry_run:
                 old_def = {}
                 if existing is not None and existing.file:

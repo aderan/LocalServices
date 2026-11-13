@@ -268,7 +268,8 @@ def main(argv=None) -> int:
                 print(json.dumps({"ok": False, "error": f"payload 不可读：{e}"}, ensure_ascii=False)
                       if a.json else f"payload 不可读：{e}")
                 return 4
-            code, res = call("POST", "/api/register", payload, timeout=30)
+            code, res = call("POST", "/api/register", payload,
+                             timeout=120 if isinstance(payload, dict) and payload.get("verify_start") is True else 30)
             if a.json:
                 print(json.dumps(res, ensure_ascii=False, indent=1))
             else:

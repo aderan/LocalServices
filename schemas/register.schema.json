@@ -10,6 +10,10 @@
     "schemaVersion": {
       "const": 1
     },
+    "verify_start": {
+      "type": "boolean",
+      "description": "Trial local startup and register after readiness."
+    },
     "revision": {
       "type": "integer",
       "minimum": 0
