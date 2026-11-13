@@ -47,13 +47,16 @@
   .topbar { display: flex; align-items: center; gap: 12px; padding: 19px 26px 17px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   .topbar h2 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
   .topbar .subtitle { color: var(--mute); font-size: 12.5px; flex: 1 1 160px; }
-  .topbar .tools { display: flex; gap: 8px; align-items: center; margin-left: auto; }
-  #refreshBtn { flex: 0 0 104px; white-space: nowrap; }
+  .topbar .subtitle:empty { display: none; }
+  .topbar .tools { display: grid; grid-template-columns: minmax(0, 1fr) 104px 74px;
+                   width: min(100%, 414px); gap: 8px; align-items: center; margin-left: auto; }
+  #refreshBtn { white-space: nowrap; }
   #refreshBtn[aria-disabled="true"] { opacity: .55; cursor: default; }
   #refreshStatus:not(:empty) { color: var(--bad); font-size: 12.5px; padding: 8px 26px 0; text-align: right; }
+  #nav-settings { white-space: nowrap; }
   #nav-settings[aria-pressed="true"] { color: var(--btn); border-color: currentColor; }
   #globalSearch { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 7px;
-                  border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 220px; }
+                  border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 100%; min-width: 0; }
   main { padding: 18px 26px 56px; max-width: 1340px; width: 100%; container-type: inline-size;
          container-name: mainc; }
   /* —— 分组：一个项目一组紧凑行（Magpie 语法：细分隔、整组一体） —— */
@@ -232,14 +235,18 @@
   .language-card { padding-bottom: 14px; }
   .language-card .card-head { margin-bottom: 0; }
   .language-card .seg { margin-left: auto; flex-shrink: 0; }
-  .language-card .seg button { white-space: nowrap; }
+  .language-card .seg button { width: 66px; }
   .domain-field { display: grid; grid-template-columns: min(110px, 30%) minmax(0, 1fr); }
   .domain-field > :first-child { min-width: 0; color: var(--mute); font-size: 13px; }
   .domain-field .inline-note { grid-column: 1 / -1; }
-  .domain-field .seg { justify-self: start; max-width: 100%; flex-wrap: wrap; }
+  .domain-field .seg { justify-self: end; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+                      width: min(100%, 162px); }
   .domain-field input { min-width: 0; width: min(100%, 110px); }
-  .domain-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 6rem)); gap: 6px; }
-  .domain-actions button { white-space: nowrap; padding-inline: 6px; }
+  .domain-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+                    justify-self: end; width: min(100%, 162px); }
+  .language-card .seg button, .domain-field .seg button, .domain-actions button {
+    font-size: 12px; padding: 3px 5px; white-space: nowrap;
+  }
   .settings-grid td, .settings-grid td.k, .settings-grid .mono { white-space: normal; overflow-wrap: anywhere; }
   .settings-grid td.k { width: 36%; }
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
@@ -292,8 +299,6 @@
     .navlabel, .navspacer { display: none; }
     .navitem { width: auto; }
     main, .topbar { padding-left: 14px; padding-right: 14px; }
-    .topbar .tools { max-width: 100%; }
-    #globalSearch { min-width: 0; }
     .line { grid-template-columns: minmax(0, 1fr); gap: 8px; }
     .line .acts { justify-content: flex-start; }
     button { min-height: 36px; }
@@ -1168,16 +1173,16 @@ function locoveSettingsCard() {
     : `<button class="primary" ${running ? "disabled" : ""} onclick="askEnableDomain()">${tr("启用…", "Enable…")}</button>`;
   return `<div class="card" id="locove-settings">
     <div class="card-head"><h3>${tr("域名访问", "Domain access")}</h3>${locoveStateChip(d)}</div>
+    <div class="field domain-field"><span id="domain-actions-label">${tr("操作", "Actions")}</span>
+      <div class="domain-actions" role="group" aria-labelledby="domain-actions-label">${toggle}
+        <button class="ghost" ${running ? "disabled" : ""} onclick="askUninstallDomain()">${tr("卸载…", "Uninstall…")}</button></div>
+    </div>
     <p class="note">${tr("服务默认通过本机地址直连。启用后，可在本机使用域名访问服务。", "Services use direct local addresses by default. Enable domain access to use local domain names.")}</p>
     <div class="field domain-field"><span>${tr("地址示例", "Example URL")}</span>
       <code class="mono">${esc(domainPreviewUrl(d))}</code></div>
     <div class="field domain-field"><label for="domain-port">${tr("代理端口", "Proxy port")}</label>
       <input id="domain-port" type="number" min="1024" max="65535" value="${port}" onchange="locovePort(this.value)">
       <span class="inline-note">${tr("47800、47891 和 5354 为保留端口。重新启用域名访问后应用新端口。", "Ports 47800, 47891 and 5354 are reserved. Re-enable domain access to apply a port change.")}</span></div>
-    <div class="field domain-field"><span id="domain-actions-label">${tr("操作", "Actions")}</span>
-      <div class="domain-actions" role="group" aria-labelledby="domain-actions-label">${toggle}
-        <button class="ghost" ${running ? "disabled" : ""} onclick="askUninstallDomain()">${tr("卸载…", "Uninstall…")}</button></div>
-    </div>
     ${st.use_domains ? `<div class="field domain-field"><span>${tr("域名来源", "Domain names")}</span>
       <span class="seg">
         <button class="${st.domain_form === "suffix" ? "on" : ""}" onclick="locoveSetting('domain_form','suffix')">${tr("自动", "Automatic")}</button>

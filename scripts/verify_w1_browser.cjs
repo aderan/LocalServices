@@ -410,15 +410,23 @@ async function main() {
           const cardRect = rect(languageSwitch.closest('.card'));
           const rightInset = cardRect.right - rect(languageSwitch).right;
           const languageRect = [rect(languageSwitch).left, rect(languageSwitch).top - cardRect.top, rect(languageSwitch).width];
+          const toolbar = rect(document.querySelector('.topbar'));
+          const settingsButton = rect(document.getElementById('nav-settings'));
+          const toolbarLayout = [toolbar.height, cardRect.top - toolbar.bottom, toolbar.right - settingsButton.right, settingsButton.width];
+          const navLabels = ['attention', 'resources', 'agents', 'removed'].map(id =>
+            document.querySelector('#nav-' + id + ' span').textContent);
           const switches = [];
+          const actionInsets = [];
           for (const enabled of [false, true]) {
             locoveData.settings = {...locoveData.settings, use_domains: enabled};
             render();
             const actions = document.querySelectorAll('#locove-settings button:not(.seg button)');
-            switches.push([...actions].map(el => [el.textContent, rect(el).left, rect(el).top, rect(el).width]));
+            const card = document.getElementById('locove-settings');
+            switches.push([...actions].map(el => [el.textContent, rect(el).left, rect(el).top - rect(card).top, rect(el).width]));
+            actionInsets.push(rect(card).right - rect(actions[1]).right);
           }
           const diagnostics = document.querySelector('.settings-grid > div:last-child').textContent;
-          results.push({rows: rows.length, aligned: aligned(states) && aligned(addresses), rightInset, languageRect, switches,
+          results.push({rows: rows.length, aligned: aligned(states) && aligned(addresses), rightInset, languageRect, toolbarLayout, navLabels, switches, actionInsets,
             fits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
             mixedDiagnostics: locale === 'en' && /[\\u4e00-\\u9fff]/.test(diagnostics)});
           locoveData.settings.use_domains = false;
@@ -432,14 +440,20 @@ async function main() {
     check(`${width} 服务状态右对齐，地址左对齐（含无地址行）`,
           [en, zh].every(r => r.rows === 3 && r.aligned), JSON.stringify({en: en.aligned, zh: zh.aligned}));
     check(`${width} 语言切换贴右，切换语言时位置不变`,
-          en.rightInset === zh.rightInset && en.rightInset < 20 && JSON.stringify(en.languageRect) === JSON.stringify(zh.languageRect),
+          en.rightInset === zh.rightInset && en.rightInset < 20 && en.languageRect[2] <= 140
+          && JSON.stringify(en.languageRect) === JSON.stringify(zh.languageRect),
           JSON.stringify({en: en.languageRect, zh: zh.languageRect}));
-    const actionRects = result => result.switches.map(actions => actions.map(([, x, y, w]) => [x, y - actions[0][2], w]));
+    check(`${width} 中英文设置工具栏高度一致`,
+          en.toolbarLayout[2] >= 14 && JSON.stringify(en.toolbarLayout) === JSON.stringify(zh.toolbarLayout),
+          JSON.stringify([en.toolbarLayout, zh.toolbarLayout]));
+    const actionRects = result => result.switches.map(actions => actions.map(([, x, y, w]) => [x, y, w]));
     check(`${width} 域名按钮在启停及语言切换时保持同一行和位置`,
-          [en, zh].every(r => r.switches.every(a => a.length === 2 && a[0][2] === a[1][2]))
+          [en, zh].every(r => r.switches.every(a => a.length === 2 && a[0][2] === a[1][2] && a.every(button => button[3] <= 80))
+            && r.actionInsets.every(inset => Math.abs(inset - r.rightInset) < 1))
           && [...actionRects(en), ...actionRects(zh)].every(r => JSON.stringify(r) === JSON.stringify(actionRects(en)[0])),
           JSON.stringify({en: en.switches, zh: zh.switches}));
     check(`${width} 英文域名诊断使用英文`, !en.mixedDiagnostics);
+    check(`${width} Manage 入口使用简短名称`, en.navLabels.join(',') === 'Issues,Resources,Agents,Removed');
     check(`${width} 设置无横向溢出`, en.fits && zh.fits);
   }
   await setViewport(1280, 900);
