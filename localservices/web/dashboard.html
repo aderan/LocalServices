@@ -319,10 +319,10 @@
   <div class="navlabel" id="navProjectsLabel" data-en="Projects">项目</div>
   <div id="navProjects"></div>
   <div class="navlabel" data-en="Manage">管理</div>
-  <button class="navitem" id="nav-attention" onclick="setView('attention')"><span data-en="Issues">异常</span><span id="attentionBadge" class="badge" hidden></span></button>
-  <button class="navitem" id="nav-resources" onclick="setView('resources')"><span data-en="Resources">资源</span></button>
-  <button class="navitem" id="nav-agents" onclick="setView('agents')"><span data-en="Agents">Agent</span></button>
-  <button class="navitem" id="nav-removed" onclick="setView('removed')"><span data-en="Removed">已移除</span></button>
+  <button class="navitem" id="nav-attention" onclick="setView('attention')"><span data-en="Needs attention">异常</span><span id="attentionBadge" class="badge" hidden></span></button>
+  <button class="navitem" id="nav-resources" onclick="setView('resources')"><span data-en="Docker resources">资源</span></button>
+  <button class="navitem" id="nav-agents" onclick="setView('agents')"><span data-en="Agent connections">Agent</span></button>
+  <button class="navitem" id="nav-removed" onclick="setView('removed')"><span data-en="Removed projects &amp; services">已移除</span></button>
   <button class="navitem" id="nav-settings" onclick="setView('settings')"><span data-en="Settings">设置</span></button>
   <div class="navspacer"></div>
   <button class="navitem add" id="nav-new-project" onclick="setView('new-project')"><span data-en="+ Add service">＋ 添加服务</span><span id="draftBadge" class="badge mut" hidden></span></button>
@@ -485,7 +485,7 @@ const originalLabels = new WeakMap();
 const tr = (zh, en) => language === "en" ? en : zh;
 const productName = () => tr("洛湾", "Locove");
 const VIEW_TITLES = {all: ["服务", "Services"], attention: ["需要处理", "Needs attention"],
-  removed: ["已移除登记", "Removed services"], resources: ["共享资源", "Shared resources"],
+  removed: ["已移除登记", "Removed projects & services"], resources: ["共享资源", "Docker resources"],
   agents: ["Agent 连接", "Agent connections"], settings: ["设置", "Settings"], "new-project": ["添加服务", "Add service"]};
 
 function applyLanguage(value) {
@@ -525,9 +525,9 @@ function viewSubtitle(main) {
     return tr(`${projects} 个项目 · ${services} 个服务 · ${ready} 个可打开`, `Projects: ${projects} · Services: ${services} · Ready to open: ${ready}`);
   }
   if (view === "attention") return tr("失败 / 冲突 / 部分可用的服务集中在此处理", "Services that failed, have conflicts, or are degraded");
-  if (view === "removed") return tr("恢复不会自动启动；「运行意图」仅恢复意图", "Restoring a registration does not start it automatically");
-  if (view === "resources") return tr("只读盘点 · 归属与消费者由清单推导", "Read-only inventory based on project manifests");
-  if (view === "agents") return tr("识别用 CLI 连接的检测与验证", "Detect and verify agent CLI connections");
+  if (view === "removed") return tr("恢复不会自动启动；「运行意图」仅恢复意图", "Restore an entry to the workbench and start it separately when needed");
+  if (view === "resources") return tr("只读盘点 · 归属与消费者由清单推导", "See local containers and which services use them");
+  if (view === "agents") return tr("识别用 CLI 连接的检测与验证", "Check the Codex and Claude connections used to discover services");
   if (view === "new-project") return tr("选目录 → 识别 / 手动登记 → 核对 → 注册 → 启动", "Choose a directory, review the service definition, then register and start");
   if (view.startsWith("project:")) {
     const g = projectGroups().find(x => x.pj.id === view.slice(8));
