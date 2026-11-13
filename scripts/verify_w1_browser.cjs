@@ -32,11 +32,7 @@ const FIXTURE_EV = `(() => {
     snap = {...snap, projects: [...snap.projects, p]};
     render();
     const line = document.querySelector("#p-w1-long-fixture .line");
-    const cells = [...line.children].map(el => ({cls: el.className, r: el.getBoundingClientRect()}));
-    let overlap = null;
-    for (let i = 1; i < cells.length; i++)
-      if (cells[i].r.left < cells[i-1].r.right - 0.5) overlap = cells[i-1].cls + ">" + cells[i].cls;
-    return {overlap, cells: cells.map(c => c.cls)};
+    return overlappingServiceCells(line);
   } finally { snap = prev.snap; view = prev.view; render(); }
 })()`;
 
@@ -95,6 +91,15 @@ async function main() {
   await send("Page.navigate", {url: URL});
   await sleep(3500);
 
+  await ev(`window.overlappingServiceCells = line => {
+    const cells = [...line.children];
+    return cells.flatMap((cell, i) => cells.slice(i + 1).filter(other => {
+      const a = cell.getBoundingClientRect(), b = other.getBoundingClientRect();
+      return Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5
+        && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5;
+    }).map(other => other.className));
+  }`);
+
   check("960 下真实页面加载", await ev("document.querySelectorAll('.svc').length") > 0,
         await ev("document.querySelectorAll('.svc').length"));
 
@@ -149,11 +154,7 @@ async function main() {
   const overlapEv = `(() => {
     const bad = [];
     for (const line of document.querySelectorAll(".svc .line")) {
-      const cells = [...line.children];
-      for (let i = 1; i < cells.length; i++) {
-        const prev = cells[i-1].getBoundingClientRect(), cur = cells[i].getBoundingClientRect();
-        if (cur.left < prev.right - 0.5) bad.push(line.closest(".svc").id + ":" + (cells[i].className || cells[i].tagName));
-      }
+      bad.push(...overlappingServiceCells(line).map(cls => line.closest(".svc").id + ":" + cls));
     }
     return {bad, docHscroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
             mainHscroll: document.getElementById("main").scrollWidth - document.getElementById("main").clientWidth};
@@ -163,7 +164,7 @@ async function main() {
   check("960 无横向溢出（页面与内容区）", o960.docHscroll <= 0 && o960.mainHscroll <= 0, JSON.stringify(o960));
 
   const fx = await ev(FIXTURE_EV);
-  check("960 长名/长地址夹具行互不覆盖", !fx.overlap, JSON.stringify(fx));
+  check("960 长名/长地址夹具行互不覆盖", fx.length === 0, JSON.stringify(fx));
 
   // 设置视图：窄内容区单列可读（容器查询），长诊断不溢出
   const settingsEv = `(() => {
@@ -178,6 +179,7 @@ async function main() {
   const st960 = await ev(settingsEv);
   check("960 设置视图单列（长诊断可读）", st960.cols === 1, JSON.stringify(st960.detailCard).slice(0, 120));
   check("960 设置卡片内容无横向裁切", st960.clipped.length === 0, JSON.stringify(st960.clipped));
+  await ev("window.scrollTo(0, 0)");
   await shot("w1-settings-960.png");
   await ev("setView('all')");
 
@@ -238,8 +240,8 @@ async function main() {
   check("状态变化重建后焦点恢复到等价操作", await ev(focusEv).then(r => r.restored), "");
 
   const reordered = await ev(`(() => {
-    const groups = registry.registry.projects;
-    const service = groups.find(p => !p.favorite && p.services.length === 1 && document.querySelector("#p-" + p.services[0] + " [data-act='logs']"));
+    const groups = projectGroups().filter(g => !g.orphan && g.members.length).map(g => g.pj);
+    const service = groups.slice(1).find(p => !p.favorite && p.services.length === 1 && document.querySelector("#p-" + p.services[0] + " [data-act='logs']"));
     if (!service) return {fixture: false};
     const selector = "#p-" + service.services[0] + " [data-act='logs']";
     const before = [...document.querySelectorAll(".svc")].map(row => row.id).join(",");
@@ -247,6 +249,7 @@ async function main() {
     const saved = registry;
     try {
       registry = JSON.parse(JSON.stringify(registry));
+      registry.registry.projects.forEach(p => { p.favorite = false; });
       registry.registry.projects.find(p => p.id === service.id).favorite = true;
       render();
       return {fixture: true, moved: before !== [...document.querySelectorAll(".svc")].map(row => row.id).join(","),
@@ -298,7 +301,72 @@ async function main() {
   check("宽窗无横向溢出", oWide.docHscroll <= 0 && oWide.mainHscroll <= 0, JSON.stringify(oWide));
   const stWide = await ev(settingsEv);
   check("宽窗设置视图双栏", stWide.cols === 2, JSON.stringify(stWide.detailCard).slice(0, 120));
-  await ev("setView('all')");
+
+  const refinement = async width => {
+    await setViewport(width, 800);
+    return ev(`(() => {
+      const saved = {language, locoveData, snap};
+      const rect = el => el.getBoundingClientRect();
+      const aligned = values => Math.max(...values) - Math.min(...values) < 1;
+      try {
+        const fixture = (id, state, label, port) => ({id, name: id, state, label, components: [],
+          can_open: Boolean(port), observe_only: !port, open: port ? 'http://127.0.0.1:' + port : ''});
+        snap = {...snap, projects: [fixture('one', 'external', '外部运行', 45001),
+          fixture('two', 'stopped', '已停止', 45002),
+          {...fixture('three', 'failed', '引擎无响应'), code: {state: 'failed', label: 'Build failed'}}]};
+        locoveData = {...locoveData, suffix: 'locove', domain_port: 5670, state: 'installed_off',
+          dns: {ok: false, detail: '本地 DNS 未运行'}, proxy: {ok: false, detail: '代理未运行'},
+          proxy_bypass: {ok: false, enabled: true, detail: '代理绕行缺失'},
+          resolver_state: 'ours', resolver: {ok: true, detail: '正常'}, routes: {},
+          settings: {use_domains: false, domain_form: 'suffix'}};
+        const results = [];
+        for (const locale of ['en', 'zh-CN']) {
+          applyLanguage(locale);
+          setView('all');
+          const states = [...document.querySelectorAll('.svc .statecell .state')].map(el => rect(el).right);
+          const addresses = [...document.querySelectorAll('.svc .statecell .domain')].map(el => rect(el).left);
+          const rows = document.querySelectorAll('.svc .line');
+          setView('settings');
+          const languageSwitch = document.querySelector('.seg[aria-labelledby="language-label"]');
+          const cardRect = rect(languageSwitch.closest('.card'));
+          const rightInset = cardRect.right - rect(languageSwitch).right;
+          const languageRect = [rect(languageSwitch).left, rect(languageSwitch).top - cardRect.top, rect(languageSwitch).width];
+          const switches = [];
+          for (const enabled of [false, true]) {
+            locoveData.settings = {...locoveData.settings, use_domains: enabled};
+            render();
+            const actions = document.querySelectorAll('#locove-settings button:not(.seg button)');
+            switches.push([...actions].map(el => [el.textContent, rect(el).left, rect(el).top, rect(el).width]));
+          }
+          const diagnostics = document.querySelector('.settings-grid > div:last-child').textContent;
+          results.push({rows: rows.length, aligned: aligned(states) && aligned(addresses), rightInset, languageRect, switches,
+            fits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+            mixedDiagnostics: locale === 'en' && /[\\u4e00-\\u9fff]/.test(diagnostics)});
+          locoveData.settings.use_domains = false;
+        }
+        return results;
+      } finally { applyLanguage(saved.language); locoveData = saved.locoveData; snap = saved.snap; setView('all'); }
+    })()`);
+  };
+  for (const width of [390, 960, 1200]) {
+    const [en, zh] = await refinement(width);
+    check(`${width} 服务状态右对齐，地址左对齐（含无地址行）`,
+          [en, zh].every(r => r.rows === 3 && r.aligned), JSON.stringify({en: en.aligned, zh: zh.aligned}));
+    check(`${width} 语言切换贴右，切换语言时位置不变`,
+          en.rightInset === zh.rightInset && en.rightInset < 20 && JSON.stringify(en.languageRect) === JSON.stringify(zh.languageRect),
+          JSON.stringify({en: en.languageRect, zh: zh.languageRect}));
+    const actionRects = result => result.switches.map(actions => actions.map(([, x, y, w]) => [x, y - actions[0][2], w]));
+    check(`${width} 域名按钮在启停及语言切换时保持同一行和位置`,
+          [en, zh].every(r => r.switches.every(a => a.length === 2 && a[0][2] === a[1][2]))
+          && [...actionRects(en), ...actionRects(zh)].every(r => JSON.stringify(r) === JSON.stringify(actionRects(en)[0])),
+          JSON.stringify({en: en.switches, zh: zh.switches}));
+    check(`${width} 英文域名诊断使用英文`, !en.mixedDiagnostics);
+    check(`${width} 设置无横向溢出`, en.fits && zh.fits);
+  }
+  await setViewport(1280, 900);
+  await ev("setView('settings'); window.scrollTo(0, 0)");
+  await shot("w1-settings-1280.png");
+  await ev("setView('all'); document.querySelector('.svc.expanded .line')?.click(); window.scrollTo(0, 0)");
   await shot("w1-workbench-1280.png");
   const detailId = await ev("projectGroups().find(g => !g.orphan && g.members.length > 1 && g.pj.directories?.length)?.pj.id");
   if (detailId) {

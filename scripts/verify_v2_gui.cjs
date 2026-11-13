@@ -688,7 +688,7 @@ try {
                       settings: {use_domains: false, domain_form: "suffix", domain_port: 5670}});
   const settingsHtml = page.viewSettings();
   check("D3: 启用入口与诊断完整收进设置视图（不再引导 sudo 命令安装）",
-        settingsHtml.includes("启用域名访问") && settingsHtml.includes("域名诊断") && !settingsHtml.includes("sudo "), "");
+        settingsHtml.includes('onclick="askEnableDomain()">启用…') && settingsHtml.includes("域名诊断") && !settingsHtml.includes("sudo "), "");
   page.setLocoveData({state: "available", dns: {ok: true}, proxy: {ok: true}, resolver: {ok: true}, routes: {},
                       settings: {use_domains: true, domain_form: "suffix"}});
   page.renderHealth();

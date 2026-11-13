@@ -98,7 +98,7 @@
   .svc { border-top: 1px solid var(--hair); }
   .svc:first-of-type { border-top: 0; }
   .svc.expanded { background: color-mix(in srgb, var(--soft) 45%, var(--card)); }
-  .line { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(116px, 1fr) max-content;
+  .line { display: grid; grid-template-columns: minmax(0, 1fr) min(44%, 20rem) 16rem;
           gap: 12px; align-items: center; min-height: 64px; padding: 10px 13px 10px 15px; cursor: pointer; }
   .line > * { min-width: 0; }
   .line:hover { background: color-mix(in srgb, var(--soft) 45%, transparent); }
@@ -114,8 +114,10 @@
     border-color: color-mix(in srgb, var(--bad) 36%, var(--line)); }
   .service-failed.expanded, .service-conflict.expanded {
     background: color-mix(in srgb, var(--bad) 3%, var(--card)); }
-  .statecell { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; }
-  .statecell .state { white-space: nowrap; padding: 3px 7px; border-radius: 6px; background: var(--soft); }
+  .statecell { display: grid; grid-template-columns: min(9.5rem, 53%) minmax(0, 1fr);
+               align-items: center; gap: 3px 6px; }
+  .statecell .state { justify-self: end; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+                      white-space: nowrap; padding: 3px 7px; border-radius: 6px; background: var(--soft); }
   .statecell .s-available, .statecell .s-external {
     color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, var(--card)); }
   .statecell .s-failed, .statecell .s-conflict {
@@ -134,6 +136,7 @@
   .s-starting::before, .s-stopping::before, .s-preparing::before { background: var(--btn); }
   .s-external::before { background: var(--ok); box-shadow: 0 0 0 2px var(--card), 0 0 0 3px var(--ok); }
   .code { color: var(--mute); font-size: 11.5px; overflow-wrap: anywhere; line-height: 1.3; }
+  .statecell .code { grid-column: 2; grid-row: 2; }
   .code.pending, .code.failed { font-weight: 600; }
   .code.pending { color: var(--warn); } .code.failed { color: var(--bad); }
   .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
@@ -142,7 +145,7 @@
   .domain { display: flex; flex-direction: column; align-items: flex-start; gap: 0;
     padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; background: transparent;
     color: var(--fg); font: inherit; text-align: left; min-width: 0; cursor: copy; }
-  .statecell .domain { min-width: 0; max-width: 100%; padding: 3px 7px; }
+  .statecell .domain { justify-self: start; max-width: 100%; padding: 3px 7px; }
   .statecell .domain b { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .statecell .domain small { display: none; }
   .statecell .domain.down small { display: block; }
@@ -224,6 +227,19 @@
   .empty { color: var(--mute); padding: 22px 4px; text-align: center; }
   /* 设置视图（R6：设置与草稿分离；域名诊断完整内容归设置上下文） */
   .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+  .language-card { padding-bottom: 14px; }
+  .language-card .card-head { margin-bottom: 0; }
+  .language-card .seg { margin-left: auto; flex-shrink: 0; }
+  .language-card .seg button { white-space: nowrap; }
+  .domain-field { display: grid; grid-template-columns: min(110px, 30%) minmax(0, 1fr); }
+  .domain-field > :first-child { min-width: 0; color: var(--mute); font-size: 13px; }
+  .domain-field .inline-note { grid-column: 1 / -1; }
+  .domain-field .seg { justify-self: start; max-width: 100%; flex-wrap: wrap; }
+  .domain-field input { min-width: 0; width: min(100%, 110px); }
+  .domain-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 6rem)); gap: 6px; }
+  .domain-actions button { white-space: nowrap; padding-inline: 6px; }
+  .settings-grid td, .settings-grid td.k, .settings-grid .mono { white-space: normal; overflow-wrap: anywhere; }
+  .settings-grid td.k { width: 36%; }
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
   .seg button { border: 0; border-radius: 0; background: transparent; padding: 4px 12px; }
   .seg button.on { background: var(--btn); color: var(--on-btn); }
@@ -263,6 +279,10 @@
   @container mainc (max-width: 780px) {
     .settings-grid { grid-template-columns: 1fr; }
   }
+  @container mainc (max-width: 720px) {
+    .line { grid-template-columns: minmax(0, 1fr) minmax(0, 56%); }
+    .line > .acts { grid-column: 1 / -1; }
+  }
   @media (max-width: 860px) {
     .shell { grid-template-columns: 1fr; }
     nav { position: static; max-height: none; flex-direction: row; flex-wrap: wrap; border-right: 0;
@@ -270,6 +290,8 @@
     .navlabel, .navspacer { display: none; }
     .navitem { width: auto; }
     main, .topbar { padding-left: 14px; padding-right: 14px; }
+    .topbar .tools { max-width: 100%; }
+    #globalSearch { min-width: 0; }
     .line { grid-template-columns: minmax(0, 1fr); gap: 8px; }
     .line .acts { justify-content: flex-start; }
     button { min-height: 36px; }
@@ -291,10 +313,10 @@
   <div class="navlabel" id="navProjectsLabel" data-en="Projects">项目</div>
   <div id="navProjects"></div>
   <div class="navlabel" data-en="Manage">管理</div>
-  <button class="navitem" id="nav-attention" onclick="setView('attention')"><span data-en="Needs attention">需要处理</span><span id="attentionBadge" class="badge" hidden></span></button>
-  <button class="navitem" id="nav-resources" onclick="setView('resources')"><span data-en="Shared resources">共享资源</span></button>
-  <button class="navitem" id="nav-agents" onclick="setView('agents')"><span data-en="Agent connections">Agent 连接</span></button>
-  <button class="navitem" id="nav-removed" onclick="setView('removed')"><span data-en="Removed services">已移除登记</span></button>
+  <button class="navitem" id="nav-attention" onclick="setView('attention')"><span data-en="Issues">异常</span><span id="attentionBadge" class="badge" hidden></span></button>
+  <button class="navitem" id="nav-resources" onclick="setView('resources')"><span data-en="Resources">资源</span></button>
+  <button class="navitem" id="nav-agents" onclick="setView('agents')"><span data-en="Agents">Agent</span></button>
+  <button class="navitem" id="nav-removed" onclick="setView('removed')"><span data-en="Removed">已移除</span></button>
   <div class="navspacer"></div>
   <button class="navitem add" id="nav-new-project" onclick="setView('new-project')"><span data-en="+ Add service">＋ 添加服务</span><span id="draftBadge" class="badge mut" hidden></span></button>
 </nav>
@@ -485,7 +507,6 @@ function viewSubtitle() {
   if (view === "removed") return tr("恢复不会自动启动；「运行意图」仅恢复意图", "Restoring a registration does not start it automatically");
   if (view === "resources") return tr("只读盘点 · 归属与消费者由清单推导", "Read-only inventory based on project manifests");
   if (view === "agents") return tr("识别用 CLI 连接的检测与验证", "Detect and verify agent CLI connections");
-  if (view === "settings") return tr("语言、域名访问与工作台说明", "Language, domain access and workbench information");
   if (view === "new-project") return tr("选目录 → 识别 / 手动登记 → 核对 → 注册 → 启动", "Choose a directory, review the service definition, then register and start");
   if (view.startsWith("project:")) {
     const g = projectGroups().find(x => x.pj.id === view.slice(8));
@@ -721,8 +742,8 @@ async function locoveSetting(key, value) {
   const [, res] = await api("POST", "/api/locove/settings", {[key]: value});
   if (res?.ok && locoveData) locoveData.settings = res.settings;
   msgs["locove-settings"] = res?.ok
-    ? `域名跳转：${res.settings.use_domains ? "开" : "关"} · ${res.settings.domain_form === "custom" ? "自定义域名" : "后缀式 <id>.locove"}`
-    : `保存失败：${res?.error || ""}`;
+    ? tr("已保存域名设置。", "Domain settings saved.")
+    : tr("无法保存域名设置。", "Could not save domain settings.") + (res?.error ? ` ${res.error}` : "");
   render();
   if (res?.ok) setTimeout(() => { delete msgs["locove-settings"]; render(); }, 2000);
 }
@@ -854,6 +875,7 @@ function serviceRow(p, showProject, singleProject) {
   const sub = pjName ? `项目 ${esc(projectName(pjName))}${p.description ? " · " + esc(p.description) : ""}`
     : esc(p.description || (singleProject?.name !== p.name ? singleProject?.name : "") || "");
   const mark = Array.from(p.name || p.id)[0]?.toUpperCase() || "·";
+  const state = esc(stateLabel(p));
   const projectControl = singleProject ? `<button class="star${singleProject.favorite ? " on" : ""}" data-act="favorite"
         aria-label="收藏项目" aria-pressed="${!!singleProject.favorite}" onclick="toggleFav('${esc(singleProject.id)}')">${singleProject.favorite ? "★" : "☆"}</button>` : "";
   return `<section class="svc service-${esc(p.state)}${expanded ? " expanded" : ""}" id="p-${p.id}">
@@ -864,7 +886,7 @@ function serviceRow(p, showProject, singleProject) {
       <div class="service-identity"><span class="service-mark" aria-hidden="true">${esc(mark)}</span>
         <div class="name">${esc(p.name)}${sub ? `<small title="${sub}">${sub}</small>` : ""}</div></div>
       <div class="statecell">
-        <div class="state s-${p.state}">${esc(stateLabel(p))}</div>
+        <div class="state s-${p.state}" title="${state}">${state}</div>
         ${domainChip(p)}
         ${["pending", "failed"].includes(code.state)
           ? `<div class="code ${code.state}" title="${esc(code.label)}：${esc(code.detail || "")}">${esc(code.label)}</div>` : ""}
@@ -1101,8 +1123,9 @@ function locoveStateChip(d) {
 }
 
 function domainPreviewUrl(d) {
-  const ep = (snap?.projects || []).flatMap(p => p.endpoints || [])[0];
-  const host = ep ? ep.host : `<${tr("服务名", "service-name")}>.${d.suffix}`;
+  const ep = (snap?.projects || []).flatMap(p => p.endpoints || [])
+    .find(e => d.settings?.domain_form !== "custom" || !e.derived);
+  const host = ep?.host || `example.${d.suffix}`;
   return `http://${host}:${d.domain_port || 5670}${ep ? ep.open_path : "/"}`;
 }
 
@@ -1112,35 +1135,36 @@ function locoveSettingsCard() {
   const st = d.settings || {use_domains: false, domain_form: "suffix"};
   const opt = d.optin || {};
   const port = d.domain_port || 5670;
-  const running = opt.active;
-  const stepLine = running || opt.error || (opt.steps || []).length
-    ? `<p class="note" role="status">${running ? `${tr("进行中", "In progress")} · ${esc(opt.step || "")}` : ""}
+  const running = opt.active || busy("locove-op");
+  const progressText = opt.step === "install-resolver" && d.resolver_state === "absent"
+    ? tr("正在安装解析配置，可能需要管理员授权。", "Installing the resolver. Administrator approval may be required.")
+    : tr("正在更新域名访问…", "Updating domain access…");
+  const stepLine = running || opt.error
+    ? `<p class="note" role="status">${running ? progressText : ""}
        ${opt.error ? `<span class="reason bad">${esc(opt.error)}</span>` : ""}</p>` : "";
-  const enableBtn = st.use_domains ? "" :
-    `<button class="primary" ${running ? "disabled" : ""} onclick="askEnableDomain()">${running ? tr("操作进行中…", "Working…") : tr("启用域名访问…", "Enable domain access…")}</button>`;
-  const offBtns = !st.use_domains ? "" :
-    `<button ${running ? "disabled" : ""} onclick="locoveOp('disable')">${tr("关闭（回直连，停止 DNS/代理）", "Turn off and use direct access")}</button>`;
+  const toggle = st.use_domains
+    ? `<button ${running ? "disabled" : ""} onclick="locoveOp('disable')">${tr("停用", "Disable")}</button>`
+    : `<button class="primary" ${running ? "disabled" : ""} onclick="askEnableDomain()">${tr("启用…", "Enable…")}</button>`;
   return `<div class="card" id="locove-settings">
-    <div class="card-head"><h3>${tr("域名访问（可选）", "Domain access (optional)")}</h3>${locoveStateChip(d)}
-      <span class="note">${tr("默认本地 IP 直连；域名是按需启用的高端口入口", "Direct local access is the default.")}</span></div>
-    <div class="field"><label>${tr("访问形式", "Access URL")}</label>
-      <code class="mono">${esc(domainPreviewUrl(d))}</code>
-      <span class="inline-note">${tr(`Caddy 监听回环 :${port}；DNS 仅把 *.${esc(d.suffix)} 指到本机`, `Caddy listens on loopback at :${port}. DNS resolves *.${esc(d.suffix)} locally.`)}</span></div>
-    <div class="field"><label>${tr("端口", "Port")}</label>
-      <input type="number" min="1024" max="65535" value="${port}" style="max-width:110px"
-             aria-label="${tr("域名端口", "Domain port")}" onchange="locovePort(this.value)">
-      <span class="inline-note">${tr("启用前检查占用；控制面 47800/47891/5354 不可用。修改端口需重新启用/重启代理", "Ports 47800, 47891 and 5354 are reserved. Restart the proxy to apply a port change.")}</span></div>
-    <div class="field"><label>${tr("操作", "Actions")}</label>
-      ${enableBtn}${offBtns}
-      <button class="ghost" ${running ? "disabled" : ""} onclick="askUninstallDomain()">${tr("卸载域名件…", "Uninstall domain support…")}</button></div>
-    ${st.use_domains ? `<div class="field"><label>${tr("域名形式", "Domain format")}</label>
+    <div class="card-head"><h3>${tr("域名访问", "Domain access")}</h3>${locoveStateChip(d)}</div>
+    <p class="note">${tr("服务默认通过本机地址直连。启用后，可在本机使用域名访问服务。", "Services use direct local addresses by default. Enable domain access to use local domain names.")}</p>
+    <div class="field domain-field"><span>${tr("地址示例", "Example URL")}</span>
+      <code class="mono">${esc(domainPreviewUrl(d))}</code></div>
+    <div class="field domain-field"><label for="domain-port">${tr("代理端口", "Proxy port")}</label>
+      <input id="domain-port" type="number" min="1024" max="65535" value="${port}" onchange="locovePort(this.value)">
+      <span class="inline-note">${tr("47800、47891 和 5354 为保留端口。重新启用域名访问后应用新端口。", "Ports 47800, 47891 and 5354 are reserved. Re-enable domain access to apply a port change.")}</span></div>
+    <div class="field domain-field"><span id="domain-actions-label">${tr("操作", "Actions")}</span>
+      <div class="domain-actions" role="group" aria-labelledby="domain-actions-label">${toggle}
+        <button class="ghost" ${running ? "disabled" : ""} onclick="askUninstallDomain()">${tr("卸载…", "Uninstall…")}</button></div>
+    </div>
+    ${st.use_domains ? `<div class="field domain-field"><span>${tr("域名来源", "Domain names")}</span>
       <span class="seg">
-        <button class="${st.domain_form === "suffix" ? "on" : ""}" onclick="locoveSetting('domain_form','suffix')">${tr("后缀式", "Suffix")}</button>
+        <button class="${st.domain_form === "suffix" ? "on" : ""}" onclick="locoveSetting('domain_form','suffix')">${tr("自动", "Automatic")}</button>
         <button class="${st.domain_form === "custom" ? "on" : ""}" onclick="locoveSetting('domain_form','custom')">${tr("自定义", "Custom")}</button>
       </span>
-      <span class="inline-note">${tr("后缀式为每个服务生成域名。自定义仅使用已登记的域名。", "Suffix mode generates a domain for each service. Custom mode uses explicitly registered domains.")}</span></div>` : ""}
+      <span class="inline-note">${tr("自动模式使用登记的域名，或按服务 ID 生成域名。自定义模式只使用登记的域名。", "Automatic uses registered domains or generates them from service IDs. Custom uses only registered domains.")}</span></div>` : ""}
     ${stepLine}
-    <p class="note">${tr(`首次启用需管理员授权以安装 .${esc(d.suffix)} 解析配置。取消后继续直连。DNS 与代理仅本机可访问。`, `First-time setup requires administrator approval for the .${esc(d.suffix)} resolver. Cancel to keep using direct access. DNS and proxy access are local only.`)}</p>
+    <p class="note">${tr(`首次安装 .${esc(d.suffix)} 解析配置需要管理员授权。取消后继续直连。停用会停止 DNS 和代理，并恢复直连。`, `Installing the .${esc(d.suffix)} resolver requires administrator approval. Cancel to keep using direct access. Disabling stops DNS and the proxy and restores direct access.`)}</p>
     ${msgs["locove-settings"] ? `<p class="msg" role="status">${esc(msgs["locove-settings"])}</p>` : ""}
   </div>`;
 }
@@ -1161,51 +1185,74 @@ async function askEnableDomain() {
   const d = locoveData || {};
   const port = d.domain_port || 5670;
   await showModal({title: tr("启用域名访问", "Enable domain access"), okText: tr("安装并启用", "Install and enable"), bodyHtml: `
-    <p class="modal-line">${tr("启用后通过以下地址访问", "After enabling, use")} <b>${tr("服务名", "service-name")}.${esc(d.suffix || "locove")}:${port}</b></p>
-    <p class="modal-line">${tr(`首次安装需管理员确认。DNS 和代理仅在本机提供服务（回环 :${port}）。取消后可继续直连。`, `First-time setup requires administrator approval. DNS and proxy access are local only (loopback port ${port}). Cancel to keep using direct access.`)}</p>
-    <p class="modal-line muted">${tr("保留解析配置时，可以直接开启或关闭域名访问。", "With the resolver installed, domain access can be turned on and off without another prompt.")}</p>`,
+    <p class="modal-line">${tr("地址示例", "Example URL")} <code class="mono">${esc(domainPreviewUrl(d))}</code></p>
+    <p class="modal-line">${tr(`首次安装 .${esc(d.suffix)} 解析配置需要管理员授权。DNS 和代理仅在本机运行，代理端口为 ${port}。取消后继续直连。`, `Installing the .${esc(d.suffix)} resolver requires administrator approval. DNS and the proxy run locally, with the proxy on port ${port}. Cancel to keep using direct access.`)}</p>`,
     onOk: async () => { await locoveOp("enable"); return true; }});
 }
 
 async function askUninstallDomain() {
-  await showModal({title: tr("卸载域名件", "Uninstall domain support"), okText: tr("卸载", "Uninstall"), danger: true, bodyHtml: `
-    <p class="modal-line">${tr("将停止并移除 DNS、代理和路由配置。解析配置默认保留，移除它需管理员确认。", "This stops and removes DNS, the proxy and routing configuration. Removing the resolver requires administrator approval.")}</p>
+  await showModal({title: tr("卸载域名访问组件", "Uninstall domain support"), okText: tr("卸载", "Uninstall"), danger: true, bodyHtml: `
+    <p class="modal-line">${tr("卸载会停止并移除 DNS、代理和路由配置，保留本机域名解析配置。", "Uninstalling stops and removes DNS, the proxy and routing configuration. The local resolver configuration is kept.")}</p>
     <p class="modal-line">${tr("卸载后继续通过本地直连地址访问服务。", "After uninstalling, services remain available through their direct local addresses.")}</p>`,
     onOk: async () => { await locoveOp("uninstall", {keep_resolver: true}); return true; }});
 }
 
 async function locoveOp(op, body = {}) {
-  pending["locove-op"] = true; msgs["locove-op"] = null; render();
+  if (busy("locove-op")) return;
+  pending["locove-op"] = true; delete msgs["locove-settings"]; render();
   try {
     const [code, res] = await api("POST", `/api/locove/${op}`, body);
-    if (code === 200 && res?.ok) {
-      msgs["locove-settings"] = op === "enable" ? "域名模块启动中…（含管理员授权与验证，见下方进度）"
-        : op === "disable" ? "已关闭：直连模式，DNS/代理已停止（安装件保留）" : "卸载已启动（解析配置默认保留）";
-    } else {
-      msgs["locove-settings"] = `操作失败：${res?.error || code}`;
+    if (code !== 200 || !res?.ok) {
+      msgs["locove-settings"] = `${tr("无法更新域名访问。", "Could not update domain access.")} ${res?.error || code}`;
     }
-  } catch (e) { msgs["locove-settings"] = "无法连接控制服务"; setConn(false); }
-  pending["locove-op"] = null;
-  await refresh(); render();
+  } catch (e) {
+    msgs["locove-settings"] = tr("无法连接控制服务。", "Could not connect to the daemon.");
+    setConn(false);
+  } finally {
+    await refresh();
+    pending["locove-op"] = null;
+    render();
+  }
 }
 
 function locoveDiagnosticsCard() {
   const d = locoveData;
   if (!d) return "";
-  const row = (ok, name, detail) => `<tr><td class="k">${esc(name)}</td><td>${ok === null || ok === undefined ? "—" : ok ? "✓ " + esc(detail || tr("正常", "OK")) : "✗ " + esc(detail || "")}</td></tr>`;
-  const pbRow = d.proxy_bypass ? row(d.proxy_bypass.ok, tr("代理绕行（浏览器路径）", "Browser proxy bypass"), d.proxy_bypass.detail) : "";
+  const row = (ok, name, detail) => `<tr><td class="k">${esc(name)}</td><td>${ok == null ? "" : ok ? "✓ " : "✗ "}${esc(detail)}</td></tr>`;
+  const off = d.state === "installed_off";
+  const notInstalled = tr("未安装", "Not installed");
+  const stopped = tr("已停止", "Stopped");
+  const listening = tr("监听中", "Listening");
+  const resolverDetail = {
+    ours: tr(`已配置将 .${d.suffix} 域名交给本地 DNS。`, `Configured to send .${d.suffix} queries to local DNS.`),
+    foreign: tr("配置由其他程序管理，无法启用。", "Another program manages this resolver. Domain access cannot be enabled."),
+    unreadable: tr("无法读取解析配置。", "Could not read the resolver configuration."),
+    absent: notInstalled,
+  };
+  const pb = d.proxy_bypass;
+  const pbRow = pb && d.state !== "not_installed" ? row(
+    pb.enabled == null ? null : pb.ok, tr("浏览器代理绕过", "Browser proxy bypass"),
+    pb.enabled == null ? tr("无法读取系统代理设置。", "Could not read system proxy settings.")
+      : !pb.enabled ? tr("系统代理未启用。", "System proxy is off.")
+      : pb.ok ? tr(`系统代理已绕过 *.${d.suffix}。`, `The system proxy bypasses *.${d.suffix}.`)
+      : tr(`代理绕过列表缺少 *.${d.suffix}。`, `*.${d.suffix} is missing from the proxy bypass list.`)) : "";
   const hosts = Object.entries(d.routes || {}).map(([h, r]) =>
-    `<tr><td class="k">${esc(h)}</td><td>${r.state === "proxy" ? `代理中 → 127.0.0.1:${r.upstream_port}` : tr("明确不可用页（503）", "Unavailable page (503)")}<span class="note">（${esc(r.service)}.${esc(r.component)}）</span></td></tr>`).join("");
+    `<tr><td class="k">${esc(h)}</td><td>${r.state === "proxy" ? tr(`转发到 127.0.0.1:${r.upstream_port}`, `Forwards to 127.0.0.1:${r.upstream_port}`) : tr("不可用（503）", "Unavailable (503)")} <span class="note">(${esc(r.service)}.${esc(r.component)})</span></td></tr>`).join("");
   const legacy = d.legacy_80
-    ? `<tr><td class="k">${tr("旧 80 入口", "Legacy port 80")}</td><td>仍登记（V3.4 转发器）。退役：<code class="mono">sudo scripts/retire-locove-80.sh --apply</code>（旧无端口书签将失效，改用 :${d.domain_port} 地址）</td></tr>` : "";
-  return `<section class="card"><div class="card-head"><h3>${tr("域名诊断", "Domain diagnostics")}</h3><span class="note">*.${esc(d.suffix)}:${d.domain_port} · ${tr("仅在启用域名时相关", "Applies when domains are enabled")}</span></div>
+    ? `<tr><td class="k">${tr("旧 80 入口", "Legacy port 80")}</td><td>${tr("旧版转发器仍在登记中。移除后，更新书签到新的域名端口。", "The legacy forwarder is still registered. After removing it, update bookmarks to use the new domain port.")} <code class="mono">sudo scripts/retire-locove-80.sh --apply</code></td></tr>` : "";
+  return `<section class="card"><div class="card-head"><h3>${tr("域名诊断", "Domain diagnostics")}</h3></div>
     <div class="table-scroll"><table>
-      ${row(d.dns?.ok, tr("本地 DNS（:5354）", "Local DNS (:5354)"), d.dns?.detail)}
-      ${row(d.proxy?.ok, tr(`代理（Caddy :${d.domain_port}）`, `Proxy (Caddy :${d.domain_port})`), d.proxy?.detail)}
-      ${row(d.resolver?.ok, `split DNS（/etc/resolver/${esc(d.suffix)}）`, d.resolver?.detail)}
-      ${d.state !== "not_installed" ? pbRow : ""}${legacy}
+      ${row(off && d.dns?.ok === false ? null : d.dns?.ok, tr("本地 DNS", "Local DNS"),
+        d.dns?.ok == null ? notInstalled : d.dns.ok ? listening : off ? stopped : tr("未监听本机端口。", "Not listening on the local port."))}
+      ${row(off && d.proxy?.ok === false ? null : d.proxy?.ok, tr("代理", "Proxy"),
+        d.proxy?.ok == null ? notInstalled : d.proxy.ok ? `${listening} · 127.0.0.1:${d.domain_port}`
+          : off ? stopped : tr(`Caddy 未监听 127.0.0.1:${d.domain_port}。`, `Caddy is not listening on 127.0.0.1:${d.domain_port}.`))}
+      ${row(d.resolver?.ok, tr("域名解析配置", "Local resolver"), resolverDetail[d.resolver_state] || (d.resolver?.ok ? tr("已配置", "Configured") : notInstalled))}
+      ${pbRow}${legacy}
     </table></div>
-    ${d.proxy_bypass?.ok === false && d.state !== "not_installed" ? `<p class="note">绕行立即修复：<code class="mono">sudo scripts/locove-proxy-bypass.sh ${esc(d.suffix)}</code>；永久修复需在网关客户端（如 Clash Verge → 设置 → 系统设置 → 代理绕过）加入 <code class="mono">*.${esc(d.suffix)}</code>。</p>` : ""}
+    ${pb?.ok === false && d.state !== "not_installed" ? `<p class="note">${tr(`在代理客户端的绕过列表中添加 *.${esc(d.suffix)}（例如 Clash Verge 的「系统设置 → 代理绕过」）。`, `Add *.${esc(d.suffix)} to the bypass list in your proxy client. In Clash Verge, look under System Settings → Proxy Bypass.`)}</p>
+      <p class="note">${tr("也可更新当前系统代理设置", "To update the current system proxy settings")}
+        <code class="mono">sudo scripts/locove-proxy-bypass.sh ${esc(d.suffix)}</code></p>` : ""}
     ${hosts ? `<details><summary>${tr(`全部 ${Object.keys(d.routes || {}).length} 条路由`, `Routes: ${Object.keys(d.routes || {}).length}`)}</summary><div class="table-scroll"><table>${hosts}</table></div></details>` : `<p class="note">${tr("暂无登记公开入口的服务。", "No registered domain endpoints.")}</p>`}
     </section>`;
 }
@@ -1233,8 +1280,7 @@ async function saveLanguage(value) {
 }
 
 function languageCard() {
-  return `<section class="card"><div class="card-head"><h3>${tr("语言", "Language")}</h3></div>
-    <div class="field"><span id="language-label">${tr("界面语言", "Interface language")}</span>
+  return `<section class="card language-card"><div class="card-head"><h3 id="language-label">${tr("界面语言", "Interface language")}</h3>
       <div class="seg" role="group" aria-labelledby="language-label">
         <button lang="zh-CN" aria-pressed="${language === "zh-CN"}" class="${language === "zh-CN" ? "on" : ""}"
                 ${pending.language ? "disabled" : ""} onclick="saveLanguage('zh-CN')">简体中文</button>
@@ -1252,9 +1298,9 @@ function viewSettings() {
       <section class="card"><div class="card-head"><h3>${tr("关于", "About")}</h3></div>
         <table>
           <tr><td class="k">${tr("产品", "Product")}</td><td>${productName()} · ${tr("本地服务工作台", "Local services workbench")}</td></tr>
-          <tr><td class="k">${tr("运行位置", "Runtime")}</td><td>${tr("本机（daemon / DNS / 入口 / 代理均在本机回环，无云端依赖、无遥测）", "The daemon, DNS and proxy use loopback. No cloud dependency or telemetry.")}</td></tr>
-          <tr><td class="k">${tr("可选 AI 识别", "Optional AI discovery")}</td><td>${tr("调用你配置的 Codex/Claude CLI 时，会把扫描到的工程证据交给该 CLI；CLI 所用模型可能在云端或你的网关处理。手动登记与日常管理不调用模型。", "Discovery passes project evidence to your configured Codex or Claude CLI. Its model may process that data in the cloud or through your gateway. Manual registration and routine operations do not use a model.")}</td></tr>
-          <tr><td class="k">${tr("数据", "Data")}</td><td>${tr("登记与状态保存在本机", "Registry and state are stored locally in")} <code>~/Library/Application Support/LocalServices</code></td></tr>
+          <tr><td class="k">${tr("本机运行", "Local runtime")}</td><td>${tr("控制服务、DNS 和代理只监听本机地址，无需云端服务，也不发送遥测。", "The daemon, DNS and proxy listen on loopback, with no cloud dependency or telemetry.")}</td></tr>
+          <tr><td class="k">${tr("AI 识别（可选）", "AI discovery (optional)")}</td><td>${tr("识别时会把项目扫描结果交给你配置的 Codex 或 Claude CLI，模型可能在云端或通过你的网关处理。手动登记和日常操作无需调用模型。", "Discovery sends project scan results to your configured Codex or Claude CLI. The model may process them in the cloud or through your gateway. Manual registration and routine operations need no model.")}</td></tr>
+          <tr><td class="k">${tr("数据目录", "Data directory")}</td><td><code>~/Library/Application Support/LocalServices</code></td></tr>
         </table></section>
     </div>
     <div>${locoveDiagnosticsCard()}</div>
