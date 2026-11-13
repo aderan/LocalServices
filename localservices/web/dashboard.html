@@ -19,6 +19,7 @@
          background: var(--page); color: var(--fg); }
   .banner { background: var(--soft); border-bottom: 1px solid var(--line); color: var(--bad);
             font-weight: 600; padding: 8px 20px; text-align: center; }
+  .banner.stale { color: var(--warn); }
   .shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
   nav { background: var(--bg); border-right: 1px solid var(--line); padding: 14px 10px;
         display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; align-self: start;
@@ -28,8 +29,6 @@
   .brand-heading img { flex: none; }
   .brand h1 { font-size: 15px; margin: 0 0 2px; letter-spacing: .01em; }
   .brand .brand-sub { color: var(--mute); font-size: 11px; }
-  #conn { color: var(--mute); font-size: 11.5px; margin-top: 1px; }
-  #conn.bad { color: var(--bad); font-weight: 600; }
   .navitem { display: block; width: 100%; text-align: left; font: inherit; font-size: 13px;
              padding: 6px 10px; border-radius: 7px; border: 0; background: none; color: var(--fg);
              cursor: pointer; }
@@ -49,6 +48,9 @@
   .topbar h2 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
   .topbar .subtitle { color: var(--mute); font-size: 12.5px; flex: 1 1 160px; }
   .topbar .tools { display: flex; gap: 8px; align-items: center; margin-left: auto; }
+  #refreshBtn { flex: 0 0 104px; white-space: nowrap; }
+  #refreshBtn[aria-disabled="true"] { opacity: .55; cursor: default; }
+  #refreshStatus:not(:empty) { color: var(--bad); font-size: 12.5px; padding: 8px 26px 0; text-align: right; }
   #nav-settings[aria-pressed="true"] { color: var(--btn); border-color: currentColor; }
   #globalSearch { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 7px;
                   border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 220px; }
@@ -299,7 +301,7 @@
 </style>
 </head>
 <body>
-<div id="banner" class="banner" hidden>控制层不可用，服务状态未知——不代表项目已停止。恢复后自动消失。</div>
+<div id="banner" class="banner" role="status" hidden></div>
 <div class="shell">
 <nav aria-label="工作台导航">
   <div class="brand">
@@ -307,7 +309,6 @@
       <img src="/locove-logo.png" width="36" height="36" alt="">
       <div><h1>洛湾</h1><div class="brand-sub" data-en="Local services workbench">本地服务工作台</div></div>
     </div>
-    <div id="conn" role="status">连接中…</div>
   </div>
   <button class="navitem" id="nav-all" onclick="setView('all')"><span data-en="Services">服务</span></button>
   <div class="navlabel" id="navProjectsLabel" data-en="Projects">项目</div>
@@ -326,10 +327,11 @@
     <div class="subtitle" id="viewSubtitle"></div>
     <div class="tools">
       <input id="globalSearch" type="search" placeholder="搜索项目 / 服务" aria-label="全局搜索">
-      <button id="refreshBtn" onclick="refresh(true)"><span data-en="Refresh">刷新</span></button>
+      <button id="refreshBtn" onclick="refresh(true)" aria-disabled="false">刷新</button>
       <button id="nav-settings" aria-pressed="false" onclick="setView('settings')"><span data-en="Settings">设置</span></button>
     </div>
   </header>
+  <div id="refreshStatus" role="status"></div>
   <div id="locoveHealth" role="status"></div>
   <main id="main" aria-live="polite"></main>
 </section>
@@ -349,6 +351,9 @@ let agentsData = null, resourcesData = null, draftsData = null, removedData = nu
 let locoveData = null;   // /api/locove：dns / 入口 / 代理三层健康 + 路由事实
 let view = "all";     // all | project:<id> | attention | removed | resources | agents | drafts | new-project
 let connOk = null;
+let manualRefresh = false;
+let refreshFailed = false;
+const STALE_SNAPSHOT_MS = 30_000;
 let pendingDiagnosis = null;
 let draftEdit = {};         // draft id -> 编辑中的 service 字段
 const recognitionTasks = [];
@@ -384,11 +389,28 @@ function t(ts) { return ts ? new Date(ts*1000).toLocaleString(language, {hour12:
 function busy(key) { return !!pending[key]; }
 
 function setConn(ok) {
-  if (connOk === ok) return;
   connOk = ok;
-  document.getElementById("banner").hidden = ok !== false;
-  const c = document.getElementById("conn");
-  if (ok === false) { c.textContent = tr("控制层不可用", "Daemon unavailable"); c.className = "bad"; }
+  renderStatusBanner();
+}
+
+function renderStatusBanner() {
+  const banner = document.getElementById("banner");
+  const stale = connOk === true && snap?.generated_at > 0 && Date.now() - snap.generated_at * 1000 >= STALE_SNAPSHOT_MS;
+  const message = connOk === false
+    ? tr("无法连接控制服务，服务状态未知。恢复连接后将自动更新。", "Daemon unavailable. Service status will update when the connection returns.")
+    : stale ? tr(`服务状态长时间未更新。上次采集于 ${t(snap.generated_at)}。`, `Service status is out of date. Last checked ${t(snap.generated_at)}.`) : "";
+  banner.classList.toggle("stale", stale);
+  banner.hidden = !message;
+  if (banner.textContent !== message) banner.textContent = message;
+}
+
+function renderRefreshControl() {
+  const button = document.getElementById("refreshBtn");
+  button.textContent = manualRefresh ? tr("刷新中…", "Refreshing…") : tr("刷新", "Refresh");
+  button.setAttribute("aria-disabled", String(manualRefresh));
+  const status = document.getElementById("refreshStatus");
+  const message = refreshFailed ? tr("刷新失败，请重试。", "Refresh failed. Try again.") : "";
+  if (status.textContent !== message) status.textContent = message;
 }
 
 function nativeBridge() {
@@ -480,8 +502,8 @@ function applyLanguage(value) {
     const label = tr(originalLabels.get(el), el.dataset.en);
     if (el.textContent !== label) el.textContent = label;
   });
-  const banner = document.getElementById("banner");
-  banner.textContent = tr("控制层不可用，服务状态未知。恢复连接后将自动更新。", "Daemon unavailable. Service status will update when the connection returns.");
+  renderStatusBanner();
+  renderRefreshControl();
   const search = document.getElementById("globalSearch");
   search.placeholder = tr("搜索项目 / 服务", "Search projects or services");
   search.setAttribute("aria-label", tr("全局搜索", "Search"));
@@ -496,12 +518,13 @@ function stateLabel(service) {
   return EN_STATE[service.state] || service.label;
 }
 
-function viewSubtitle() {
+function viewSubtitle(main) {
   if (view === "all") {
-    const groups = projectGroups();
-    const n = (snap?.projects || []).length;
-    const running = (snap?.projects || []).filter(p => ["available", "partial", "external"].includes(p.state)).length;
-    return tr(`${groups.length} 个项目 · ${n} 个服务（${running} 个可打开）`, `Projects: ${groups.length} · Services: ${n} · Ready to open: ${running}`);
+    if (!snap) return "";
+    const projects = main.querySelectorAll(".group").length;
+    const services = main.querySelectorAll(".svc").length;
+    const ready = main.querySelectorAll('[data-act="open"]:enabled').length;
+    return tr(`${projects} 个项目 · ${services} 个服务 · ${ready} 个可打开`, `Projects: ${projects} · Services: ${services} · Ready to open: ${ready}`);
   }
   if (view === "attention") return tr("失败 / 冲突 / 部分可用的服务集中在此处理", "Services that failed, have conflicts, or are degraded");
   if (view === "removed") return tr("恢复不会自动启动；「运行意图」仅恢复意图", "Restoring a registration does not start it automatically");
@@ -550,10 +573,10 @@ function render({preserveLogReading = true} = {}) {
   // UX2（review 2026-11-05）：用户正阅读/选择日志区（悬停或持有选区）时，
   // 后台触发的整树重建一律延后——选择、焦点与滚动位置不允许被打断。
   if (preserveLogReading && logReading()) return;
+  renderStatusBanner();
   document.getElementById("viewTitle").textContent =
     view.startsWith("project:") ? (projectGroups().find(g => g.pj.id === view.slice(8))?.pj.name || "项目")
                                 : tr(...(VIEW_TITLES[view] || VIEW_TITLES.all));
-  document.getElementById("viewSubtitle").textContent = viewSubtitle();
   let html = "";
   if (view === "all") html = viewAll();
   else if (view.startsWith("project:")) html = viewProject(view.slice(8));
@@ -567,6 +590,9 @@ function render({preserveLogReading = true} = {}) {
   // 焦点/选区/滚动/悬停节点身份天然保持；变化（或 #main 被外部改写）时按锚点与
   // DOM 路径恢复滚动和焦点（见 replaceMain）
   if (html !== __lastWritten || __mainDirty) replaceMain(main, html, a);
+  const subtitle = document.getElementById("viewSubtitle");
+  const summary = viewSubtitle(main);
+  if (subtitle.textContent !== summary) subtitle.textContent = summary;
   if (location.hash.startsWith("#p-")) {
     const el = document.getElementById(location.hash.slice(1));
     if (el && el.scrollIntoView) el.scrollIntoView({block: "center"});
@@ -681,11 +707,6 @@ function renderNav() {
   const d = draftsData?.drafts?.length || 0;
   const db = document.getElementById("draftBadge");
   db.hidden = !d; db.textContent = d || "";
-  const c = document.getElementById("conn");
-  if (connOk !== false) {
-    c.className = "";
-    c.textContent = snap ? tr("更新于 ", "Updated at ") + new Date(snap.generated_at * 1000).toLocaleTimeString(language, {hour12:false}) : tr("连接中…", "Connecting…");
-  }
 }
 
 // ------------------------------------------------------------ 服务行（沿用原列表能力）
@@ -2929,9 +2950,25 @@ function setView(v) {
 }
 
 async function refresh(manual) {
+  if (manual) {
+    if (manualRefresh) return;
+    const previous = snap?.generated_at || 0;
+    manualRefresh = true;
+    refreshFailed = false;
+    renderRefreshControl();
+    try {
+      const [code, result] = await api("POST", "/api/refresh").catch(() => []);
+      refreshFailed = code !== 200 || !(result?.generated_at > previous);
+      await refresh();
+      if (connOk === false) refreshFailed = true;
+    } finally {
+      manualRefresh = false;
+      renderRefreshControl();
+    }
+    return;
+  }
   const requestLanguageVersion = languageVersion;
   try {
-    if (manual) { const [, r] = await api("POST", "/api/refresh"); }
     const [code, snapNew] = await api("GET", "/api/status");
     if (code !== 200 || !snapNew) throw new Error(snapNew?.error || "status failed");
     snap = snapNew;
@@ -2992,7 +3029,11 @@ function logReading() {
   }
   return false;
 }
-setInterval(() => { if (!logReading()) refresh(); }, 3000);
+setInterval(() => {
+  if (logReading()) return;
+  renderStatusBanner();
+  if (!manualRefresh) refresh();
+}, 3000);
 </script>
 </body>
 </html>

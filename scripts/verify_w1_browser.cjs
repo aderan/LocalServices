@@ -198,6 +198,85 @@ async function main() {
   check("侧栏项目项无常驻数字（无 badge）", top.projectBadges === 0, `badges=${top.projectBadges}`);
   check("服务行主操作可达（打开/启动并打开）", top.primary, "");
 
+  for (const locale of ['zh-CN', 'en']) {
+    const header = await ev(`(async () => {
+    const saved = {fetch: window.fetch, snap, registry, connOk, language};
+    const banner = document.getElementById('banner');
+    const button = document.getElementById('refreshBtn');
+    const search = document.getElementById('globalSearch');
+    const rect = () => [button.offsetLeft, button.offsetWidth];
+    const base = {state: 'available', label: '可用', components: []};
+    const status = {generated_at: Date.now() / 1000, projects: [
+      {...base, id: 'ready', name: 'Ready', can_open: true},
+      {...base, id: 'worker', name: 'Worker', can_open: false},
+      {...base, id: 'observe', name: 'Observe', can_open: true, observe_only: true},
+      {...base, id: 'busy', name: 'Busy', can_open: true, op: 'restart'},
+    ]};
+    const reply = (code, data) => Promise.resolve({status: code, json: async () => data});
+    const responses = [];
+    let requests = 0, offline = false;
+    window.fetch = (url, options) => {
+      if (url === '/api/refresh') { requests++; return new Promise(resolve => { responses.push(resolve); }); }
+      if (url === '/api/status') return offline ? Promise.reject(new Error('offline')) : reply(200, status);
+      if (url === '/api/registry') return reply(200, {...registry, registry: {...registry.registry, settings: {language}}});
+      return saved.fetch(url, options);
+    };
+    try {
+      applyLanguage(${JSON.stringify(locale)});
+      snap = status;
+      setConn(true);
+      setView('all');
+      const normal = banner.hidden && !document.getElementById('conn');
+      const subtitle = document.getElementById('viewSubtitle').textContent;
+      const count = document.querySelectorAll('.svc [data-act="open"]:enabled').length === 1
+        && /1 个可打开|Ready to open: 1/.test(subtitle);
+      search.value = 'Worker';
+      render();
+      const filtered = /0 个可打开|Ready to open: 0/.test(document.getElementById('viewSubtitle').textContent);
+      search.value = '';
+      snap = {...status, generated_at: status.generated_at - 60};
+      render();
+      const stale = !banner.hidden && /未更新|out of date/.test(banner.textContent);
+      snap = status;
+      render();
+      const recovered = banner.hidden;
+      offline = true;
+      await refresh();
+      const disconnected = !banner.hidden && /无法连接|unavailable/.test(banner.textContent);
+      offline = false;
+      await refresh();
+      const before = rect();
+      const failedRefresh = refresh(true);
+      const working = /刷新中|Refreshing/.test(button.textContent) && JSON.stringify(rect()) === JSON.stringify(before)
+        && button.getAttribute('aria-disabled') === 'true';
+      button.click();
+      const deduped = requests === 1;
+      for (const resolve of responses.splice(0)) resolve(reply(500, {error: 'test failure'}));
+      await failedRefresh;
+      const failed = /刷新失败|Refresh failed/.test(document.getElementById('refreshStatus')?.textContent || '');
+      const cachedRefresh = refresh(true);
+      responses.shift()(reply(200, status));
+      await cachedRefresh;
+      const cached = /刷新失败|Refresh failed/.test(document.getElementById('refreshStatus')?.textContent || '');
+      const retried = refresh(true);
+      status.generated_at = (Date.now() + 1000) / 1000;
+      responses.shift()(reply(200, status));
+      await retried;
+      const cleared = !document.getElementById('refreshStatus')?.textContent && banner.hidden;
+      return {normal, count, filtered, stale, recovered, disconnected, working, deduped, failed, cached, cleared};
+    } finally {
+      window.fetch = saved.fetch;
+      search.value = '';
+      snap = saved.snap;
+      registry = saved.registry;
+      setConn(saved.connOk);
+      applyLanguage(saved.language);
+      render();
+    }
+  })()`, true);
+    for (const [name, passed] of Object.entries(header)) check("顶部状态 " + locale + " " + name, passed);
+  }
+
   // 搜索：过滤生效且可清空恢复
   const searchEv = `(() => {
     const input = document.getElementById("globalSearch");
