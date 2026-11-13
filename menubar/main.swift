@@ -3,6 +3,7 @@
 // 主窗口由 MainWindow.swift 的 WKWebView 承载 daemon 工作台。
 
 import AppKit
+import SwiftUI
 
 let port = ProcessInfo.processInfo.environment["LOCALSERVICES_PORT"] ?? "47800"
 let base = URL(string: "http://127.0.0.1:\(port)")!
@@ -14,10 +15,8 @@ let tokenPath = (tokenDir as NSString).appendingPathComponent("token")
 
 struct Service {
     let id: String, name: String, state: String, label: String, intent: String
-    let codeState: String, codeLabel: String
+    let codeState: String, codeLabel: String, reason: String
     let observeOnly: Bool, canOpen: Bool, canTakeover: Bool, op: String?
-    let group: String?, groupName: String?, groupOrder: Int
-    let components: [[String: Any]]
 
     var running: Bool { ["available", "partial", "external"].contains(state) }
     var needsAttention: Bool { ["failed", "conflict"].contains(state) }
@@ -28,17 +27,23 @@ struct WorkspaceProject {
     let id: String, name: String, favorite: Bool, agent: String, serviceIds: [String]
 }
 
-final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    let menu = NSMenu()
     private let statusLogo = NSImage(named: "LocoveStatus")
-    private lazy var quickMenu: NSMenu = {
-        let menu = NSMenu()
-        let open = menu.addItem(withTitle: "打开主窗口", action: #selector(showMainWindow), keyEquivalent: "")
-        open.target = self
-        let quit = menu.addItem(withTitle: "退出菜单栏（后台服务继续运行）", action: #selector(quit), keyEquivalent: "")
-        quit.target = self
-        return menu
+    private let panelModel = StatusPanelModel()
+    private var panelEvents: [Any] = []
+    private lazy var statusPanel: StatusPanelWindow = {
+        let panel = StatusPanelWindow(contentRect: NSRect(x: 0, y: 0, width: 414, height: 556),
+                                      styleMask: [.borderless, .nonactivatingPanel],
+                                      backing: .buffered, defer: true)
+        panel.delegate = self
+        panel.level = .popUpMenu
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        panel.contentViewController = NSHostingController(rootView: StatusPanel(model: panelModel, app: self))
+        return panel
     }()
     let mainWindow = MainWindowController(base: base, portString: port)
     var services: [Service] = []
@@ -47,8 +52,6 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var attention = false
     var lastError = ""
     var warnings: [String] = []
-    var menuIsOpen = false
-    var rebuildPending = false
     let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.connectionProxyDictionary = [:]
@@ -57,7 +60,6 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        menu.delegate = self
         if let button = item.button {
             button.target = self
             button.action = #selector(statusItemClicked(_:))
@@ -65,21 +67,47 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         installMainMenu() // ⌘N/⌘R/⌘Q 等在主窗口聚焦时生效
         updateIcon()
-        rebuild()
         refresh()
         mainWindow.show()
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
     }
 
     @objc private func statusItemClicked(_ button: NSStatusBarButton) {
-        let event = NSApp.currentEvent
-        let secondaryClick = event?.type == .rightMouseUp
-            || (event?.type == .leftMouseDown && event?.modifierFlags.contains(.control) == true)
-        // 菜单打开期间交给 AppKit 跟踪，关闭后恢复按钮的点击处理。
-        item.menu = secondaryClick ? quickMenu : menu
-        defer { item.menu = nil }
-        button.performClick(nil)
+        if statusPanel.isVisible {
+            closeStatusPanel()
+            return
+        }
+        guard let window = button.window, let screen = window.screen ?? NSScreen.main else { return }
+        let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
+        let area = screen.visibleFrame
+        let size = statusPanel.frame.size
+        let left = min(max(anchor.midX - size.width / 2, area.minX + 6), area.maxX - size.width - 6)
+        let top = min(area.maxY, anchor.minY) - 4
+        statusPanel.setFrameOrigin(NSPoint(x: left, y: max(area.minY + 4, top - size.height)))
+        statusPanel.makeKeyAndOrderFront(nil)
+        if let esc = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
+            guard event.keyCode == 53, event.window === self?.statusPanel else { return event }
+            self?.closeStatusPanel()
+            return nil
+        }) {
+            panelEvents.append(esc)
+        }
+        if let outside = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
+            self?.closeStatusPanel()
+        }) {
+            panelEvents.append(outside)
+        }
+        refresh()
     }
+
+    func closeStatusPanel() {
+        guard statusPanel.isVisible else { return }
+        panelEvents.forEach(NSEvent.removeMonitor)
+        panelEvents.removeAll()
+        statusPanel.orderOut(nil)
+    }
+
+    func windowDidResignKey(_ notification: Notification) { closeStatusPanel() }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
@@ -113,12 +141,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                    state: d["state"] as? String ?? "unknown", label: d["label"] as? String ?? "未知",
                                    intent: d["intent"] as? String ?? "stopped",
                                    codeState: code["state"] as? String ?? "", codeLabel: code["label"] as? String ?? "",
+                                   reason: d["reason"] as? String ?? "",
                                    observeOnly: d["observe_only"] as? Bool ?? false,
                                    canOpen: d["can_open"] as? Bool ?? false,
-                                   canTakeover: d["can_takeover"] as? Bool ?? false, op: d["op"] as? String,
-                                   group: d["group"] as? String, groupName: d["group_name"] as? String,
-                                   groupOrder: d["group_order"] as? Int ?? 0,
-                                   components: d["components"] as? [[String: Any]] ?? [])
+                                   canTakeover: d["can_takeover"] as? Bool ?? false, op: d["op"] as? String)
                 }
             } else {
                 self.connected = false
@@ -140,7 +166,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.projects = []
                 }
                 self.updateIcon()
-                self.rebuild()
+                self.panelModel.connected = self.connected
+                self.panelModel.connection = self.connected ? "守护进程运行中" : self.lastError
+                self.panelModel.warnings = self.connected ? self.warnings : []
+                self.panelModel.sections = self.workbenchSections()
             }
         }
     }
@@ -155,18 +184,18 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             desc = "Locove／洛湾"
         }
 
-        let disconnectBadge = connected ? nil : NSImage(systemSymbolName: "questionmark.circle",
-                                                         accessibilityDescription: nil)
+        let badgeSymbol = !connected ? "questionmark.circle.fill" : attention ? "exclamationmark.circle.fill" : nil
+        let badge = badgeSymbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
         let image: NSImage?
         if let statusLogo {
             image = NSImage(size: NSSize(width: 23, height: 19), flipped: false) { _ in
                 // 原图有透明留白，断连徽标放在湾口上方。
                 statusLogo.draw(in: NSRect(x: 0, y: -2, width: 24, height: 24))
-                disconnectBadge?.draw(in: NSRect(x: 14, y: 9, width: 9, height: 9))
+                badge?.draw(in: NSRect(x: 14, y: 9, width: 9, height: 9))
                 return true
             }
         } else {
-            image = disconnectBadge ?? NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: nil)
+            image = badge ?? NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: nil)
         }
         image?.isTemplate = true
         item.button?.image = image
@@ -174,23 +203,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.button?.toolTip = desc
     }
 
-    func menuWillOpen(_ menu: NSMenu) {
-        if menu === self.menu { menuIsOpen = true }
-        refresh()
-    }
-
-    // W3：全菜单打开期间不做整树重建——5s 定时刷新的 removeAllItems 会销毁正在跟踪的
-    // 菜单会话（项目/子菜单悬停被清掉）；挂起到 menuDidClose 后再应用。
-    func menuDidClose(_ menu: NSMenu) {
-        guard menu === self.menu else { return }
-        menuIsOpen = false
-        if rebuildPending { rebuildPending = false; rebuild() }
-    }
-
-    // MARK: 菜单栏结构（工作台：Project 分组）
-
-    /// (分区标题, [(Project, 服务列表)])；收藏/运行中在前，"需要处理"其次，其余在后。
-    func workbenchSections() -> [(String?, [(WorkspaceProject, [Service])])] {
+    private func workbenchSections() -> [StatusPanelSection] {
         var byId: [String: Service] = [:]
         for s in services { byId[s.id] = s }
         var entries: [(WorkspaceProject, [Service])] = []
@@ -217,54 +230,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return a.0.name < b.0.name
             }
         }
-        var out: [(String?, [(WorkspaceProject, [Service])])] = []
+        var out: [StatusPanelSection] = []
         let front = sort(entries.filter { rank($0) == 0 })
         let needs = sort(entries.filter { rank($0) == 1 })
         let rest = sort(entries.filter { rank($0) == 2 })
-        if !front.isEmpty { out.append((nil, front)) }
-        if !needs.isEmpty { out.append(("需要处理", needs)) }
-        if !rest.isEmpty { out.append(("其他项目", rest)) }
+        if !front.isEmpty { out.append(StatusPanelSection(title: "收藏与运行中", projects: front)) }
+        if !needs.isEmpty { out.append(StatusPanelSection(title: "需要处理", projects: needs)) }
+        if !rest.isEmpty { out.append(StatusPanelSection(title: "其他项目", projects: rest)) }
         return out
-    }
-
-    func rebuild() {
-        if menuIsOpen { rebuildPending = true; return }
-        menu.removeAllItems()
-        let head = NSMenuItem(title: "Locove／洛湾", action: nil, keyEquivalent: "")
-        head.isEnabled = false
-        menu.addItem(head)
-        add("刷新状态", #selector(refreshNow), "r", symbol: "arrow.clockwise")
-        add("打开主窗口", #selector(showMainWindow), "n", symbol: "macwindow")
-        add("设置…", #selector(showSettings), ",", symbol: "gearshape")
-        menu.addItem(.separator())
-        if !connected {
-            let m = NSMenuItem(title: "⚠︎ \(lastError.isEmpty ? "无法连接控制服务" : lastError)（项目状态未知）", action: nil, keyEquivalent: "")
-            m.isEnabled = false
-            menu.addItem(m)
-        } else {
-            for w in warnings {
-                let m = NSMenuItem(title: "⚠︎ " + (w.components(separatedBy: "：").first ?? w), action: #selector(openDashboard), keyEquivalent: "")
-                m.target = self
-                m.toolTip = w
-                menu.addItem(m)
-            }
-            if !warnings.isEmpty { menu.addItem(.separator()) }
-            var firstSection = true
-            for (header, entries) in workbenchSections() {
-                if !firstSection { menu.addItem(.separator()) }
-                firstSection = false
-                if let header {
-                    let m = NSMenuItem(title: header, action: nil, keyEquivalent: "")
-                    m.isEnabled = false
-                    menu.addItem(m)
-                }
-                for (proj, members) in entries { menu.addItem(projectItem(proj, members)) }
-            }
-        }
-        menu.addItem(.separator())
-        add("添加项目…", #selector(newProject), "")
-        add("在浏览器中打开", #selector(openDashboard), "d")
-        add("退出菜单栏（后台服务继续运行）", #selector(quit), "q")
     }
 
     func projectSummary(_ members: [Service]) -> String {
@@ -276,80 +249,22 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return run > 0 ? "\(run) 运行中" : "已停止"
     }
 
-    /// Project 菜单项：子菜单 = 服务列表（沿用 projectItem 逻辑的主操作 + ≤3 项次级操作）。
-    func projectItem(_ p: WorkspaceProject, _ members: [Service]) -> NSMenuItem {
-        let title = (p.favorite ? "★ " : "") + p.name + " — " + projectSummary(members)
-        let m = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        for s in members.sorted(by: { a, b in
-            if a.needsAttention != b.needsAttention { return a.needsAttention }
-            return a.name < b.name
-        }) {
-            sub.addItem(serviceItem(s))
-        }
-        m.submenu = sub
-        return m
-    }
-
-    func serviceItem(_ s: Service) -> NSMenuItem {
-        var title = "\(s.name) — \(s.label)"
-        if s.codeState == "pending" { title += " · 待更新" }
-        if s.codeState == "failed" { title += " · 更新失败" }
-        let m = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        if s.needsAttention {
-            m.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "故障")
-        }
-        let sub = NSMenu()
-        sub.addItem(mainActionItem(s))
-        // 次级操作上限三项：接管（外部时）/ 停止 / 重启 / 日志
-        var secondary: [NSMenuItem] = []
-        if s.canTakeover { secondary.append(operationItem("接管外部实例…", ["service": s.id, "action": "takeover"])) }
-        if s.intent == "running" && !s.observeOnly && s.state != "external" {
-            secondary.append(operationItem("停止", ["service": s.id, "action": "stop"]))
-        }
-        if ["available", "partial"].contains(s.state) && !s.observeOnly {
-            secondary.append(operationItem("重启", ["service": s.id, "action": "restart"]))
-        }
-        secondary.append(operationItem("日志（工作台）", ["service": s.id, "action": "logs"]))
-        if secondary.count > 1 { sub.addItem(.separator()) }
-        for item in secondary.prefix(3) {
-            item.isEnabled = item.title == "日志（工作台）" || !s.busy
-            sub.addItem(item)
-        }
-        m.submenu = sub
-        m.isEnabled = !s.busy
-        return m
-    }
-
-    /// 主操作（projectItem 逻辑）：停止→启动并打开、可用→打开、外部→打开、失败→查看原因跳工作台。
-    func mainActionItem(_ s: Service) -> NSMenuItem {
-        let m: NSMenuItem
-        switch s.state {
-        case "available" where s.canOpen, "partial" where s.canOpen, "external" where s.canOpen:
-            m = NSMenuItem(title: "打开", action: #selector(clickProject(_:)), keyEquivalent: "")
-        case "stopped" where !s.observeOnly:
-            m = NSMenuItem(title: "启动并打开", action: #selector(clickProject(_:)), keyEquivalent: "")
+    func primaryTitle(_ service: Service) -> String {
+        if service.busy { return "操作中" }
+        switch service.state {
+        case "available", "partial", "external":
+            return service.canOpen ? "打开" : "查看详情"
+        case "stopped" where !service.observeOnly:
+            return "启动并打开"
         case "failed", "conflict":
-            m = NSMenuItem(title: "查看原因（跳转工作台）", action: #selector(clickProject(_:)), keyEquivalent: "")
+            return "查看原因"
         default:
-            m = NSMenuItem(title: "打开工作台查看", action: #selector(clickProject(_:)), keyEquivalent: "")
+            return "查看详情"
         }
-        m.target = self
-        m.representedObject = s.id
-        m.isEnabled = !s.busy && s.state != "unknown"
-        return m
     }
 
-    func operationItem(_ title: String, _ operation: [String: String]) -> NSMenuItem {
-        let m = NSMenuItem(title: title, action: #selector(operate(_:)), keyEquivalent: "")
-        m.target = self
-        m.representedObject = operation
-        return m
-    }
-
-    @objc func operate(_ sender: NSMenuItem) {
-        guard let op = sender.representedObject as? [String: String],
-              let sid = op["service"], let action = op["action"] else { return }
+    func performOperation(_ sid: String, _ action: String) {
+        closeStatusPanel()
         if action == "takeover" {
             let alert = NSAlert()
             alert.messageText = "接管这个外部启动的实例？"
@@ -376,22 +291,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func add(_ t: String, _ s: Selector, _ k: String, symbol: String? = nil) {
-        let m = NSMenuItem(title: t, action: s, keyEquivalent: k)
-        m.target = self
-        if let symbol {
-            m.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        }
-        menu.addItem(m)
-    }
-
-    @objc func clickProject(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String, let p = services.first(where: { $0.id == id }) else { return }
+    func activateService(_ id: String) {
+        guard let p = services.first(where: { $0.id == id }), !p.busy, p.state != "unknown" else { return }
+        closeStatusPanel()
         switch p.state {
         case "available" where p.canOpen, "partial" where p.canOpen, "external" where p.canOpen:
-            request("POST", "api/projects/\(id)/open") { _, _ in }
+            performOperation(id, "open")
         case "stopped" where !p.observeOnly:
-            request("POST", "api/projects/\(id)/start", body: ["open": true]) { [weak self] _, _ in self?.refresh() }
+            performOperation(id, "start")
         default:
             // W2/W3：失败/冲突「查看原因」与浏览器同一诊断路径（展开 + 聚焦诊断行）
             showMainWindow()
@@ -404,7 +311,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainWindow.evaluate("window.lsOpenView && window.lsOpenView('new-project')")
     }
 
-    @objc func showMainWindow() { mainWindow.show() }
+    @objc func showMainWindow() { closeStatusPanel(); mainWindow.show() }
 
     @objc func showSettings() {
         showMainWindow()
@@ -412,6 +319,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func openDashboard() {
+        closeStatusPanel()
         NSWorkspace.shared.open(URL(string: base.absoluteString + "/")!)
     }
 

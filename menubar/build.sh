@@ -16,7 +16,7 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$APP/Contents/Resources/Locove.icns"
 cp "$iconset/icon_128x128.png" "$APP/Contents/Resources/LocoveStatus.png"
-swiftc -O -o "$APP/Contents/MacOS/MyBrainServices" main.swift MainWindow.swift
+swiftc -O -o "$APP/Contents/MacOS/MyBrainServices" main.swift MainWindow.swift StatusPanel.swift
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

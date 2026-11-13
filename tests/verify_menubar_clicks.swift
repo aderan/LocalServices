@@ -1,6 +1,8 @@
 // Run with `swift tests/verify_menubar_clicks.swift <pid>` in a macOS GUI session
 // with Accessibility permission. Use a test copy of the built app with
 // CFBundleIdentifier com.mybrain.localservices.menubar.guitest. The test quits it.
+// Installed app: pass <pid> <screenshot.png> --installed [failed-service-id].
+// The installed mode only opens UI and reads accessibility state.
 import AppKit
 import ApplicationServices
 
@@ -51,15 +53,24 @@ func click(_ element: AXUIElement, button: CGMouseButton = .left, flags: CGEvent
     usleep(350_000)
 }
 
-func dismissMenu() {
-    let escape: CGKeyCode = 53
-    CGEvent(keyboardEventSource: nil, virtualKey: escape, keyDown: true)?.post(tap: .cghidEventTap)
-    CGEvent(keyboardEventSource: nil, virtualKey: escape, keyDown: false)?.post(tap: .cghidEventTap)
+func pressKey(_ code: CGKeyCode) {
+    CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
+    CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
     usleep(350_000)
 }
 
-func visibleMenuItems(of item: AXUIElement) -> [AXUIElement] {
-    children(item).flatMap(children).filter { !frame($0).isEmpty }
+func typeText(_ text: String) {
+    let characters = Array(text.utf16)
+    for down in [true, false] {
+        let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
+        event?.keyboardSetUnicodeString(stringLength: characters.count, unicodeString: characters)
+        event?.post(tap: .cghidEventTap)
+    }
+}
+
+func descendants(_ element: AXUIElement, depth: Int = 9) -> [AXUIElement] {
+    guard depth > 0 else { return [] }
+    return children(element).flatMap { [$0] + descendants($0, depth: depth - 1) }
 }
 
 func title(_ element: AXUIElement) -> String {
@@ -67,11 +78,13 @@ func title(_ element: AXUIElement) -> String {
 }
 
 check(AXIsProcessTrusted() && CGPreflightPostEventAccess(), "Accessibility permission is required")
-guard CommandLine.arguments.count == 2,
+let installed = CommandLine.arguments.contains("--installed")
+let bundle = installed ? "com.mybrain.localservices.menubar" : "com.mybrain.localservices.menubar.guitest"
+guard CommandLine.arguments.count >= 2,
       let pid = pid_t(CommandLine.arguments[1]),
       let runningApp = NSRunningApplication(processIdentifier: pid),
-      runningApp.bundleIdentifier == "com.mybrain.localservices.menubar.guitest" else {
-    fputs("Provide the PID of the isolated menu bar test app\n", stderr)
+      runningApp.bundleIdentifier == bundle else {
+    fputs("Provide the PID of the expected menu bar app\n", stderr)
     exit(1)
 }
 
@@ -81,39 +94,100 @@ guard let menuBar: AXUIElement = attribute(app, kAXExtrasMenuBarAttribute),
     fputs("Test app has no visible menu bar icon\n", stderr)
     exit(1)
 }
-let windows: [AXUIElement] = attribute(app, kAXWindowsAttribute) ?? []
-if let window = windows.first, let closeButton: AXUIElement = attribute(window, kAXCloseButtonAttribute) {
-    check(AXUIElementPerformAction(closeButton, kAXPressAction as CFString) == .success, "Close the main window")
-}
-let closed: [AXUIElement] = attribute(app, kAXWindowsAttribute) ?? []
-check(!closed.contains { title($0) == "Locove／洛湾" }, "Main window must be closed before selecting Open")
 
-click(item, button: .right)
-let quickActions = visibleMenuItems(of: item).filter { !title($0).isEmpty }
-let quickActionTitles = ["打开主窗口", "退出菜单栏（后台服务继续运行）"]
-check(quickActions.map(title) == quickActionTitles, "Right click should show only Open and Quit")
-click(quickActions[0])
-let reopened: [AXUIElement] = attribute(app, kAXWindowsAttribute) ?? []
-check(reopened.contains { title($0) == "Locove／洛湾" }, "Open should reopen the main window")
+func control(_ id: String) -> AXUIElement? {
+    (descendants(item) + descendants(app)).first {
+        (attribute($0, kAXIdentifierAttribute) as String?) == id && !frame($0).isEmpty
+    }
+}
+
+func waitFor(_ message: String, _ condition: () -> Bool) {
+    for _ in 0..<30 {
+        if condition() { return }
+        usleep(100_000)
+    }
+    let candidates = descendants(item) + descendants(app)
+    for element in candidates where (attribute(element, kAXIdentifierAttribute) as String?)?.hasPrefix("locove-") == true
+        || (attribute(element, kAXRoleAttribute) as String?) == "AXPopover" {
+        print(title(element), attribute(element, kAXIdentifierAttribute) as String? ?? "-", frame(element))
+    }
+    check(false, message)
+}
+
+for (button, flags): (CGMouseButton, CGEventFlags) in [
+    (.left, []), (.right, []), (.left, .maskControl)
+] {
+    print("CLICK", button.rawValue, flags.rawValue, frame(item))
+    click(item, button: button, flags: flags)
+    waitFor("Each click must open the same panel (\(button.rawValue), \(flags.rawValue))") {
+        control("locove-filter") != nil && control("locove-refresh") != nil
+            && control("locove-main") != nil && control("locove-settings") != nil
+            && control("locove-quit") != nil
+    }
+    pressKey(53)
+    waitFor("Escape must dismiss the panel") { control("locove-filter") == nil }
+}
 
 click(item)
-check(visibleMenuItems(of: item).contains { title($0) == "刷新状态" }, "Left click should show the full menu")
-dismissMenu()
-
-click(item, flags: .maskControl)
-check(visibleMenuItems(of: item).map(title).filter { !$0.isEmpty } == quickActionTitles,
-      "Control-click should show the same quick menu")
-dismissMenu()
-
+waitFor("The panel must reopen") { control("locove-filter") != nil }
+if CommandLine.arguments.count >= 3 {
+    guard let panel = control("locove-panel") else { fatalError("Panel frame unavailable") }
+    let bounds = frame(panel).integral
+    let capture = Process()
+    capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    capture.arguments = ["-x", "-R\(Int(bounds.minX)),\(Int(bounds.minY)),\(Int(bounds.width)),\(Int(bounds.height))",
+                         CommandLine.arguments[2]]
+    try capture.run()
+    capture.waitUntilExit()
+    check(capture.terminationStatus == 0, "Capture the real menu bar panel")
+}
+if installed {
+    if control("locove-service-shicha") != nil && control("locove-service-browsercapture") != nil {
+        click(control("locove-filter")!)
+        typeText("BrowserCapture")
+        waitFor("The filter must keep matching rows only") {
+            control("locove-service-browsercapture") != nil && control("locove-service-shicha") == nil
+        }
+        waitFor("The filter must provide a clear button") { control("locove-clear") != nil }
+        click(control("locove-clear")!)
+        waitFor("Clearing the filter must restore the list") { control("locove-service-shicha") != nil }
+    }
+    if let group = control("locove-group-ui-atlas") {
+        click(group)
+        waitFor("A multi-service project must expand") { control("locove-service-ui-atlas") != nil }
+        click(group)
+        waitFor("The project must collapse") { control("locove-service-ui-atlas") == nil }
+    }
+    click(control("locove-settings")!)
+    waitFor("Settings must display in the main window") {
+        descendants(app).contains { title($0).contains("域名访问") || (attribute($0, kAXValueAttribute) as String? ?? "").contains("域名访问") }
+    }
+    if CommandLine.arguments.count == 5 {
+        let serviceID = CommandLine.arguments[4]
+        let search = descendants(app).first { title($0) == "全局搜索" }
+        if let search {
+            AXUIElementSetAttributeValue(search, kAXValueAttribute as CFString, "old-filter" as CFString)
+        }
+        click(item)
+        waitFor("The diagnostic service must appear") { control("locove-service-\(serviceID)") != nil }
+        click(control("locove-service-\(serviceID)")!)
+        waitFor("The selected service diagnosis must receive focus") {
+            guard let focus: AXUIElement = attribute(app, kAXFocusedUIElementAttribute) else { return false }
+            return (attribute(focus, "AXDOMIdentifier") as String?) == "reason-\(serviceID)"
+        }
+    }
+    print("PASS: installed shared left/right/Control panel, Escape, filtering, project expansion, settings, focused diagnosis")
+    exit(0)
+}
+waitFor("The fixture project must be available") { control("locove-group-w3fix") != nil }
+click(control("locove-group-w3fix")!)
+waitFor("Expansion must show the failed service action") { control("locove-service-w3-bad") != nil }
+click(control("locove-service-w3-bad")!)
+waitFor("The diagnosis action must show the main window") {
+    (attribute(app, kAXWindowsAttribute) as [AXUIElement]? ?? []).contains { title($0) == "Locove／洛湾" }
+}
 click(item, button: .right)
-guard let quit = visibleMenuItems(of: item).first(where: { title($0).hasPrefix("退出菜单栏") }) else {
-    check(false, "Right click should show Quit after switching menus")
-    exit(1)
-}
-click(quit)
-let quitDeadline = Date().addingTimeInterval(5)
-while kill(pid, 0) == 0 && Date() < quitDeadline {
-    usleep(50_000)
-}
-check(kill(pid, 0) == -1 && errno == ESRCH, "Quit should terminate the menu bar app")
-print("PASS: right-click Open and Quit, left-click full menu, Control-click quick menu")
+waitFor("Quit must be in the shared panel") { control("locove-quit") != nil }
+click(control("locove-quit")!)
+waitFor("Quit must terminate the menu bar app") { kill(pid, 0) == -1 && errno == ESRCH }
+print("PASS: shared left/right/Control panel, Escape, fixture expansion, diagnosis, quit")

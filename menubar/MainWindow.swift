@@ -16,6 +16,8 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
     let base: URL
     let portString: String
     var reachable = true
+    private var dashboardLoaded = false
+    private var pendingNavigation: String?
     let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.connectionProxyDictionary = [:]
@@ -84,6 +86,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
     }
 
     func evaluate(_ js: String) {
+        guard dashboardLoaded else { pendingNavigation = js; return }
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
 
@@ -134,6 +137,18 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
               url.host == "127.0.0.1",
               (url.port.map(String.init) ?? "") == portString else { return false }
         return true
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        dashboardLoaded = false
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        dashboardLoaded = true
+        if let pendingNavigation {
+            self.pendingNavigation = nil
+            evaluate(pendingNavigation)
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
