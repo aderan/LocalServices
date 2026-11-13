@@ -1387,7 +1387,11 @@ function viewNewProject() {
     const d = w.diffs[i];
     const editedNow = candidateEditedPaths(c);   // R06：本次审核中用户改过的字段（优先于旧覆盖）
     const advKeys = c.components?.flatMap(k => COMP_FWD_KEYS.filter(f => k[f] !== null && k[f] !== undefined && !(Array.isArray(k[f]) && !k[f].length))) || [];
-    const diffBox = d && (d.action === "diff" || d.action === "duplicate")
+    const diffBox = d?.registration_action === "created"
+      ? `<p class="inline-note">预检通过，将新增服务 ${esc(d.service_id)}。</p>`
+      : d?.ok === false
+      ? `<p class="reason bad">预检失败：${esc(d.error || "校验失败")}${d.details?.length ? " · " + d.details.map(esc).join("；") : ""}</p>`
+      : d && (d.action === "diff" || d.action === "duplicate")
       ? (d.diff?.length
           ? `<details class="diffbox"><summary>与已登记服务 ${esc(d.service_id)} 匹配：${d.diff.length} 项差异（你的修改优先生效；你的覆盖优先生效，但本次编辑优先）</summary>
              <table>${d.diff.map(x => {
@@ -2684,12 +2688,15 @@ async function wizPrefetchDiff(i) {
     const [code, res] = await api("POST", "/api/register", {...payload, dry_run: true});
     if (code === 200) {
       // V2.3：diff 命中已登记服务时取其覆盖层（端点未就绪/404/501 → 静默降级）
-      if (res && res.action === "diff" && res.service_id) {
+      if (res && res.action === "diff" && res.registration_action !== "created" && res.service_id) {
         try {
           const [oc, o] = await api("GET", `/api/services/${res.service_id}/overrides`);
           if (oc === 200 && o && o.ok) res.overrideFields = Object.keys(o.fields || {});
         } catch (e2) { /* 覆盖层获取失败不阻塞 diff */ }
       }
+      wiz.diffs[i] = res;
+      render();
+    } else if (res) {
       wiz.diffs[i] = res;
       render();
     }

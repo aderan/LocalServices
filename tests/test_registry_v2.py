@@ -211,6 +211,13 @@ class DryRunTest(V2Base):
         self.assertEqual(real["action"], "duplicate")
         self.assertEqual(real["service_id"], "svc-a")
 
+    def test_new_service_preview_reports_creation(self):
+        self.reg.ensure_project("p1", "P1", None, None)
+        before = self.tree_bytes()
+        res = self.reg.register_service(self.payload(revision=1), dry_run=True)
+        self.assertEqual(res["registration_action"], "created")
+        self.assertEqual(self.tree_bytes(), before)
+
     def test_diff_dryrun_zero_writes(self):
         self.assertTrue(self.reg.register_service(self.payload())["ok"])
         before = self.tree_bytes()

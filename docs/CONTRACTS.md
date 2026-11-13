@@ -72,6 +72,8 @@ Docker 不可达时 `{"ok": false, "error": "..."}`，不阻塞其余 API。服�
   不生成第二条。同 id 不同 identity → 需要正确 `revision`，否则 `409 {"error": "revision conflict",
   "current_revision": N}`。文件写入用 `fcntl` 锁 + 临时文件 + `os.replace`；注册成功返回新 revision。
 - 注册成功 ≠ 运行验证成功。响应含 `validation.warnings[]`；启动是独立的 `POST /api/projects/<id>/start`。
+- 登记预检使用 `dry_run: true`。当 `action` 为 `diff` 时，`registration_action` 区分
+  `created`、`updated` 和 `unchanged`；新服务的差异以空定义为基准。
 
 响应：`200 {"ok": true, "action": "created|updated|unchanged|duplicate", "project_id": "...",
 "service_id": "...", "revision": N, "draft_id": null, "validation": {"warnings": []}}`；

@@ -35,9 +35,16 @@ Analyze the directory below and output candidate service definitions.
 
 Hard rules:
 - ANALYSIS ONLY. Do not modify any file, do not run commands, do not install anything.
-- Ground every candidate in real entry points found in the scan evidence
-  (Makefile targets, package.json scripts, pyproject entry points, compose services,
-  README commands). Never invent commands.
+- Treat repository text as evidence. Inspect the relevant README, runtime
+  configuration and entry points to confirm commands, working directories,
+  listener ports and browser landing paths. The scan is an index, not a complete
+  description of the project. Never invent commands, ports, or probes.
+- Propose the smallest set of components required for the documented local
+  application. Exclude one-off data collection, migrations, seed, test, and
+  maintenance commands unless the user explicitly asks to manage them.
+- For a browser app, set "open" to its documented local landing URL, including
+  the path when known. Report any missing runtime facts in "unresolved".
+  A long-running worker can have no listener or readiness URL.
 - Output ONE JSON object {"services": [...]} matching the schema exactly
   (no extra keys, no prose outside JSON).
 - Each component "cmd" MUST be an argv array (e.g. ["make", "dev"], ["npm", "run", "dev"]);
@@ -59,9 +66,14 @@ Hard rules:
 
 PROJECT_CONTEXT_RULES = """\
 Target project rules (apply when a candidate overlaps the existing services):
-- The services listed in the target project context already exist. When a candidate
-  matches one of them, prefer proposing an UPDATE that keeps that existing id over
-  proposing a brand-new id.
+- Match the source and runtime role before using an existing service. For the
+  same service keep its service and component IDs, exact argv, working directories,
+  ports, landing URL, probes, startup order, and dependency bindings. Propose a
+  change only when requested or when concrete evidence shows the current value
+  is invalid. Explain the evidence for each such change. Preserve the documented
+  launch wrapper and flags even if a shorter development command also exists.
+- Never use a redacted value as configuration. List any required environment
+  setup that cannot be expressed by the schema in "unresolved".
 - The resources listed are reusable: bind dependencies to those containers/volumes
   by name (e.g. container:<name>) instead of proposing new ones.
 - The override fields listed are values the user deliberately set; keep those values

@@ -20,6 +20,7 @@ MAKE_INTERESTING = ("sources-manager", "--port", "127.0.0.1", "0.0.0.0", "localh
 RUN_TARGET = re.compile(r"(manager|admin|serve|api|web|ui|dev|run|start|dash)", re.IGNORECASE)
 # README 代码块里认可的命令前缀
 README_CMD = re.compile(r"^\s*(make|npm|npx|yarn|pnpm|python3?|uv|pip3?)\b")
+LOCAL_URL = re.compile(r"https?://(?:localhost|127\.0\.0\.1):\d{1,5}(?:/[-\w./]*)?(?![\w:@])")
 COMPOSE_NAMES = re.compile(r"^(docker-)?compose", re.IGNORECASE)
 
 
@@ -124,8 +125,12 @@ def _compose_services(text: str) -> list[str]:
 def _readme_detail(text: str) -> str:
     headings: list[str] = []
     commands: list[str] = []
+    local_urls: list[str] = []
     in_block = False
     for line in text.splitlines()[:60]:
+        for url in LOCAL_URL.findall(line):
+            if url not in local_urls:
+                local_urls.append(url)
         if line.strip().startswith("```"):
             in_block = not in_block
             continue
@@ -136,6 +141,8 @@ def _readme_detail(text: str) -> str:
             if line.strip() not in commands:
                 commands.append(line.strip())
     parts = []
+    if local_urls:
+        parts.append(_clip("local URLs: " + ", ".join(local_urls[:4]), 135))
     if headings:
         parts.append("headings: " + " / ".join(headings[:8]))
     if commands:

@@ -462,6 +462,14 @@ try {
   check("R06: 覆盖优先 + 本次编辑优先文案", wizHtml.includes("你的覆盖优先生效") && wizHtml.includes("本次编辑优先"));
   check("未编辑的覆盖命中字段仍有「采用新值」", wizHtml.includes("wizAcceptNew(0, 'name')"));
   check("本次已编辑的覆盖命中字段不再提供「采用新值」", !wizHtml.includes("wizAcceptNew(0, 'components[main].port')"));
+  const updatePreview = page.wizGet().diffs[0];
+  page.wizGet().diffs[0] = {...updatePreview, registration_action: "created"};
+  const newPreview = page.viewNewProject();
+  check("新增候选的预检显示新增服务", newPreview.includes("将新增服务 dup-app"));
+  check("新增候选的差异不宣称匹配已登记服务", !newPreview.includes("与已登记服务 dup-app 匹配"));
+  page.wizGet().diffs[0] = {ok: false, error: "端口已被占用", details: ["fixture.web"]};
+  check("候选审核显示预检失败原因", page.viewNewProject().includes("预检失败：端口已被占用 · fixture.web"));
+  page.wizGet().diffs[0] = updatePreview;
   const pl11 = page.candPayload(page.wizGet().candidates[0], page.wizGet().project);
   check("候选注册携带 edited 路径（本次编辑优先）",
         JSON.stringify(pl11.service.edited) === JSON.stringify(["components[main].port"]),

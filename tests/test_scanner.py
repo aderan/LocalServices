@@ -81,6 +81,12 @@ class ScannerTest(unittest.TestCase):
         self.assertIn("demo", py)          # project.scripts 名
         self.assertIn("tool.ruff", py)
 
+    def test_readme_keeps_documented_local_browser_entry(self):
+        (self.root / "README.md").write_text(
+            "# Demo\nOpen [the admin page](http://localhost:8123/admin).\n")
+        result = scanner.scan_directory(self.root)
+        self.assertIn("http://localhost:8123/admin", self._by_kind(result, "readme")[0]["detail"])
+
     def test_compose_services_top_level_keys(self):
         r = scanner.scan_directory(self.root)
         d = self._by_kind(r, "compose")[0]["detail"]

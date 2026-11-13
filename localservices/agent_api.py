@@ -17,6 +17,7 @@ import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from pathlib import Path
 
 from . import paths
@@ -204,6 +205,22 @@ def _cmd_summary(cmd: list[str]) -> str:
     return head + (" …" if len(argv) > 4 else "")
 
 
+def _component_context(component) -> dict:
+    fields = asdict(component)
+    # Keep environment variable names, never values, in the model context.
+    fields["env_keys"] = sorted(fields.pop("env"))
+    # Redact before serializing so split flags such as --password VALUE are
+    # handled alongside the existing string and nested-field redaction.
+    for key in ("cmd", "build", "install"):
+        argv = fields[key]
+        hide_next = False
+        for i, arg in enumerate(argv):
+            argv[i] = "***" if hide_next else _redact_text(arg)
+            hide_next = arg.startswith("-") and "=" not in arg and bool(_SECRET_KEY_RE.search(arg))
+    fields["cmd_summary"] = _cmd_summary(fields["cmd"])
+    return {key: value for key, value in fields.items() if value is not None}
+
+
 _SECRET_KEY_RE = re.compile(r"(secret|token|password|passwd|credential|api[_-]?key|private[_-]?key)", re.I)
 
 
@@ -345,11 +362,12 @@ def build_project_context(pid: str) -> dict | None:
                              "ports": [], "components": []})
             continue
         services.append({
-            "id": p.id, "name": p.name, "source": str(p.source),
+            "id": p.id, "name": p.name, "source": str(p.source), "open": p.open,
+            "description": p.description,
             "ports": [{"component": c.id, "port": c.port}
                       for c in p.components if getattr(c, "port", None)],
-            "components": [{"id": c.id, "cwd": c.cwd, "cmd_summary": _cmd_summary(c.cmd)}
-                           for c in p.components],
+            "components": [_component_context(c) for c in p.components],
+            "dependencies": [asdict(d) for d in p.dependencies],
         })
     ctx["services"] = services
     ctx["overrides"] = _project_overrides(seen)

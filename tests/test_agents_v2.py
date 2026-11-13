@@ -86,6 +86,7 @@ class AnalyzeV2Env(unittest.TestCase):
 id = "{sid}"
 name = "{sid} App"
 description = "fixture"
+open = "http://127.0.0.1:{port}/admin"
 source = "{self.dirA}"
 project = "{pid}"
 
@@ -163,6 +164,10 @@ class BuildProjectContextTest(AnalyzeV2Env):
         self.assertEqual(svc["source"], str(self.dirA))   # manifest 层保留书写路径（未 resolve）
         self.assertIn({"component": "api", "port": 8123}, svc["ports"])   # worker 无端口不出现
         self.assertEqual(svc["components"][0]["cmd_summary"], "make dev")
+        self.assertEqual(svc["open"], "http://127.0.0.1:8123/admin")
+        self.assertEqual(svc["components"][0]["cmd"], ["make", "dev"])
+        self.assertEqual(svc["components"][1]["after"], ["api"])
+        self.assertNotIn("env", svc["components"][0])
         self.assertEqual(ctx["overrides"]["demo-app"]["name"], "我的应用")
         self.assertEqual(ctx["overrides"]["demo-app"]["components[api].port"], 8123)
         self.assertEqual(ctx["resources"]["docker_context"], "colima")
@@ -275,7 +280,7 @@ class PromptContextTest(AnalyzeV2Env):
         self.assertIn("components[api].port", prompt)
         self.assertIn("pg", prompt)                            # 可复用容器名
         self.assertIn("demo_pgdata", prompt)                   # 可复用卷名
-        self.assertIn("prefer proposing an UPDATE", prompt)    # 倾向更新既有 id
+        self.assertIn("keep its service and component IDs", prompt)
 
     def test_redaction_env_values_never_in_prompt(self):
         prompt = self._run_with_spy()

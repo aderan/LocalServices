@@ -782,7 +782,8 @@ class Registry:
                 # 比较对象 = 实际将写盘的合并定义（merge 保留未提供的顶层键，预览 = 实际）
                 if ident == _identity(ex_src, existing.components) and self._content_equal(final_def, existing):
                     if dry_run:
-                        return {"ok": True, "action": "diff", "service_id": sid, "project_id": pid,
+                        return {"ok": True, "action": "diff", "registration_action": "unchanged",
+                                "service_id": sid, "project_id": pid,
                                 "revision": (proj or {}).get("revision", 0), "diff": [],
                                 "identity_changed": identity_changed, "identity_note": identity_note,
                                 "draft_id": None, "validation": {"warnings": warnings}}
@@ -884,7 +885,8 @@ class Registry:
                         old_def = tomllib.loads(Path(existing.file).read_text(encoding="utf-8"))
                     except (OSError, ValueError):
                         old_def = {}
-                return {"ok": True, "action": "diff", "service_id": sid, "project_id": pid,
+                return {"ok": True, "action": "diff", "registration_action": action,
+                        "service_id": sid, "project_id": pid,
                         "revision": proj["revision"] if proj else 0,
                         "diff": _diff_definitions(old_def, final_def),
                         "identity_changed": identity_changed, "identity_note": identity_note,
