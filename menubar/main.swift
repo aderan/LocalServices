@@ -13,6 +13,26 @@ let tokenDir = ProcessInfo.processInfo.environment["LOCALSERVICES_HOME"]
     ?? (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/LocalServices")
 let tokenPath = (tokenDir as NSString).appendingPathComponent("token")
 
+enum InterfaceLanguage: String {
+    case chinese = "zh-CN"
+    case english = "en"
+
+    var productName: String { text("洛湾", "Locove") }
+
+    func text(_ chinese: String, _ english: String) -> String {
+        self == .english ? english : chinese
+    }
+
+    func serviceLabel(_ service: Service) -> String {
+        guard self == .english else { return service.label }
+        if service.label == "引擎无响应" { return "Engine unavailable" }
+        return ["available": "Available", "partial": "Degraded", "failed": "Failed",
+                "stopped": "Stopped", "conflict": "Conflict", "external": "Running externally",
+                "starting": "Starting", "stopping": "Stopping", "preparing": "Preparing",
+                "unknown": "Unknown"][service.state] ?? service.label
+    }
+}
+
 struct Service {
     let id: String, name: String, state: String, label: String, intent: String
     let codeState: String, codeLabel: String, reason: String
@@ -33,7 +53,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let panelModel = StatusPanelModel()
     private var panelEvents: [Any] = []
     private lazy var statusPanel: StatusPanelWindow = {
-        let panel = StatusPanelWindow(contentRect: NSRect(x: 0, y: 0, width: 414, height: 556),
+        let panel = StatusPanelWindow(contentRect: NSRect(origin: .zero, size: StatusPanel.size),
                                       styleMask: [.borderless, .nonactivatingPanel],
                                       backing: .buffered, defer: true)
         panel.delegate = self
@@ -50,7 +70,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var projects: [WorkspaceProject] = []
     var connected = false
     var attention = false
-    var lastError = ""
+    var authenticationFailed = false
+    private var refreshVersion = 0
     var warnings: [String] = []
     let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
@@ -65,6 +86,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseDown, .rightMouseUp])
         }
+        mainWindow.onLanguageChanged = { [weak self] in self?.refresh() }
         installMainMenu() // ⌘N/⌘R/⌘Q 等在主窗口聚焦时生效
         updateIcon()
         refresh()
@@ -80,10 +102,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let window = button.window, let screen = window.screen ?? NSScreen.main else { return }
         let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
         let area = screen.visibleFrame
-        let size = statusPanel.frame.size
+        let size = StatusPanel.size
         let left = min(max(anchor.midX - size.width / 2, area.minX + 6), area.maxX - size.width - 6)
         let top = min(area.maxY, anchor.minY) - 4
-        statusPanel.setFrameOrigin(NSPoint(x: left, y: max(area.minY + 4, top - size.height)))
+        let frame = NSRect(origin: NSPoint(x: left, y: max(area.minY + 4, top - size.height)), size: size)
+        statusPanel.setFrame(frame, display: true)
         statusPanel.makeKeyAndOrderFront(nil)
         if let esc = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard event.keyCode == 53, event.window === self?.statusPanel else { return event }
@@ -129,8 +152,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func refresh() {
+        refreshVersion += 1
+        let version = refreshVersion
         request("GET", "api/status") { [weak self] code, obj in
-            guard let self else { return }
+            guard let self, self.refreshVersion == version else { return }
             if code == 200, let obj, let list = obj["projects"] as? [[String: Any]] {
                 self.connected = true
                 self.attention = obj["attention"] as? Bool ?? false
@@ -149,12 +174,19 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             } else {
                 self.connected = false
                 self.services = []
-                self.lastError = code == 401 ? "认证失败" : "无法连接控制服务"
+                self.authenticationFailed = code == 401
             }
             self.request("GET", "api/registry") { [weak self] code2, obj2 in
-                guard let self else { return }
+                guard let self, self.refreshVersion == version else { return }
                 if code2 == 200, let reg = obj2?["registry"] as? [String: Any],
                    let list = reg["projects"] as? [[String: Any]] {
+                    let settings = reg["settings"] as? [String: Any]
+                    let language = InterfaceLanguage(rawValue: settings?["language"] as? String ?? "") ?? .chinese
+                    if self.panelModel.language != language {
+                        self.panelModel.language = language
+                        self.mainWindow.setLanguage(language)
+                        self.installMainMenu()
+                    }
                     self.projects = list.map { d in
                         WorkspaceProject(id: d["id"] as? String ?? "",
                                          name: d["name"] as? String ?? (d["id"] as? String ?? "?"),
@@ -167,7 +199,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 self.updateIcon()
                 self.panelModel.connected = self.connected
-                self.panelModel.connection = self.connected ? "守护进程运行中" : self.lastError
+                self.panelModel.connection = self.connected ? self.text("守护进程运行中", "Daemon running")
+                    : self.authenticationFailed ? self.text("认证失败", "Authentication failed")
+                    : self.text("无法连接控制服务", "Daemon unavailable")
                 self.panelModel.warnings = self.connected ? self.warnings : []
                 self.panelModel.sections = self.workbenchSections()
             }
@@ -175,13 +209,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func updateIcon() {
+        let name = panelModel.language.productName
         let desc: String
         if !connected {
-            desc = "Locove／洛湾：无法连接控制服务"
+            desc = name + text("：无法连接控制服务", " — Daemon unavailable")
         } else if attention {
-            desc = "Locove／洛湾：有项目需要处理"
+            desc = name + text("：有项目需要处理", " — Projects need attention")
         } else {
-            desc = "Locove／洛湾"
+            desc = name
         }
 
         let badgeSymbol = !connected ? "questionmark.circle.fill" : attention ? "exclamationmark.circle.fill" : nil
@@ -203,6 +238,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item.button?.toolTip = desc
     }
 
+    private func text(_ chinese: String, _ english: String) -> String {
+        panelModel.language.text(chinese, english)
+    }
+
     private func workbenchSections() -> [StatusPanelSection] {
         var byId: [String: Service] = [:]
         for s in services { byId[s.id] = s }
@@ -216,7 +255,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let orphans = services.filter { !claimed.contains($0.id) }
         if !orphans.isEmpty {
-            entries.append((WorkspaceProject(id: "", name: "未分组服务", favorite: false, agent: "none",
+            entries.append((WorkspaceProject(id: "", name: text("未分组服务", "Ungrouped services"), favorite: false, agent: "none",
                                              serviceIds: orphans.map(\.id)), orphans))
         }
         func rank(_ e: (WorkspaceProject, [Service])) -> Int {
@@ -234,32 +273,32 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let front = sort(entries.filter { rank($0) == 0 })
         let needs = sort(entries.filter { rank($0) == 1 })
         let rest = sort(entries.filter { rank($0) == 2 })
-        if !front.isEmpty { out.append(StatusPanelSection(title: "收藏与运行中", projects: front)) }
-        if !needs.isEmpty { out.append(StatusPanelSection(title: "需要处理", projects: needs)) }
-        if !rest.isEmpty { out.append(StatusPanelSection(title: "其他项目", projects: rest)) }
+        if !front.isEmpty { out.append(StatusPanelSection(title: text("收藏与运行中", "Favorites and running"), projects: front)) }
+        if !needs.isEmpty { out.append(StatusPanelSection(title: text("需要处理", "Needs attention"), projects: needs)) }
+        if !rest.isEmpty { out.append(StatusPanelSection(title: text("其他项目", "Other projects"), projects: rest)) }
         return out
     }
 
     func projectSummary(_ members: [Service]) -> String {
-        if members.contains(where: \.busy) { return "操作中" }
-        if members.contains(where: \.needsAttention) { return "需要处理" }
-        if members.allSatisfy(\.running) { return "运行中" }
-        if members.allSatisfy({ $0.state == "stopped" }) { return "已停止" }
+        if members.contains(where: \.busy) { return text("操作中", "Working") }
+        if members.contains(where: \.needsAttention) { return text("需要处理", "Needs attention") }
+        if members.allSatisfy(\.running) { return text("运行中", "Running") }
+        if members.allSatisfy({ $0.state == "stopped" }) { return text("已停止", "Stopped") }
         let run = members.filter(\.running).count
-        return run > 0 ? "\(run) 运行中" : "已停止"
+        return run > 0 ? text("\(run) 运行中", "\(run) running") : text("已停止", "Stopped")
     }
 
     func primaryTitle(_ service: Service) -> String {
-        if service.busy { return "操作中" }
+        if service.busy { return text("操作中", "Working") }
         switch service.state {
         case "available", "partial", "external":
-            return service.canOpen ? "打开" : "查看详情"
+            return service.canOpen ? text("打开", "Open") : text("查看详情", "Details")
         case "stopped" where !service.observeOnly:
-            return "启动并打开"
+            return text("启动并打开", "Start and open")
         case "failed", "conflict":
-            return "查看原因"
+            return text("查看原因", "View issue")
         default:
-            return "查看详情"
+            return text("查看详情", "Details")
         }
     }
 
@@ -267,10 +306,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         closeStatusPanel()
         if action == "takeover" {
             let alert = NSAlert()
-            alert.messageText = "接管这个外部启动的实例？"
-            alert.informativeText = "会停止该实例并由本工具从最新源码启动；有活动任务时等空闲再接管。"
-            alert.addButton(withTitle: "接管")
-            alert.addButton(withTitle: "取消")
+            alert.messageText = text("接管这个外部启动的实例？", "Take over this externally started instance?")
+            alert.informativeText = text("会停止该实例并由本工具从最新源码启动；有活动任务时等空闲再接管。", "Locove will stop this instance and start it from the current source once it is idle.")
+            alert.addButton(withTitle: text("接管", "Take over"))
+            alert.addButton(withTitle: text("取消", "Cancel"))
             if alert.runModal() != .alertFirstButtonReturn { return }
         }
         if action == "logs" {
@@ -281,13 +320,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         var body: [String: Any] = [:]
         if action == "start" { body["open"] = true }
         request("POST", "api/projects/\(sid)/\(action)", body: body) { [weak self] code, response in
+            guard let self else { return }
             if code != 200 {
                 let alert = NSAlert()
-                alert.messageText = "操作未执行"
-                alert.informativeText = response?["error"] as? String ?? "无法连接控制服务"
+                alert.messageText = self.text("操作未执行", "Action failed")
+                alert.informativeText = response?["error"] as? String ?? self.text("无法连接控制服务", "Daemon unavailable")
                 alert.runModal()
             }
-            self?.refresh()
+            self.refresh()
         }
     }
 
@@ -332,29 +372,29 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// 应用主菜单：主窗口聚焦时 ⌘N（打开主窗口）等快捷键生效；编辑菜单供 WebView 文本输入使用。
     func installMainMenu() {
         let mainMenu = NSMenu()
-        let appItem = NSMenuItem(title: "MyBrain Services", action: nil, keyEquivalent: "")
+        let appItem = NSMenuItem(title: panelModel.language.productName, action: nil, keyEquivalent: "")
         let appSub = NSMenu()
-        for (t, s, k) in [("打开主窗口", #selector(showMainWindow), "n"),
-                          ("设置…", #selector(showSettings), ","),
-                          ("添加项目…", #selector(newProject), ""),
-                          ("在浏览器中打开", #selector(openDashboard), "d"),
-                          ("刷新状态", #selector(refreshNow), "r")] {
+        for (t, s, k) in [(text("打开主窗口", "Open main window"), #selector(showMainWindow), "n"),
+                          (text("设置…", "Settings…"), #selector(showSettings), ","),
+                          (text("添加项目…", "Add project…"), #selector(newProject), ""),
+                          (text("在浏览器中打开", "Open in browser"), #selector(openDashboard), "d"),
+                          (text("刷新状态", "Refresh status"), #selector(refreshNow), "r")] {
             let m = NSMenuItem(title: t, action: s, keyEquivalent: k)
             m.target = self
             appSub.addItem(m)
         }
         appSub.addItem(.separator())
-        let quit = NSMenuItem(title: "退出菜单栏（后台服务继续运行）", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: text("退出菜单栏（后台服务继续运行）", "Quit menu bar app (services keep running)"), action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         appSub.addItem(quit)
         appItem.submenu = appSub
         mainMenu.addItem(appItem)
 
-        let editItem = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
+        let editItem = NSMenuItem(title: text("编辑", "Edit"), action: nil, keyEquivalent: "")
         let editSub = NSMenu()
-        for (t, a, k) in [("撤销", Selector(("undo:")), "z"), ("重做", Selector(("redo:")), "Z"),
-                          ("剪切", #selector(NSText.cut(_:)), "x"), ("拷贝", #selector(NSText.copy(_:)), "c"),
-                          ("粘贴", #selector(NSText.paste(_:)), "v"), ("全选", #selector(NSText.selectAll(_:)), "a")] {
+        for (t, a, k) in [(text("撤销", "Undo"), Selector(("undo:")), "z"), (text("重做", "Redo"), Selector(("redo:")), "Z"),
+                          (text("剪切", "Cut"), #selector(NSText.cut(_:)), "x"), (text("拷贝", "Copy"), #selector(NSText.copy(_:)), "c"),
+                          (text("粘贴", "Paste"), #selector(NSText.paste(_:)), "v"), (text("全选", "Select all"), #selector(NSText.selectAll(_:)), "a")] {
             editSub.addItem(withTitle: t, action: a, keyEquivalent: k) // target nil → 响应链
         }
         editItem.submenu = editSub

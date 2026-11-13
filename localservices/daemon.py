@@ -194,6 +194,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            if u.path == "/api/settings/language":
+                self._send(*register_api.handle_language_post(body))
+                return
             if u.path == "/api/locove/settings":
                 res = register_api.handle_locove_settings_post(body)
                 self.ctl._domain_settings_cache = (0.0, {})  # 设置变更立即生效（sync 门控/URL 端口）

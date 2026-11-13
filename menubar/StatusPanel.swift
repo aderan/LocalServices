@@ -11,6 +11,7 @@ struct StatusPanelSection {
 }
 
 final class StatusPanelModel: ObservableObject {
+    @Published var language = InterfaceLanguage.chinese
     @Published var sections: [StatusPanelSection] = []
     @Published var connection = "连接中…"
     @Published var connected = false
@@ -18,6 +19,7 @@ final class StatusPanelModel: ObservableObject {
 }
 
 struct StatusPanel: View {
+    static let size = NSSize(width: 414, height: 556)
     @ObservedObject var model: StatusPanelModel
     let app: App
     @Environment(\.colorScheme) private var colorScheme
@@ -31,11 +33,11 @@ struct StatusPanel: View {
             VStack(spacing: 10) {
                 HStack(spacing: 7) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("快速过滤服务…", text: $query)
+                    TextField(model.language.text("快速过滤服务…", "Filter services…"), text: $query)
                         .textFieldStyle(.plain)
                         .accessibilityIdentifier("locove-filter")
                     if !query.isEmpty {
-                        icon("xmark.circle.fill", "清空搜索", "locove-clear") { query = "" }
+                        icon("xmark.circle.fill", model.language.text("清空搜索", "Clear search"), "locove-clear") { query = "" }
                     }
                 }
                 .padding(.horizontal, 9)
@@ -51,7 +53,7 @@ struct StatusPanel: View {
                         if !model.connected {
                             Text(model.connection).foregroundStyle(.secondary).padding(8)
                         } else if filtered.isEmpty {
-                            Text(query.isEmpty ? "还没有已登记的服务" : "没有匹配的项目或服务")
+                            Text(query.isEmpty ? model.language.text("还没有已登记的服务", "No registered services") : model.language.text("没有匹配的项目或服务", "No matching projects or services"))
                                 .foregroundStyle(.secondary).padding(8)
                         } else {
                             ForEach(filtered, id: \.title) { section in
@@ -77,20 +79,20 @@ struct StatusPanel: View {
             .padding(12)
             Divider()
             HStack(spacing: 8) {
-                Button("添加项目…") { app.newProject() }
+                Button(model.language.text("添加项目…", "Add project…")) { app.newProject() }
                     .accessibilityIdentifier("locove-add")
                 Spacer()
-                Button("在浏览器中打开") { app.openDashboard() }
+                Button(model.language.text("在浏览器中打开", "Open in browser")) { app.openDashboard() }
                     .accessibilityIdentifier("locove-browser")
-                Button("退出") { app.quit() }
+                Button(model.language.text("退出", "Quit")) { app.quit() }
                     .accessibilityIdentifier("locove-quit")
-                    .help("退出菜单栏，后台服务继续运行")
+                    .help(model.language.text("退出菜单栏，后台服务继续运行", "Quit the menu bar app. Services keep running."))
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 16)
             .frame(height: 42)
         }
-        .frame(width: 414, height: 556)
+        .frame(width: Self.size.width, height: Self.size.height)
         .background(colorScheme == .dark
                     ? Color(red: 0.15, green: 0.16, blue: 0.18)
                     : Color(red: 0.96, green: 0.97, blue: 0.98))
@@ -108,16 +110,16 @@ struct StatusPanel: View {
                     .accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 3) {
-                Text("Locove／洛湾").font(.system(size: 15, weight: .semibold))
+                Text(model.language.productName).accessibilityIdentifier("locove-brand").font(.system(size: 15, weight: .semibold))
                 HStack(spacing: 5) {
                     dot(model.connected ? .green : .secondary)
                     Text(model.connection).font(.caption).foregroundStyle(.secondary)
                 }
             }
             Spacer()
-            icon("arrow.clockwise", "刷新状态", "locove-refresh", action: app.refreshNow)
-            icon("macwindow", "打开主窗口", "locove-main", action: app.showMainWindow)
-            icon("gearshape", "设置", "locove-settings", action: app.showSettings)
+            icon("arrow.clockwise", model.language.text("刷新状态", "Refresh status"), "locove-refresh", action: app.refreshNow)
+            icon("macwindow", model.language.text("打开主窗口", "Open main window"), "locove-main", action: app.showMainWindow)
+            icon("gearshape", model.language.text("设置", "Settings"), "locove-settings", action: app.showSettings)
         }
         .padding(.horizontal, 13)
         .frame(height: 60)
@@ -184,9 +186,9 @@ struct StatusPanel: View {
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 2) {
-                Text(service.label).foregroundStyle(color(for: [service]))
+                Text(model.language.serviceLabel(service)).foregroundStyle(color(for: [service]))
                 if ["pending", "failed"].contains(service.codeState) {
-                    Text(service.codeLabel).foregroundStyle(.secondary)
+                    Text(model.language.text(service.codeLabel, service.codeState == "failed" ? "Update failed" : "Update pending")).foregroundStyle(.secondary)
                 }
             }
             .font(.caption).lineLimit(1)
@@ -199,22 +201,22 @@ struct StatusPanel: View {
                 .accessibilityIdentifier("locove-service-\(service.id)")
             Menu {
                 if service.canTakeover {
-                    Button("接管外部实例…") { app.performOperation(service.id, "takeover") }.disabled(service.busy)
+                    Button(model.language.text("接管外部实例…", "Take over external instance…")) { app.performOperation(service.id, "takeover") }.disabled(service.busy)
                 }
                 if service.intent == "running" && !service.observeOnly && service.state != "external" {
-                    Button("停止") { app.performOperation(service.id, "stop") }.disabled(service.busy)
+                    Button(model.language.text("停止", "Stop")) { app.performOperation(service.id, "stop") }.disabled(service.busy)
                 }
                 if ["available", "partial"].contains(service.state) && !service.observeOnly {
-                    Button("重启") { app.performOperation(service.id, "restart") }.disabled(service.busy)
+                    Button(model.language.text("重启", "Restart")) { app.performOperation(service.id, "restart") }.disabled(service.busy)
                 }
-                Button("日志（工作台）") { app.performOperation(service.id, "logs") }
+                Button(model.language.text("日志（工作台）", "Logs (workbench)")) { app.performOperation(service.id, "logs") }
             } label: {
                 Image(systemName: "ellipsis").frame(width: 22)
             }
             .menuIndicator(.hidden)
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .accessibilityLabel("更多操作")
+            .accessibilityLabel(model.language.text("更多操作", "More actions"))
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)

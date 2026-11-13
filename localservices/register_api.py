@@ -354,6 +354,14 @@ def handle_restore_project(pid: str, body: dict, ctl) -> tuple[int, dict]:
         return _fail(e)
 
 
+def handle_language_post(body: dict) -> tuple[int, dict]:
+    try:
+        language = _registry.set_language(body.get("language") if isinstance(body, dict) else None)
+        return 200, {"ok": True, "language": language}
+    except RegistryError as e:
+        return _fail(e)
+
+
 def handle_locove_settings_get() -> tuple[int, dict]:
     try:
         return 200, {"ok": True, "settings": Registry().locove_settings()}

@@ -191,6 +191,18 @@ class DaemonEndToEndTest(unittest.TestCase):
         self.assertEqual(code, 401)
         self.assertIn("unauthorized", str(body))
 
+    def test_language_preference_roundtrips_through_registry(self):
+        endpoint = "/api/settings/language"
+        self.addCleanup(self.call, "POST", endpoint, {"language": "zh-CN"})
+        self.assertEqual(self.call("POST", endpoint, {"language": "en"}, token=None)[0], 401)
+        self.assertEqual(self.call("POST", endpoint, {"language": "en"}, origin="http://evil.example")[0], 403)
+        self.assertEqual(self.call("POST", endpoint, {"language": "en"}),
+                         (200, {"ok": True, "language": "en"}))
+        self.assertEqual(self.call("POST", endpoint, {"language": "xx"})[0], 400)
+        code, body = self.call("GET", "/api/registry")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["registry"]["settings"]["language"], "en")
+
     def test_register_with_foreign_origin_is_403(self):
         code, body = self.call("POST", "/api/register", {"schemaVersion": 1, "service": {}},
                                origin="http://evil.example")

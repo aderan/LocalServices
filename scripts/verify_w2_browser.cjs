@@ -166,6 +166,33 @@ async function main() {
   await send("Page.navigate", {url: `${base}/#p-w2-ok`});
   await sleep(3500);
 
+  const english = await ev(`(async () => {
+    setView("settings");
+    const root = document.documentElement;
+    const initiallyChinese = root.lang === "zh-CN" && document.title === "洛湾";
+    document.querySelector("button[lang='en']").click();
+    for (let i = 0; i < 30 && root.lang !== "en"; i++)
+      await new Promise(resolve => setTimeout(resolve, 100));
+    return initiallyChinese && root.lang === "en" && document.title === "Locove"
+      && document.querySelector(".brand h1").textContent === "Locove"
+      && document.getElementById("viewTitle").textContent === "Settings";
+  })()`, true);
+  check("设置切换英文并更新产品名与页面标题", english);
+  await send("Page.reload");
+  await sleep(1500);
+  const persisted = await ev(`(async () => {
+    for (let i = 0; i < 30 && document.documentElement.lang !== "en"; i++)
+      await new Promise(resolve => setTimeout(resolve, 100));
+    const saved = document.documentElement.lang === "en" && document.title === "Locove";
+    setView("settings");
+    const pressed = document.querySelector("button[lang='en']")?.getAttribute("aria-pressed");
+    await saveLanguage("zh-CN");
+    return saved && pressed === "true" && document.title === "洛湾";
+  })()`, true);
+  check("重新加载保留语言，切回中文恢复洛湾", persisted);
+  await send("Page.navigate", {url: `${base}/?check=deep-link#p-w2-ok`});
+  await sleep(1500);
+
   // 深链：#p-w2-ok 载入即展开定位
   const deep = await ev(`(() => {
     const row = document.getElementById("p-w2-ok");

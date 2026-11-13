@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Locove／洛湾</title>
+<title>洛湾</title>
 <link rel="icon" type="image/png" href="/locove-logo.png">
 <style>
   :root { color-scheme: light dark;
@@ -61,8 +61,25 @@
                 background: var(--card); border-bottom: 1px solid var(--hair); }
   .group-head h3 { font-size: 13.5px; margin: 0 auto 0 0; font-weight: 600; }
   .group-head .note { margin: 0; }
-  .group-tools { display: flex; align-items: center; gap: 4px; padding: 6px 14px;
+  .group-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 14px;
                  border-bottom: 1px solid var(--hair); font-size: 12.5px; color: var(--mute); }
+  .project-config > h3 { margin: 0; font-size: 15px; }
+  .project-config { padding: 16px; }
+  .project-config > h3 { margin-bottom: 12px; }
+  .project-settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 20px; }
+  .project-settings h4 { margin: 0 0 8px; font-size: 13px; }
+  .project-settings .note { overflow-wrap: anywhere; }
+  .directory-list { list-style: none; padding: 0; margin: 0 0 10px; }
+  .directory-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+                       gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--hair); }
+  .directory-list code { display: block; overflow-wrap: anywhere; }
+  .field.directory-form input { min-width: 0; flex: 1 1 160px; }
+  @container mainc (max-width: 660px) {
+    .project-settings { grid-template-columns: 1fr; gap: 14px; }
+  }
+  .svc > .service-message { margin: 0 14px 10px 15px; padding: 6px 10px;
+                            border-radius: 6px; background: var(--soft); overflow-wrap: anywhere; }
+  .service-message.bad { background: color-mix(in srgb, var(--bad) 7%, var(--card)); }
   .group-tools .acts { gap: 6px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
           padding: 14px 16px 8px; margin: 0 0 14px; }
@@ -81,7 +98,7 @@
           gap: 12px; align-items: center; min-height: 64px; padding: 10px 13px 10px 15px; cursor: pointer; }
   .line > * { min-width: 0; }
   .line:hover { background: color-mix(in srgb, var(--soft) 45%, transparent); }
-  .line:focus-visible { outline: 2px solid var(--btn); outline-offset: -2px; }
+  .line:focus-visible { outline: 2px solid var(--btn); outline-offset: -4px; border-radius: 8px; }
   .service-identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .service-mark { display: grid; place-items: center; flex: 0 0 32px; height: 32px; border-radius: 8px;
                   color: var(--btn); background: color-mix(in srgb, var(--btn) 10%, var(--card));
@@ -147,7 +164,7 @@
   button.ghost { background: transparent; }
   button.danger { color: var(--bad); }
   button:disabled { opacity: .55; cursor: default; }
-  button:focus-visible, summary:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, .line:focus-visible {
+  button:focus-visible, summary:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
       outline: 2px solid var(--btn); outline-offset: 2px; }
   .reason { margin: 6px 0 0; color: var(--bad); font-size: 13px; white-space: pre-wrap; }
   .reason.warn { color: var(--warn); }
@@ -262,20 +279,20 @@
   <div class="brand">
     <div class="brand-heading">
       <img src="/locove-logo.png" width="36" height="36" alt="">
-      <div><h1>Locove／洛湾</h1><div class="brand-sub">本地服务工作台</div></div>
+      <div><h1>洛湾</h1><div class="brand-sub" data-en="Local services workbench">本地服务工作台</div></div>
     </div>
     <div id="conn" role="status">连接中…</div>
   </div>
-  <button class="navitem" id="nav-all" onclick="setView('all')">服务</button>
-  <div class="navlabel" id="navProjectsLabel">项目</div>
+  <button class="navitem" id="nav-all" onclick="setView('all')"><span data-en="Services">服务</span></button>
+  <div class="navlabel" id="navProjectsLabel" data-en="Projects">项目</div>
   <div id="navProjects"></div>
-  <div class="navlabel">管理</div>
-  <button class="navitem" id="nav-attention" onclick="setView('attention')">需要处理<span id="attentionBadge" class="badge" hidden></span></button>
-  <button class="navitem" id="nav-resources" onclick="setView('resources')">共享资源</button>
-  <button class="navitem" id="nav-agents" onclick="setView('agents')">Agent 连接</button>
-  <button class="navitem" id="nav-removed" onclick="setView('removed')">已移除登记</button>
+  <div class="navlabel" data-en="Manage">管理</div>
+  <button class="navitem" id="nav-attention" onclick="setView('attention')"><span data-en="Needs attention">需要处理</span><span id="attentionBadge" class="badge" hidden></span></button>
+  <button class="navitem" id="nav-resources" onclick="setView('resources')"><span data-en="Shared resources">共享资源</span></button>
+  <button class="navitem" id="nav-agents" onclick="setView('agents')"><span data-en="Agent connections">Agent 连接</span></button>
+  <button class="navitem" id="nav-removed" onclick="setView('removed')"><span data-en="Removed services">已移除登记</span></button>
   <div class="navspacer"></div>
-  <button class="navitem add" id="nav-new-project" onclick="setView('new-project')">＋ 添加服务<span id="draftBadge" class="badge mut" hidden></span></button>
+  <button class="navitem add" id="nav-new-project" onclick="setView('new-project')"><span data-en="+ Add service">＋ 添加服务</span><span id="draftBadge" class="badge mut" hidden></span></button>
 </nav>
 <section class="content">
   <header class="topbar">
@@ -283,8 +300,8 @@
     <div class="subtitle" id="viewSubtitle"></div>
     <div class="tools">
       <input id="globalSearch" type="search" placeholder="搜索项目 / 服务" aria-label="全局搜索">
-      <button id="refreshBtn" onclick="refresh(true)">刷新</button>
-      <button id="nav-settings" aria-pressed="false" onclick="setView('settings')">设置</button>
+      <button id="refreshBtn" onclick="refresh(true)"><span data-en="Refresh">刷新</span></button>
+      <button id="nav-settings" aria-pressed="false" onclick="setView('settings')"><span data-en="Settings">设置</span></button>
     </div>
   </header>
   <div id="locoveHealth" role="status"></div>
@@ -336,7 +353,7 @@ async function api(method, path, body) {
 }
 
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function t(ts) { return ts ? new Date(ts*1000).toLocaleString("zh-CN", {hour12:false}) : "—"; }
+function t(ts) { return ts ? new Date(ts*1000).toLocaleString(language, {hour12:false}) : "—"; }
 function busy(key) { return !!pending[key]; }
 
 function setConn(ok) {
@@ -344,7 +361,7 @@ function setConn(ok) {
   connOk = ok;
   document.getElementById("banner").hidden = ok !== false;
   const c = document.getElementById("conn");
-  if (ok === false) { c.textContent = "控制层不可用"; c.className = "bad"; }
+  if (ok === false) { c.textContent = tr("控制层不可用", "Daemon unavailable"); c.className = "bad"; }
 }
 
 function nativeBridge() {
@@ -413,25 +430,60 @@ function attentionServices() {
 
 // ------------------------------------------------------------ 渲染
 
-const VIEW_TITLES = {all: "服务", attention: "需要处理", removed: "已移除登记", resources: "共享资源",
-                     agents: "Agent 连接", settings: "设置", "new-project": "添加服务"};
+let language = "zh-CN";
+let languageVersion = 0;
+const originalLabels = new WeakMap();
+const tr = (zh, en) => language === "en" ? en : zh;
+const productName = () => tr("洛湾", "Locove");
+const VIEW_TITLES = {all: ["服务", "Services"], attention: ["需要处理", "Needs attention"],
+  removed: ["已移除登记", "Removed services"], resources: ["共享资源", "Shared resources"],
+  agents: ["Agent 连接", "Agent connections"], settings: ["设置", "Settings"], "new-project": ["添加服务", "Add service"]};
+
+function applyLanguage(value) {
+  const next = value === "en" ? "en" : "zh-CN";
+  if (language === next) return;
+  language = next;
+  if (document.documentElement) document.documentElement.lang = language;
+  document.title = productName();
+  const title = document.querySelector(".brand h1");
+  if (title) title.textContent = productName();
+  document.querySelectorAll("[data-en]").forEach(el => {
+    if (!originalLabels.has(el)) originalLabels.set(el, el.textContent);
+    const label = tr(originalLabels.get(el), el.dataset.en);
+    if (el.textContent !== label) el.textContent = label;
+  });
+  const banner = document.getElementById("banner");
+  banner.textContent = tr("控制层不可用，服务状态未知。恢复连接后将自动更新。", "Daemon unavailable. Service status will update when the connection returns.");
+  const search = document.getElementById("globalSearch");
+  search.placeholder = tr("搜索项目 / 服务", "Search projects or services");
+  search.setAttribute("aria-label", tr("全局搜索", "Search"));
+}
+
+const EN_STATE = {stopped: "Stopped", starting: "Starting", preparing: "Preparing",
+  available: "Available", partial: "Degraded", failed: "Failed", stopping: "Stopping",
+  unknown: "Unknown", conflict: "Conflict", external: "Running externally"};
+function stateLabel(service) {
+  if (language !== "en") return service.label;
+  if (service.label === "引擎无响应") return "Engine unavailable";
+  return EN_STATE[service.state] || service.label;
+}
 
 function viewSubtitle() {
   if (view === "all") {
     const groups = projectGroups();
     const n = (snap?.projects || []).length;
     const running = (snap?.projects || []).filter(p => ["available", "partial", "external"].includes(p.state)).length;
-    return `${groups.length} 个项目 · ${n} 个服务（${running} 个可打开）`;
+    return tr(`${groups.length} 个项目 · ${n} 个服务（${running} 个可打开）`, `Projects: ${groups.length} · Services: ${n} · Ready to open: ${running}`);
   }
-  if (view === "attention") return `失败 / 冲突 / 部分可用的服务集中在此处理`;
-  if (view === "removed") return "恢复不会自动启动；「运行意图」仅恢复意图";
-  if (view === "resources") return "只读盘点 · 归属与消费者由清单推导";
-  if (view === "agents") return "识别用 CLI 连接的检测与验证";
-  if (view === "settings") return "域名跳转、入口诊断与工作台说明";
-  if (view === "new-project") return "选目录 → 识别 / 手动登记 → 核对 → 注册 → 启动";
+  if (view === "attention") return tr("失败 / 冲突 / 部分可用的服务集中在此处理", "Services that failed, have conflicts, or are degraded");
+  if (view === "removed") return tr("恢复不会自动启动；「运行意图」仅恢复意图", "Restoring a registration does not start it automatically");
+  if (view === "resources") return tr("只读盘点 · 归属与消费者由清单推导", "Read-only inventory based on project manifests");
+  if (view === "agents") return tr("识别用 CLI 连接的检测与验证", "Detect and verify agent CLI connections");
+  if (view === "settings") return tr("语言、域名访问与工作台说明", "Language, domain access and workbench information");
+  if (view === "new-project") return tr("选目录 → 识别 / 手动登记 → 核对 → 注册 → 启动", "Choose a directory, review the service definition, then register and start");
   if (view.startsWith("project:")) {
     const g = projectGroups().find(x => x.pj.id === view.slice(8));
-    return g ? `${g.pj.name} · ${g.members.length} 个服务成员` : "";
+    return g ? tr(`${g.members.length} 个服务`, `Services: ${g.members.length}`) : "";
   }
   return "";
 }
@@ -473,7 +525,7 @@ function render({preserveLogReading = true} = {}) {
   if (preserveLogReading && logReading()) return;
   document.getElementById("viewTitle").textContent =
     view.startsWith("project:") ? (projectGroups().find(g => g.pj.id === view.slice(8))?.pj.name || "项目")
-                                : (VIEW_TITLES[view] || "服务");
+                                : tr(...(VIEW_TITLES[view] || VIEW_TITLES.all));
   document.getElementById("viewSubtitle").textContent = viewSubtitle();
   let html = "";
   if (view === "all") html = viewAll();
@@ -590,12 +642,12 @@ function renderNav() {
   projNav.innerHTML = groups.map(({pj, members}) => {
     const issues = members.filter(needsAttention);
     const blocked = issues.some(s => s.state !== "partial");
-    const alert = issues.length ? (blocked ? "需要处理" : "部分可用") : "";
+    const alert = issues.length ? (blocked ? tr("需要处理", "Needs attention") : tr("部分可用", "Degraded")) : "";
     return `<button class="navitem project-navitem${view === "project:" + pj.id ? " active" : ""}"
       ${alert ? `aria-label="${esc(pj.name)}，${alert}" title="${alert}"` : ""}
       onclick="setView('project:${esc(pj.id)}')">${pj.favorite ? "★ " : ""}${esc(pj.name)}${alert ? `<span class="project-alert${blocked ? "" : " partial"}" aria-hidden="true"></span>` : ""}</button>`;
   }).join("")
-    || `<div class="note" style="padding:2px 10px">（暂无项目）</div>`;
+    || `<div class="note" style="padding:2px 10px">${tr("（暂无项目）", "No projects")}</div>`;
   const n = attentionServices().length;
   const badge = document.getElementById("attentionBadge");
   badge.hidden = !n; badge.textContent = n || "";
@@ -605,7 +657,7 @@ function renderNav() {
   const c = document.getElementById("conn");
   if (connOk !== false) {
     c.className = "";
-    c.textContent = snap ? "更新于 " + new Date(snap.generated_at * 1000).toLocaleTimeString("zh-CN", {hour12:false}) : "连接中…";
+    c.textContent = snap ? tr("更新于 ", "Updated at ") + new Date(snap.generated_at * 1000).toLocaleTimeString(language, {hour12:false}) : tr("连接中…", "Connecting…");
   }
 }
 
@@ -671,14 +723,14 @@ async function locoveSetting(key, value) {
 
 function primary(p) {
   if (p.observe_only) return "";
-  if (connOk === false || p.state === "unknown") return `<button class="primary" data-act="unknown" disabled>状态未知</button>`;
+  if (connOk === false || p.state === "unknown") return `<button class="primary" data-act="unknown" disabled>${tr("状态未知", "Unknown")}</button>`;
   const isBusy = busy(p.id) || busy("g-" + p.group) || p.op || ["starting", "stopping", "preparing"].includes(p.state);
-  if (isBusy) return `<button class="primary" data-act="busy" disabled>${p.state === "preparing" ? "准备环境…" : p.state === "stopping" || pending[p.id] === "stop" ? "停止中…" : "启动中…"}</button>`;
+  if (isBusy) return `<button class="primary" data-act="busy" disabled>${p.state === "preparing" ? tr("准备环境…", "Preparing…") : p.state === "stopping" || pending[p.id] === "stop" ? tr("停止中…", "Stopping…") : tr("启动中…", "Starting…")}</button>`;
   if (["available", "partial", "external"].includes(p.state))
-    return p.can_open ? `<button class="primary" data-act="open" onclick="act('${p.id}','open')">打开</button>` : "";
+    return p.can_open ? `<button class="primary" data-act="open" onclick="act('${p.id}','open')">${tr("打开", "Open")}</button>` : "";
   if (["failed", "conflict"].includes(p.state))
-    return `<button class="diagnostic-toggle" data-act="reason" aria-expanded="${!!open[p.id]}" onclick="toggleReason('${esc(p.id)}')">${open[p.id] ? "收起原因" : "查看原因"}</button>`;
-  return `<button class="primary" data-act="start-open" onclick="act('${p.id}','start',{open:true})">启动并打开</button>`;
+    return `<button class="diagnostic-toggle" data-act="reason" aria-expanded="${!!open[p.id]}" onclick="toggleReason('${esc(p.id)}')">${open[p.id] ? tr("收起原因", "Hide details") : tr("查看原因", "View issue")}</button>`;
+  return `<button class="primary" data-act="start-open" onclick="act('${p.id}','start',{open:true})">${tr("启动并打开", "Start and open")}</button>`;
 }
 
 // R6：次要操作（接管/重试/停止/重启/源码目录）按交互层级收拢进 ⋯ 菜单；
@@ -692,13 +744,13 @@ function lifecycleMenuItems(sid) {
       items.push({label: a.label || a.id, disabled: !!dis, run: () => act(sid, "action", {name: a.id})});
     return items;
   }
-  if (p.can_takeover) items.push({label: "接管…", disabled: !!dis, run: () => askTakeover(sid)});
+  if (p.can_takeover) items.push({label: tr("接管…", "Take over…"), disabled: !!dis, run: () => askTakeover(sid)});
   if (["failed", "conflict"].includes(p.state) && !p.can_takeover)
-    items.push({label: "重试", disabled: !!dis, run: () => act(sid, "start", {open: true})});
+    items.push({label: tr("重试", "Retry"), disabled: !!dis, run: () => act(sid, "start", {open: true})});
   if (p.state !== "external" && (p.intent === "running" || p.state !== "stopped"))
-    items.push({label: "停止", disabled: !!dis, run: () => act(sid, "stop")});
+    items.push({label: tr("停止", "Stop"), disabled: !!dis, run: () => act(sid, "stop")});
   if (p.intent === "running" && p.state !== "external")
-    items.push({label: "重启", disabled: !!dis, run: () => act(sid, "restart")});
+    items.push({label: tr("重启", "Restart"), disabled: !!dis, run: () => act(sid, "restart")});
   return items;
 }
 
@@ -728,17 +780,17 @@ function detailsHtml(p) {
   const canRetry = ["failed", "conflict"].includes(p.state) && !p.observe_only && !p.can_takeover;
   const retryDisabled = p.op || busy(p.id) || busy("g-" + p.group) || connOk === false;
   const diagnosis = p.reason || problem ? `<section class="diagnosis${p.state === "partial" || !problem ? " warning" : ""}" id="reason-${esc(p.id)}" tabindex="-1">
-    <strong>${esc(p.reason ? p.reason.split("\n", 1)[0] : p.label || "诊断")}</strong>
+    <strong>${esc(p.reason ? p.reason.split("\n", 1)[0] : stateLabel(p) || tr("诊断", "Diagnosis"))}</strong>
     ${p.reason?.includes("\n") ? `<p>${esc(p.reason.slice(p.reason.indexOf("\n") + 1))}</p>` : ""}
     <div class="acts">
-      ${canRetry ? `<button class="primary" data-act="retry" ${retryDisabled ? "disabled" : ""} onclick="act('${p.id}','start',{open:true})">重试服务</button>` : ""}
-      <button data-act="diagnostic-logs" onclick="loadLogs('${p.id}')">查看日志</button>
-      <button class="ghost" data-act="copy-diagnosis" onclick="copyDiagnosis('${p.id}')">复制诊断</button>
+      ${canRetry ? `<button class="primary" data-act="retry" ${retryDisabled ? "disabled" : ""} onclick="act('${p.id}','start',{open:true})">${tr("重试服务", "Retry service")}</button>` : ""}
+      <button data-act="diagnostic-logs" onclick="loadLogs('${p.id}')">${tr("查看日志", "View logs")}</button>
+      <button class="ghost" data-act="copy-diagnosis" onclick="copyDiagnosis('${p.id}')">${tr("复制诊断", "Copy diagnosis")}</button>
     </div>
   </section>` : "";
   const lg = logs[p.id] !== undefined
     ? `<div class="log-window"><header>stdout / stderr · 最近 200 行</header><pre id="logs-${p.id}">${esc(logs[p.id] || "(无日志)")}</pre></div>`
-    : `<button class="ghost" onclick="loadLogs('${p.id}')">加载最近日志</button>`;
+    : `<button class="ghost" onclick="loadLogs('${p.id}')">${tr("加载最近日志", "Load recent logs")}</button>`;
   const eps = (p.endpoints || []).map(e => {
     const route = locoveData?.routes?.[e.host];
     const st = !route ? "未生成路由" : route.state === "proxy"
@@ -751,12 +803,12 @@ function detailsHtml(p) {
   const direct = p.observe_only ? "" : `<tr><td class="k">直连地址</td><td colspan="3">${esc(p.open || "—")}<span class="note">（内部端口实现细节；域名形式为 http://域名:5670，在设置中启用）</span></td></tr>`;
   return `<div class="detail" id="detail-${esc(p.id)}" tabindex="-1">
     ${diagnosis}
-    ${eps || direct ? `<h4>入口</h4><div class="table-scroll"><table>${eps}${direct}</table></div>` : ""}
-    ${rows ? `<h4>组件</h4><div class="table-scroll"><table>${rows}</table></div>` : ""}
-    ${deps ? `<h4>依赖</h4><div class="table-scroll"><table>${deps}</table></div>` : ""}
-    <h4>概览</h4>
+    ${eps || direct ? `<h4>${tr("入口", "Endpoints")}</h4><div class="table-scroll"><table>${eps}${direct}</table></div>` : ""}
+    ${rows ? `<h4>${tr("组件", "Components")}</h4><div class="table-scroll"><table>${rows}</table></div>` : ""}
+    ${deps ? `<h4>${tr("依赖", "Dependencies")}</h4><div class="table-scroll"><table>${deps}</table></div>` : ""}
+    <h4>${tr("概览", "Overview")}</h4>
     <div class="table-scroll"><table>${extra}${intentRow}${src}</table></div>
-    <h4>日志</h4>${lg}
+    <h4>${tr("日志", "Logs")}</h4>${lg}
   </div>`;
 }
 
@@ -789,7 +841,8 @@ function copyDiagnosis(id) {
 
 function serviceRow(p, showProject, singleProject) {
   const code = p.code || {};
-  const msg = msgs[p.id] ? `<div class="msg">${esc(msgs[p.id])}</div>` : "";
+  const feedback = msgs[p.id];
+  const msg = feedback ? `<p class="msg service-message${feedback.bad ? " bad" : ""}" role="status">${esc(feedback.text || feedback)}</p>` : "";
   const pjName = showProject && registry?.services ? (registry.services.find(s => s.id === p.id)?.project) : null;
   const expanded = !!open[p.id];
   const sub = pjName ? `项目 ${esc(projectName(pjName))}${p.description ? " · " + esc(p.description) : ""}`
@@ -805,14 +858,14 @@ function serviceRow(p, showProject, singleProject) {
       <div class="service-identity"><span class="service-mark" aria-hidden="true">${esc(mark)}</span>
         <div class="name">${esc(p.name)}${sub ? `<small title="${sub}">${sub}</small>` : ""}</div></div>
       <div class="statecell">
-        <div class="state s-${p.state}">${esc(p.label)}</div>
+        <div class="state s-${p.state}">${esc(stateLabel(p))}</div>
         ${domainChip(p)}
         ${["pending", "failed"].includes(code.state)
           ? `<div class="code ${code.state}" title="${esc(code.label)}：${esc(code.detail || "")}">${esc(code.label)}</div>` : ""}
       </div>
       <div class="acts" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()">
-        ${primary(p)}<button class="ghost" data-act="logs" onclick="loadLogs('${esc(p.id)}')" aria-label="查看日志">日志</button>
-        ${projectControl}<button class="kebab" data-act="menu" aria-haspopup="menu" aria-label="更多操作" onclick="toggleMenu(event,'${singleProject ? "single:" + esc(singleProject.id) + ":" : "svc:"}${esc(p.id)}')">⋯</button>
+        ${primary(p)}<button class="ghost" data-act="logs" onclick="loadLogs('${esc(p.id)}')" aria-label="${tr("查看日志", "View logs")}">${tr("日志", "Logs")}</button>
+        ${projectControl}<button class="kebab" data-act="menu" aria-haspopup="menu" aria-label="${tr("更多操作", "More actions")}" onclick="toggleMenu(event,'${singleProject ? "single:" + esc(singleProject.id) + ":" : "svc:"}${esc(p.id)}')">⋯</button>
       </div>
     </div>${msg}${expanded ? detailsHtml(p) : ""}</section>`;
 }
@@ -825,9 +878,10 @@ function groupToolbar(gid, members) {
   const busyG = busy("g-" + gid) || members.some(m => m.op || busy(m.id));
   const disabled = busyG || members.some(m => ["unknown", "external", "conflict"].includes(m.state)) ? "disabled" : "";
   const count = members.reduce((n, m) => n + m.components.filter(c => c.kind === "server").length, 0);
+  const workspace = members[0]?.group_name || gid;
   const msg = msgs["g-" + gid] ? `<p class="note" role="status">${esc(msgs["g-" + gid])}</p>` : "";
   return `<div class="group-tools" aria-label="${esc(gid)} 工作区">
-    <span>${esc(members[0]?.group_name || gid)} 工作区</span><div class="acts">
+    <span>${esc(workspace)}</span><div class="acts">
     <button ${disabled} onclick="groupAct('${gid}','start')">启动全部</button>
     <button ${disabled} onclick="groupAct('${gid}','restart')">${busyG ? "工作区操作中…" : `重启全部（${count} 个服务）`}</button>
     <button ${disabled} onclick="if(confirm('停止工作区中的全部服务？'))groupAct('${gid}','stop')">停止全部</button>
@@ -864,34 +918,46 @@ function viewAll() {
 
 function viewProject(pid) {
   const g = projectGroups().find(x => x.pj.id === pid);
-  if (!g) return `<div class="empty">未找到项目。<button onclick="setView('all')">返回全部服务</button></div>`;
+  if (!g) return `<div class="empty">${tr("未找到项目。", "Project not found.")} <button onclick="setView('all')">${tr("返回全部服务", "Back to all services")}</button></div>`;
   const pj = g.pj;
-  const dirs = (pj.directories || []).map(d =>
-    `<tr><td class="k">${esc(d.role || "source")}</td><td>${esc(d.path)}</td><td><button class="danger" onclick="removeDir('${esc(pj.id)}','${esc(d.id)}')">解除关联</button></td></tr>`).join("");
+  const id = esc(pj.id);
+  const dirs = (pj.directories || []).map(d => `<li>
+    <div><span class="muted">${esc(d.role || "source")}</span><code class="mono">${esc(d.path)}</code></div>
+    <button class="ghost danger" onclick="removeDir('${id}','${esc(d.id)}')">${tr("解除关联", "Unlink")}</button>
+  </li>`).join("");
   const members = g.members.filter(matchesSearch);
-  return `<section class="card">
-    <div class="card-head">
-      <button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${esc(pj.id)}')" aria-label="收藏">${pj.favorite ? "★" : "☆"}</button>
-      <h3>${esc(pj.name)}</h3>
-      <span class="note">id ${esc(pj.id)} · 修订 ${pj.revision ?? 0}</span>
-      <div class="acts">
-        <button class="kebab" aria-haspopup="menu" aria-label="项目菜单（添加服务 / 重新识别 / 重命名 / 移除项目）" onclick="toggleMenu(event,'proj:${esc(pj.id)}')">⋯</button>
+  return `<section class="group project-services">
+    <div class="group-head">
+      <button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${id}')" aria-pressed="${!!pj.favorite}" aria-label="${tr("收藏项目", "Favorite project")}">${pj.favorite ? "★" : "☆"}</button>
+      <h3>${tr("服务", "Services")}</h3>
+      <button class="kebab" aria-haspopup="menu" aria-label="${tr("项目操作", "Project actions")}" onclick="toggleMenu(event,'proj:${id}')">⋯</button>
+    </div>
+    ${members.map(p => serviceRow(p, false)).join("") || `<div class="empty">${g.members.length ? tr("没有匹配的服务", "No matching services") : tr("此项目暂无已登记服务", "No registered services in this project")}</div>`}
+  </section>
+  <section class="card project-config" aria-labelledby="project-config-title">
+    <h3 id="project-config-title">${tr("项目配置", "Project configuration")}</h3>
+    <div class="project-settings">
+      <div>
+        <h4>${tr("运行设置", "Startup settings")}</h4>
+        <button aria-pressed="${!!pj.autostart}" onclick="toggleAutostart('${id}', ${!pj.autostart})">
+          ${pj.autostart ? tr("自动启动已开启", "Autostart on") : tr("自动启动已关闭", "Autostart off")}
+        </button>
+        <p class="note">${tr("登录后恢复服务上次的运行意图。", "Restore each service’s previous run intent at login.")}</p>
+        <p class="note">${tr("默认 Agent", "Default agent")} · ${esc(pj.agent || tr("未设置", "None"))}</p>
+      </div>
+      <div>
+        <h4>${tr("关联目录", "Linked directories")}</h4>
+        ${dirs ? `<ul class="directory-list">${dirs}</ul>` : `<p class="note">${tr("暂无关联目录", "No linked directories")}</p>`}
+        <form class="field directory-form" onsubmit="event.preventDefault();addDir('${id}')">
+          <input id="projDirInput" placeholder="${tr("/绝对/路径", "/absolute/path")}" aria-label="${tr("新增关联目录", "Directory to link")}">
+          <button type="submit">${tr("关联目录", "Link directory")}</button>
+          ${nativeBridge() ? `<button type="button" onclick="addViaPicker('${id}')">${tr("选择…", "Choose…")}</button>` : ""}
+        </form>
+        <p class="note">${tr("解除关联会保留目录和文件。", "Unlinking keeps the directory and its files.")}</p>
       </div>
     </div>
-    <p class="note">默认 Agent：${pj.agent ? esc(pj.agent) : "未设置"} · 创建于 ${t(Date.parse(pj.created_at || "") / 1000) || "—"}</p>
-    <div class="field"><label>自动启动（登录后恢复运行意图）</label>
-      <button onclick="toggleAutostart('${esc(pj.id)}', ${pj.autostart ? "false" : "true"})">${pj.autostart ? "已开启（点击关闭）" : "已关闭（点击开启）"}</button>
-      <span class="inline-note">只影响登录/重启后的意图恢复，不立即启停</span></div>
-    <div class="card-head"><h3 style="font-size:14px">关联目录</h3></div>
-    <div class="table-scroll"><table>${dirs || `<tr><td class="muted">（无）</td></tr>`}</table></div>
-    <div class="field"><input id="projDirInput" placeholder="/绝对/路径（回车添加）" aria-label="新增关联目录">
-      <button onclick="addDir('${esc(pj.id)}')">关联目录</button>
-      <button onclick="addViaPicker('${esc(pj.id)}')">选择…</button>
-      <span class="inline-note">解除关联不删除文件</span></div>
-    <p class="note">运行意图：${members.map(m => `${esc(m.name)}=${m.intent === "running" ? "运行" : "停止"}`).join(" · ") || "（无服务）"}</p>
-    ${members.map(p => serviceRow(p, false)).join("") || `<div class="empty">此项目暂无已登记服务</div>`}
-  </section>
-  <button onclick="setView('all')">← 返回全部服务</button>`;
+    <p class="note">ID · ${id} · ${tr("修订", "Revision")} ${pj.revision ?? 0}${pj.created_at ? ` · ${tr("创建于", "Created")} ${t(Date.parse(pj.created_at) / 1000)}` : ""}</p>
+  </section>`;
 }
 
 // ------------------------------------------------------------ 视图：需要处理 / 资源 / Agent / 草稿
@@ -1021,16 +1087,16 @@ function draftSummary(payload) {
 
 function locoveStateChip(d) {
   const map = {
-    not_installed: ["未安装", "mut"], installed_off: ["已安装 · 未开启", "mut"],
-    starting: ["启动中…", "warn"], available: ["可用", "ok"], failed: ["失败", "bad"],
+    not_installed: [tr("未安装", "Not installed"), "mut"], installed_off: [tr("已安装 · 未开启", "Installed · Off"), "mut"],
+    starting: [tr("启动中…", "Starting…"), "warn"], available: [tr("可用", "Available"), "ok"], failed: [tr("失败", "Failed"), "bad"],
   };
-  const [label, cls] = map[d.state] || ["未知", "mut"];
+  const [label, cls] = map[d.state] || [tr("未知", "Unknown"), "mut"];
   return `<span class="badge ${cls}" id="locove-state">${label}</span>`;
 }
 
 function domainPreviewUrl(d) {
   const ep = (snap?.projects || []).flatMap(p => p.endpoints || [])[0];
-  const host = ep ? ep.host : `<服务名>.${d.suffix}`;
+  const host = ep ? ep.host : `<${tr("服务名", "service-name")}>.${d.suffix}`;
   return `http://${host}:${d.domain_port || 5670}${ep ? ep.open_path : "/"}`;
 }
 
@@ -1042,33 +1108,33 @@ function locoveSettingsCard() {
   const port = d.domain_port || 5670;
   const running = opt.active;
   const stepLine = running || opt.error || (opt.steps || []).length
-    ? `<p class="note" role="status">${running ? `进行中：${opt.step || ""}…` : ""}
+    ? `<p class="note" role="status">${running ? `${tr("进行中", "In progress")} · ${esc(opt.step || "")}` : ""}
        ${opt.error ? `<span class="reason bad">${esc(opt.error)}</span>` : ""}</p>` : "";
   const enableBtn = st.use_domains ? "" :
-    `<button class="primary" ${running ? "disabled" : ""} onclick="askEnableDomain()">${running ? "操作进行中…" : "启用域名访问…"}</button>`;
+    `<button class="primary" ${running ? "disabled" : ""} onclick="askEnableDomain()">${running ? tr("操作进行中…", "Working…") : tr("启用域名访问…", "Enable domain access…")}</button>`;
   const offBtns = !st.use_domains ? "" :
-    `<button ${running ? "disabled" : ""} onclick="locoveOp('disable')">关闭（回直连，停止 DNS/代理）</button>`;
+    `<button ${running ? "disabled" : ""} onclick="locoveOp('disable')">${tr("关闭（回直连，停止 DNS/代理）", "Turn off and use direct access")}</button>`;
   return `<div class="card" id="locove-settings">
-    <div class="card-head"><h3>域名访问（可选）</h3>${locoveStateChip(d)}
-      <span class="note">默认本地 IP 直连；域名是按需启用的高端口入口</span></div>
-    <div class="field"><label>访问形式</label>
+    <div class="card-head"><h3>${tr("域名访问（可选）", "Domain access (optional)")}</h3>${locoveStateChip(d)}
+      <span class="note">${tr("默认本地 IP 直连；域名是按需启用的高端口入口", "Direct local access is the default.")}</span></div>
+    <div class="field"><label>${tr("访问形式", "Access URL")}</label>
       <code class="mono">${esc(domainPreviewUrl(d))}</code>
-      <span class="inline-note">Caddy 直接监听回环 :${port}（普通用户运行，不经 80）；DNS 仅把 *.${esc(d.suffix)} 指到本机</span></div>
-    <div class="field"><label>端口</label>
+      <span class="inline-note">${tr(`Caddy 监听回环 :${port}；DNS 仅把 *.${esc(d.suffix)} 指到本机`, `Caddy listens on loopback at :${port}. DNS resolves *.${esc(d.suffix)} locally.`)}</span></div>
+    <div class="field"><label>${tr("端口", "Port")}</label>
       <input type="number" min="1024" max="65535" value="${port}" style="max-width:110px"
-             aria-label="域名端口" onchange="locovePort(this.value)">
-      <span class="inline-note">启用前检查占用；控制面 47800/47891/5354 不可用。修改端口需重新启用/重启代理</span></div>
-    <div class="field"><label>操作</label>
+             aria-label="${tr("域名端口", "Domain port")}" onchange="locovePort(this.value)">
+      <span class="inline-note">${tr("启用前检查占用；控制面 47800/47891/5354 不可用。修改端口需重新启用/重启代理", "Ports 47800, 47891 and 5354 are reserved. Restart the proxy to apply a port change.")}</span></div>
+    <div class="field"><label>${tr("操作", "Actions")}</label>
       ${enableBtn}${offBtns}
-      <button class="ghost" ${running ? "disabled" : ""} onclick="askUninstallDomain()">卸载域名件…</button></div>
-    ${st.use_domains ? `<div class="field"><label>域名形式</label>
+      <button class="ghost" ${running ? "disabled" : ""} onclick="askUninstallDomain()">${tr("卸载域名件…", "Uninstall domain support…")}</button></div>
+    ${st.use_domains ? `<div class="field"><label>${tr("域名形式", "Domain format")}</label>
       <span class="seg">
-        <button class="${st.domain_form === "suffix" ? "on" : ""}" onclick="locoveSetting('domain_form','suffix')">后缀式</button>
-        <button class="${st.domain_form === "custom" ? "on" : ""}" onclick="locoveSetting('domain_form','custom')">自定义</button>
+        <button class="${st.domain_form === "suffix" ? "on" : ""}" onclick="locoveSetting('domain_form','suffix')">${tr("后缀式", "Suffix")}</button>
+        <button class="${st.domain_form === "custom" ? "on" : ""}" onclick="locoveSetting('domain_form','custom')">${tr("自定义", "Custom")}</button>
       </span>
-      <span class="inline-note">后缀式 = 每个服务派生 <code>&lt;service-id&gt;.${esc(d.suffix)}</code>；自定义 = 仅显式登记的域名</span></div>` : ""}
+      <span class="inline-note">${tr("后缀式为每个服务生成域名。自定义仅使用已登记的域名。", "Suffix mode generates a domain for each service. Custom mode uses explicitly registered domains.")}</span></div>` : ""}
     ${stepLine}
-    <p class="note">启用需一次管理员授权（仅安装 .${esc(d.suffix)} 解析配置）；取消后继续直连，日常启停不再需要授权。DNS/代理仅本机回环可访问，不替换全局 DNS、不安装证书、不上云。</p>
+    <p class="note">${tr(`首次启用需管理员授权以安装 .${esc(d.suffix)} 解析配置。取消后继续直连。DNS 与代理仅本机可访问。`, `First-time setup requires administrator approval for the .${esc(d.suffix)} resolver. Cancel to keep using direct access. DNS and proxy access are local only.`)}</p>
     ${msgs["locove-settings"] ? `<p class="msg" role="status">${esc(msgs["locove-settings"])}</p>` : ""}
   </div>`;
 }
@@ -1076,28 +1142,29 @@ function locoveSettingsCard() {
 async function locovePort(v) {
   const port = parseInt(v, 10);
   if (!port || port < 1024 || port > 65535) {
-    msgs["locove-settings"] = `端口 ${v} 无效（需 1024–65535）`; render(); return;
+    msgs["locove-settings"] = tr(`端口 ${v} 无效（需 1024–65535）`, `Invalid port ${v}. Enter a number from 1024 to 65535.`); render(); return;
   }
   const [, res] = await api("POST", "/api/locove/settings", {domain_port: port});
-  msgs["locove-settings"] = res?.ok ? `域名端口已保存：${port}（生效需启用/重启域名模块）`
-                                     : `保存失败：${res?.error || ""}`;
+  msgs["locove-settings"] = res?.ok
+    ? tr(`域名端口已保存：${port}（生效需启用/重启域名模块）`, `Port ${port} saved. Enable or restart domain support to apply it.`)
+    : tr("保存失败", "Could not save") + (res?.error ? " · " + res.error : "");
   await refresh(); render();
 }
 
 async function askEnableDomain() {
   const d = locoveData || {};
   const port = d.domain_port || 5670;
-  await showModal({title: "启用域名访问", okText: "安装并启用", bodyHtml: `
-    <p class="modal-line">启用后通过 <b>服务名.${esc(d.suffix || "locove")}:${port}</b> 访问。</p>
-    <p class="modal-line">需要安装仅针对 .${esc(d.suffix || "locove")} 的本地解析配置，并启动仅本机可访问的 DNS 和代理（回环 :${port}）。不会替换全局 DNS、安装证书或开放局域网访问。首次安装需要管理员确认；取消后可继续直连。</p>
-    <p class="modal-line muted">已安装的解析配置保留时，后续启用/关闭不再需要授权；卸载域名件可经设置页随时执行。</p>`,
+  await showModal({title: tr("启用域名访问", "Enable domain access"), okText: tr("安装并启用", "Install and enable"), bodyHtml: `
+    <p class="modal-line">${tr("启用后通过以下地址访问", "After enabling, use")} <b>${tr("服务名", "service-name")}.${esc(d.suffix || "locove")}:${port}</b></p>
+    <p class="modal-line">${tr(`首次安装需管理员确认。DNS 和代理仅在本机提供服务（回环 :${port}）。取消后可继续直连。`, `First-time setup requires administrator approval. DNS and proxy access are local only (loopback port ${port}). Cancel to keep using direct access.`)}</p>
+    <p class="modal-line muted">${tr("保留解析配置时，可以直接开启或关闭域名访问。", "With the resolver installed, domain access can be turned on and off without another prompt.")}</p>`,
     onOk: async () => { await locoveOp("enable"); return true; }});
 }
 
 async function askUninstallDomain() {
-  await showModal({title: "卸载域名件", okText: "卸载", danger: true, bodyHtml: `
-    <p class="modal-line">将停止并移除本工具的 DNS/代理 agent 与路由配置；解析配置（resolver）默认保留——移除它需要再一次管理员确认。</p>
-    <p class="modal-line">服务登记、业务进程与数据不受影响；之后全部通过本地直连地址访问。</p>`,
+  await showModal({title: tr("卸载域名件", "Uninstall domain support"), okText: tr("卸载", "Uninstall"), danger: true, bodyHtml: `
+    <p class="modal-line">${tr("将停止并移除 DNS、代理和路由配置。解析配置默认保留，移除它需管理员确认。", "This stops and removes DNS, the proxy and routing configuration. Removing the resolver requires administrator approval.")}</p>
+    <p class="modal-line">${tr("卸载后继续通过本地直连地址访问服务。", "After uninstalling, services remain available through their direct local addresses.")}</p>`,
     onOk: async () => { await locoveOp("uninstall", {keep_resolver: true}); return true; }});
 }
 
@@ -1119,34 +1186,69 @@ async function locoveOp(op, body = {}) {
 function locoveDiagnosticsCard() {
   const d = locoveData;
   if (!d) return "";
-  const row = (ok, name, detail) => `<tr><td class="k">${esc(name)}</td><td>${ok === null || ok === undefined ? "—" : ok ? "✓ " + esc(detail || "正常") : "✗ " + esc(detail || "")}</td></tr>`;
-  const pbRow = d.proxy_bypass ? row(d.proxy_bypass.ok, "代理绕行（浏览器路径）", d.proxy_bypass.detail) : "";
+  const row = (ok, name, detail) => `<tr><td class="k">${esc(name)}</td><td>${ok === null || ok === undefined ? "—" : ok ? "✓ " + esc(detail || tr("正常", "OK")) : "✗ " + esc(detail || "")}</td></tr>`;
+  const pbRow = d.proxy_bypass ? row(d.proxy_bypass.ok, tr("代理绕行（浏览器路径）", "Browser proxy bypass"), d.proxy_bypass.detail) : "";
   const hosts = Object.entries(d.routes || {}).map(([h, r]) =>
-    `<tr><td class="k">${esc(h)}</td><td>${r.state === "proxy" ? `代理中 → 127.0.0.1:${r.upstream_port}` : "明确不可用页（503）"}<span class="note">（${esc(r.service)}.${esc(r.component)}）</span></td></tr>`).join("");
+    `<tr><td class="k">${esc(h)}</td><td>${r.state === "proxy" ? `代理中 → 127.0.0.1:${r.upstream_port}` : tr("明确不可用页（503）", "Unavailable page (503)")}<span class="note">（${esc(r.service)}.${esc(r.component)}）</span></td></tr>`).join("");
   const legacy = d.legacy_80
-    ? `<tr><td class="k">旧 80 入口</td><td>仍登记（V3.4 转发器）。退役：<code class="mono">sudo scripts/retire-locove-80.sh --apply</code>（旧无端口书签将失效，改用 :${d.domain_port} 地址）</td></tr>` : "";
-  return `<section class="card"><div class="card-head"><h3>域名诊断</h3><span class="note">*.${esc(d.suffix)}:${d.domain_port} · 仅在启用域名时相关</span></div>
+    ? `<tr><td class="k">${tr("旧 80 入口", "Legacy port 80")}</td><td>仍登记（V3.4 转发器）。退役：<code class="mono">sudo scripts/retire-locove-80.sh --apply</code>（旧无端口书签将失效，改用 :${d.domain_port} 地址）</td></tr>` : "";
+  return `<section class="card"><div class="card-head"><h3>${tr("域名诊断", "Domain diagnostics")}</h3><span class="note">*.${esc(d.suffix)}:${d.domain_port} · ${tr("仅在启用域名时相关", "Applies when domains are enabled")}</span></div>
     <div class="table-scroll"><table>
-      ${row(d.dns?.ok, `本地 DNS（:${5354}）`, d.dns?.detail)}
-      ${row(d.proxy?.ok, `代理（Caddy :${d.domain_port}）`, d.proxy?.detail)}
+      ${row(d.dns?.ok, tr("本地 DNS（:5354）", "Local DNS (:5354)"), d.dns?.detail)}
+      ${row(d.proxy?.ok, tr(`代理（Caddy :${d.domain_port}）`, `Proxy (Caddy :${d.domain_port})`), d.proxy?.detail)}
       ${row(d.resolver?.ok, `split DNS（/etc/resolver/${esc(d.suffix)}）`, d.resolver?.detail)}
       ${d.state !== "not_installed" ? pbRow : ""}${legacy}
     </table></div>
     ${d.proxy_bypass?.ok === false && d.state !== "not_installed" ? `<p class="note">绕行立即修复：<code class="mono">sudo scripts/locove-proxy-bypass.sh ${esc(d.suffix)}</code>；永久修复需在网关客户端（如 Clash Verge → 设置 → 系统设置 → 代理绕过）加入 <code class="mono">*.${esc(d.suffix)}</code>。</p>` : ""}
-    ${hosts ? `<details><summary>全部 ${Object.keys(d.routes || {}).length} 条路由</summary><div class="table-scroll"><table>${hosts}</table></div></details>` : `<p class="note">暂无登记公开入口的服务。</p>`}
+    ${hosts ? `<details><summary>${tr(`全部 ${Object.keys(d.routes || {}).length} 条路由`, `Routes: ${Object.keys(d.routes || {}).length}`)}</summary><div class="table-scroll"><table>${hosts}</table></div></details>` : `<p class="note">${tr("暂无登记公开入口的服务。", "No registered domain endpoints.")}</p>`}
     </section>`;
 }
 
+async function saveLanguage(value) {
+  if (pending.language || value === language) return;
+  pending.language = true;
+  delete msgs.language;
+  render();
+  try {
+    const [code, res] = await api("POST", "/api/settings/language", {language: value});
+    if (code === 200 && res?.ok) {
+      languageVersion++;
+      applyLanguage(res.language);
+      nativeBridge()?.postMessage({action: "languageChanged"});
+    } else {
+      msgs.language = true;
+    }
+  } catch (e) {
+    msgs.language = true;
+  } finally {
+    pending.language = false;
+    render();
+  }
+}
+
+function languageCard() {
+  return `<section class="card"><div class="card-head"><h3>${tr("语言", "Language")}</h3></div>
+    <div class="field"><span id="language-label">${tr("界面语言", "Interface language")}</span>
+      <div class="seg" role="group" aria-labelledby="language-label">
+        <button lang="zh-CN" aria-pressed="${language === "zh-CN"}" class="${language === "zh-CN" ? "on" : ""}"
+                ${pending.language ? "disabled" : ""} onclick="saveLanguage('zh-CN')">简体中文</button>
+        <button lang="en" aria-pressed="${language === "en"}" class="${language === "en" ? "on" : ""}"
+                ${pending.language ? "disabled" : ""} onclick="saveLanguage('en')">English</button>
+      </div>
+    </div>
+    ${msgs.language ? `<p class="msg bad" role="status">${tr("语言设置保存失败，请重试。", "Could not save the language. Try again.")}</p>` : ""}
+  </section>`;
+}
+
 function viewSettings() {
-  if (!locoveData) return `<div class="empty">加载中…</div>`;
   return `<div class="settings-grid">
-    <div>${locoveSettingsCard()}
-      <section class="card"><div class="card-head"><h3>关于</h3></div>
+    <div>${languageCard()}${locoveSettingsCard()}
+      <section class="card"><div class="card-head"><h3>${tr("关于", "About")}</h3></div>
         <table>
-          <tr><td class="k">产品</td><td>Locove／洛湾 · 本地服务工作台</td></tr>
-          <tr><td class="k">运行位置</td><td>本机（daemon / DNS / 入口 / 代理均在本机回环，无云端依赖、无遥测）</td></tr>
-          <tr><td class="k">可选 AI 识别</td><td>调用你配置的 Codex/Claude CLI 时，会把扫描到的工程证据交给该 CLI；CLI 所用模型可能在云端或你的网关处理。手动登记与日常管理不调用模型。</td></tr>
-          <tr><td class="k">数据</td><td>登记与状态保存在本机 ~/Library/Application Support/LocalServices</td></tr>
+          <tr><td class="k">${tr("产品", "Product")}</td><td>${productName()} · ${tr("本地服务工作台", "Local services workbench")}</td></tr>
+          <tr><td class="k">${tr("运行位置", "Runtime")}</td><td>${tr("本机（daemon / DNS / 入口 / 代理均在本机回环，无云端依赖、无遥测）", "The daemon, DNS and proxy use loopback. No cloud dependency or telemetry.")}</td></tr>
+          <tr><td class="k">${tr("可选 AI 识别", "Optional AI discovery")}</td><td>${tr("调用你配置的 Codex/Claude CLI 时，会把扫描到的工程证据交给该 CLI；CLI 所用模型可能在云端或你的网关处理。手动登记与日常管理不调用模型。", "Discovery passes project evidence to your configured Codex or Claude CLI. Its model may process that data in the cloud or through your gateway. Manual registration and routine operations do not use a model.")}</td></tr>
+          <tr><td class="k">${tr("数据", "Data")}</td><td>${tr("登记与状态保存在本机", "Registry and state are stored locally in")} <code>~/Library/Application Support/LocalServices</code></td></tr>
         </table></section>
     </div>
     <div>${locoveDiagnosticsCard()}</div>
@@ -1385,9 +1487,13 @@ async function act(id, action, body) {
   render();
   try {
     const [code, res] = await api("POST", `/api/projects/${id}/${action}`, body);
-    msgs[id] = res?.message || res?.error || "";
-    if (code !== 200 && res?.error) msgs[id] = res.error;
-  } catch (e) { msgs[id] = "无法连接控制服务"; setConn(false); }
+    const lifecycleStarted = res?.accepted === true && ["start", "stop", "restart"].includes(action);
+    const detail = res?.error || res?.message;
+    msgs[id] = detail && !lifecycleStarted ? {text: detail, bad: code !== 200 || res?.ok === false} : "";
+  } catch (e) {
+    msgs[id] = {text: tr("无法连接控制服务", "Daemon unavailable"), bad: true};
+    setConn(false);
+  }
   pending[id] = null;
   await refresh();
 }
@@ -1441,22 +1547,22 @@ function menuOpen() { return !!menuState; }
 
 function projectMenuItems(pid) {
   return [
-    {label: "添加服务…", run: () => wizPresetFor(pid, "add")},
-    {label: "重新识别", run: () => wizPresetFor(pid, "reanalyze")},
-    {label: "重命名", run: () => renameProject(pid)},
+    {label: tr("添加服务…", "Add service…"), run: () => wizPresetFor(pid, "add")},
+    {label: tr("重新识别", "Scan again"), run: () => wizPresetFor(pid, "reanalyze")},
+    {label: tr("重命名", "Rename"), run: () => renameProject(pid)},
     {sep: true},
-    {label: "移除项目…", danger: true, run: () => askProjectRemove(pid)},
+    {label: tr("移除项目…", "Remove project…"), danger: true, run: () => askProjectRemove(pid)},
   ];
 }
 
 function serviceMenuItems(sid) {
   const life = lifecycleMenuItems(sid);
   return [
-    {label: "编辑", run: () => editService(sid)},
-    {label: "日志", run: () => loadLogs(sid)},
-    {label: "打开目录", run: () => act(sid, "open-source")},
+    {label: tr("编辑", "Edit"), run: () => editService(sid)},
+    {label: tr("日志", "Logs"), run: () => loadLogs(sid)},
+    {label: tr("打开目录", "Open source directory"), run: () => act(sid, "open-source")},
     ...(life.length ? [{sep: true}, ...life, {sep: true}] : [{sep: true}]),
-    {label: "移除登记…", danger: true, run: () => askRemoveService(sid)},
+    {label: tr("移除登记…", "Remove registration…"), danger: true, run: () => askRemoveService(sid)},
   ];
 }
 
@@ -2055,13 +2161,17 @@ async function renameProject(pid) {
     }});
 }
 
-async function addDir(pid) {
-  const input = document.getElementById("projDirInput");
-  const path = (input?.value || "").trim();
+async function addDir(pid, pickedPath) {
+  const input = pickedPath === undefined ? document.getElementById("projDirInput") : null;
+  const path = (pickedPath || input?.value || "").trim();
   if (!path) { input?.focus(); return; }
   try {
     const [code, res] = await api("POST", `/api/projects/${pid}/directories`, {path});
-    if (code !== 200) alert(res?.error || "添加失败");
+    if (code !== 200) alert(res?.error || tr("添加失败", "Could not link directory"));
+    else if (input?.value.trim() === path) {
+      input.value = "";
+      input.blur();
+    }
   } catch (e) { setConn(false); }
   await refresh();
 }
@@ -2072,10 +2182,10 @@ async function removeDir(pid, dirId) {
   await refresh();
 }
 
-function addViaPicker() {
+function addViaPicker(pid) {
   const b = nativeBridge();
   if (b) {
-    window.__lsPickCb = path => { if (path != null) addDirIntoActiveProject(path); };
+    window.__lsPickCb = path => { if (path != null) addDir(pid, path); };
     b.postMessage({action: "pickDirectory"});
   } else {
     document.getElementById("projDirInput")?.focus();
@@ -2195,11 +2305,6 @@ function chooseDirectory() {
     input?.focus();  // 浏览器辅助入口：退化为文本输入
   }
 }
-function addDirIntoActiveProject(path) {
-  const pid = view.startsWith("project:") ? view.slice(8) : null;
-  if (pid) api("POST", `/api/projects/${pid}/directories`, {path}).then(() => refresh());
-}
-
 async function wizCreateProject() {
   const dir = (wiz.dir || "").trim();
   if (!dir) { wiz.error = "请先填写项目目录（绝对路径）"; render(); return; }
@@ -2676,13 +2781,17 @@ function setView(v) {
 }
 
 async function refresh(manual) {
+  const requestLanguageVersion = languageVersion;
   try {
     if (manual) { const [, r] = await api("POST", "/api/refresh"); }
     const [code, snapNew] = await api("GET", "/api/status");
     if (code !== 200 || !snapNew) throw new Error(snapNew?.error || "status failed");
     snap = snapNew;
     const [rc, reg] = await api("GET", "/api/registry");
-    if (rc === 200 && reg?.ok) registry = reg;
+    if (rc === 200 && reg?.ok) {
+      registry = reg;
+      if (!pending.language && requestLanguageVersion === languageVersion) applyLanguage(reg.registry?.settings?.language);
+    }
     try {  // V3.5：chip 依赖 settings/routes，随刷新一并等待，避免渲染竞态
       const [lc, lv] = await api("GET", "/api/locove");
       if (lc === 200 && lv) locoveData = lv;

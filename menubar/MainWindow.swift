@@ -15,6 +15,8 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
     let retryButton = NSButton(title: "立即重试", target: nil, action: #selector(pingNow))
     let base: URL
     let portString: String
+    var onLanguageChanged: (() -> Void)?
+    private var language = InterfaceLanguage.chinese
     var reachable = true
     private var dashboardLoaded = false
     private var pendingNavigation: String?
@@ -31,7 +33,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 760),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "Locove／洛湾"
+        window.title = InterfaceLanguage.chinese.productName
         window.minSize = NSSize(width: 960, height: 600)
         window.isReleasedWhenClosed = false // 关闭窗口只是隐藏；菜单栏仍在
         window.center()
@@ -78,6 +80,16 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
             overlayDetail.widthAnchor.constraint(lessThanOrEqualToConstant: 460),
             retryButton.topAnchor.constraint(equalTo: overlayDetail.bottomAnchor, constant: 16),
         ])
+    }
+
+    func setLanguage(_ language: InterfaceLanguage) {
+        self.language = language
+        window.title = language.productName
+        overlayTitle.stringValue = language.text("控制层不可用", "Daemon unavailable")
+        overlayDetail.stringValue = language.text(
+            "服务状态未知——不代表项目已停止。控制服务恢复后将自动重载。",
+            "Service status is unknown. The workbench reloads automatically when the daemon recovers.")
+        retryButton.title = language.text("立即重试", "Retry now")
     }
 
     func show() {
@@ -164,8 +176,11 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
 
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any],
+        guard message.frameInfo.isMainFrame,
+              let origin = message.frameInfo.request.url, isDashboardOrigin(origin),
+              let body = message.body as? [String: Any],
               let action = body["action"] as? String else { return }
+        if action == "languageChanged" { onLanguageChanged?() }
         if action == "pickDirectory" { pickDirectory() }
         if action == "openExternally", let s = body["url"] as? String, let url = URL(string: s) {
             NSWorkspace.shared.open(url)
@@ -177,7 +192,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "选择项目所在的目录"
+        panel.message = language.text("选择项目所在的目录", "Choose the project directory")
         DispatchQueue.main.async {
             let picked = panel.runModal() == .OK ? panel.url?.path : nil
             self.callback("lsPickDirectory", picked)

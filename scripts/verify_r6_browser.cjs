@@ -65,7 +65,7 @@ async function main() {
   await sleep(3500);  // 数据加载 + 首轮渲染
 
   check("真实页面加载（Locove 品牌 + 服务数据）",
-        await ev("document.querySelector('.brand h1')?.textContent") === "Locove／洛湾"
+        await ev("document.querySelector('.brand h1')?.textContent === (document.documentElement.lang === 'en' ? 'Locove' : '洛湾')")
         && await ev("document.querySelectorAll('.svc').length") > 0,
         await ev("document.querySelectorAll('.svc').length"));
   const svcCount = await ev("document.querySelectorAll('.svc').length");

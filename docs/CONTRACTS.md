@@ -439,6 +439,9 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
 
 ## V3.5 域名跳转为可选能力（用户修订 2026-11-04：默认本地 IP 直连）
 
+- 工作台语言保存在 `registry.settings.language`（`zh-CN` 或 `en`，缺省简体中文）。
+  `POST /api/settings/language` 接收 `{"language":"en"}`，成功返回 `{"ok":true,"language":"en"}`。
+  工作台与菜单栏从 `GET /api/registry` 读取，界面语言不触发域名模块配置变更。
 - registry.json 顶层 `settings`: `{"use_domains": bool（缺省 false）, "domain_form": "suffix"|"custom"（缺省 suffix）}`；
   `GET/POST /api/locove/settings`（POST 部分字段更新，非法 domain_form 400）；`GET /api/locove` 合并返回 `settings`。
 - **打开行为**：默认（use_domains=false）一切打开动作用直连地址（`open` / 组件端口），

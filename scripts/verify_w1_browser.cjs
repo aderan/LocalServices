@@ -98,6 +98,54 @@ async function main() {
   check("960 下真实页面加载", await ev("document.querySelectorAll('.svc').length") > 0,
         await ev("document.querySelectorAll('.svc').length"));
 
+  const projectLayout = await ev(`(() => {
+    const project = projectGroups().find(g => !g.orphan && g.members.length > 1 && g.pj.directories?.length);
+    if (!project) return {fixture: false};
+    const sid = project.members[0].id;
+    setView("project:" + project.pj.id);
+    msgs[sid] = "有活动任务，已延后：2 个任务进行中";
+    try {
+      render();
+      const services = document.querySelector(".project-services");
+      const settings = document.querySelector(".project-config");
+      const row = document.getElementById("p-" + sid);
+      const message = row.querySelector(".service-message");
+      return {fixture: true, separate: !!services?.contains(row) && !!settings?.querySelector("#projDirInput"),
+              inset: message && message.getBoundingClientRect().left > row.getBoundingClientRect().left + 10,
+              fits: document.getElementById("main").scrollWidth <= document.getElementById("main").clientWidth};
+    } finally {
+      delete msgs[sid];
+      setView("all");
+    }
+  })()`);
+  check("项目详情分别呈现服务与配置，操作提示缩进并适配窄窗",
+        projectLayout.fixture && projectLayout.separate && projectLayout.inset && projectLayout.fits, JSON.stringify(projectLayout));
+
+  const feedback = await ev(`(async () => {
+    const service = snap.projects.find(p => p.state === "stopped");
+    if (!service) return {fixture: false};
+    const originalFetch = window.fetch;
+    const sid = service.id;
+    let response = {ok: true, accepted: true, message: "停止中"};
+    window.fetch = (url, options) => String(url) === "/api/projects/" + sid + "/stop"
+      ? Promise.resolve({status: response.ok ? 200 : 409, json: async () => response})
+      : originalFetch(url, options);
+    try {
+      await act(sid, "stop");
+      const message = () => document.querySelector("#p-" + sid + " .service-message");
+      const transientCleared = !message();
+      response = {ok: false, error: "有活动任务，暂不停止"};
+      await act(sid, "stop");
+      return {fixture: true, transientCleared, preserved: message()?.textContent === response.error};
+    } finally {
+      window.fetch = originalFetch;
+      delete msgs[sid];
+      render();
+    }
+  })()`, true);
+  check("已受理操作不残留临时提示，阻塞原因保留在服务卡片",
+        feedback.fixture && feedback.transientCleared && feedback.preserved, JSON.stringify(feedback));
+
   const overlapEv = `(() => {
     const bad = [];
     for (const line of document.querySelectorAll(".svc .line")) {
@@ -252,6 +300,12 @@ async function main() {
   check("宽窗设置视图双栏", stWide.cols === 2, JSON.stringify(stWide.detailCard).slice(0, 120));
   await ev("setView('all')");
   await shot("w1-workbench-1280.png");
+  const detailId = await ev("projectGroups().find(g => !g.orphan && g.members.length > 1 && g.pj.directories?.length)?.pj.id");
+  if (detailId) {
+    await ev(`setView(${JSON.stringify("project:" + detailId)}); window.scrollTo(0, 0)`);
+    await shot("w1-project-detail-1280.png");
+  }
+
 
   console.log(results.join("\n"));
   const fails = results.filter(l => l.startsWith("FAIL")).length;

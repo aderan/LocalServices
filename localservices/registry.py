@@ -1881,6 +1881,19 @@ class Registry:
                         "open_path": manifest._norm_open_path(open_path)})
         return out
 
+    def set_language(self, language: object) -> str:
+        if not isinstance(language, str) or language not in ("zh-CN", "en"):
+            raise RegistryError("language must be zh-CN or en")
+        with _file_lock():
+            data = self._load()
+            settings = data.setdefault("settings", {})
+            if not isinstance(settings, dict):
+                raise RegistryError("registry.settings must be an object", status=500)
+            if settings.get("language") != language:
+                settings["language"] = language
+                self._save(data)
+        return language
+
     # ---------- Locove 域名设置（V3.5：默认直连 IP；D3：可选 5670 域名模块） ----------
 
     LOCOVE_FORMS = ("suffix", "custom")

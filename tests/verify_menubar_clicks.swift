@@ -78,7 +78,8 @@ func title(_ element: AXUIElement) -> String {
 }
 
 check(AXIsProcessTrusted() && CGPreflightPostEventAccess(), "Accessibility permission is required")
-let installed = CommandLine.arguments.contains("--installed")
+let verifyLanguage = CommandLine.arguments.contains("--language")
+let installed = verifyLanguage || CommandLine.arguments.contains("--installed")
 let bundle = installed ? "com.mybrain.localservices.menubar" : "com.mybrain.localservices.menubar.guitest"
 guard CommandLine.arguments.count >= 2,
       let pid = pid_t(CommandLine.arguments[1]),
@@ -112,6 +113,34 @@ func waitFor(_ message: String, _ condition: () -> Bool) {
         print(title(element), attribute(element, kAXIdentifierAttribute) as String? ?? "-", frame(element))
     }
     check(false, message)
+}
+
+if verifyLanguage {
+    func windowNamed(_ name: String) -> Bool {
+        (attribute(app, kAXWindowsAttribute) as [AXUIElement]? ?? []).contains { title($0) == name }
+    }
+    click(item)
+    waitFor("Open the settings panel") { control("locove-settings") != nil }
+    click(control("locove-settings")!)
+    func buttonNamed(_ name: String) -> AXUIElement? {
+        descendants(app).first {
+            let role: String = attribute($0, kAXRoleAttribute) ?? ""
+            return title($0) == name && (role == "AXButton" || role == "AXCheckBox")
+        }
+    }
+    for (button, name) in [("English", "Locove"), ("简体中文", "洛湾")] {
+        waitFor("Language button must be available") { buttonNamed(button) != nil }
+        click(buttonNamed(button)!)
+        waitFor("Native window must be titled \(name)") { windowNamed(name) }
+        click(item)
+        waitFor("Panel brand must match \(name)") {
+            guard let brand = control("locove-brand") else { return false }
+            return title(brand) == name || (attribute(brand, kAXValueAttribute) as String?) == name
+        }
+        pressKey(53)
+    }
+    print("PASS: native title and panel brand switch between Locove and 洛湾")
+    exit(0)
 }
 
 for (button, flags): (CGMouseButton, CGEventFlags) in [
@@ -184,7 +213,7 @@ click(control("locove-group-w3fix")!)
 waitFor("Expansion must show the failed service action") { control("locove-service-w3-bad") != nil }
 click(control("locove-service-w3-bad")!)
 waitFor("The diagnosis action must show the main window") {
-    (attribute(app, kAXWindowsAttribute) as [AXUIElement]? ?? []).contains { title($0) == "Locove／洛湾" }
+    (attribute(app, kAXWindowsAttribute) as [AXUIElement]? ?? []).contains { ["洛湾", "Locove"].contains(title($0)) }
 }
 click(item, button: .right)
 waitFor("Quit must be in the shared panel") { control("locove-quit") != nil }
