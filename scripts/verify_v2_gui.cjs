@@ -155,7 +155,7 @@ try { await page.refresh(); } catch (e) { console.log("REFRESH-ERROR:", e.messag
 // ---------- 1) ⋯ 菜单：存在并打开（键盘可达锚点） ----------
 section("1");
 try {
-  const srcAnchors = html.includes('toggleMenu(event,\'svc:') && html.includes('aria-haspopup="menu"');
+  const srcAnchors = html.includes('data-act="menu"') && html.includes('aria-haspopup="menu"');
   check("页面含服务 ⋯ 菜单锚点", srcAnchors);
   check("页面含项目 ⋯ 菜单锚点", html.includes('toggleMenu(event,\'proj:'));
   const before = documentStub.body.children.length;
@@ -171,6 +171,11 @@ try {
   const plabels = page.getMenuState().el.children.map(c => c.textContent);
   check("项目菜单项含 添加服务…/重新识别/重命名/移除项目…",
         ["添加服务…", "重新识别", "重命名", "移除项目…"].every(l => plabels.includes(l)), plabels.join(","));
+  page.closeMenu();
+  page.toggleMenu({target: makeEl("button")}, "single:demo-proj:demo-svc");
+  const singleLabels = page.getMenuState().el.children.map(c => c.textContent);
+  check("单服务卡片菜单保留项目与服务操作",
+        ["编辑", "日志", "重新识别", "移除项目…"].every(l => singleLabels.includes(l)), singleLabels.join(","));
   page.closeMenu();
 } catch (e) { check("菜单系统", false, e.message); }
 

@@ -41,7 +41,7 @@ class DashboardV2StaticTest(unittest.TestCase):
     # ---- (a) ⋯ 溢出菜单 ----
 
     def test_menu_anchors(self):
-        for anchor in ("toggleMenu(event,'svc:", "toggleMenu(event,'proj:",
+        for anchor in ('data-act="menu"', "toggleMenu(event,'proj:",
                        'aria-haspopup="menu"', "function projectMenuItems",
                        "function serviceMenuItems"):
             self.assertIn(anchor, self.html)

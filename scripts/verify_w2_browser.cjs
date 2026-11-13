@@ -191,7 +191,22 @@ async function main() {
   const rs = await ev(reasonEv);
   check("A: 服务行「查看原因」展开诊断并聚焦诊断行", rs.btn && rs.expanded && rs.focused, JSON.stringify(rs));
   check("A: 诊断展示原因（运行事实）与分层内容", rs.reasonText.length > 0 && rs.sections, JSON.stringify(rs).slice(0, 140));
-  await shot("w2-diagnosis-failed.png");
+
+  const local = await ev(`(() => {
+    const row = document.getElementById("p-w2-crash");
+    const ready = !!row.querySelector(".diagnosis [data-act='retry']")
+      && !!row.querySelector(".diagnosis [data-act='copy-diagnosis']");
+    row.querySelector("[data-act='reason']").click();
+    const collapsed = !row.isConnected && !document.querySelector("#p-w2-crash .detail");
+    const search = document.getElementById("globalSearch");
+    search.value = "previous-unrelated-query";
+    render();
+    const hidden = !document.getElementById("p-w2-crash");
+    window.lsDiagnose("w2-crash");
+    return {ready, collapsed, hidden, focused: document.activeElement.id === "reason-w2-crash"};
+  })()`);
+  check("A: 诊断展示可执行动作和收起原因", local.ready && local.collapsed, JSON.stringify(local));
+  check("A: 原生诊断跳转越过旧搜索并聚焦目标", local.hidden && local.focused, JSON.stringify(local));
 
   // 「需要处理」→ 同一服务诊断（reason 是运行事实：诊断行展示 snap 当前 reason）
   const attnEv = `(() => {
@@ -206,7 +221,7 @@ async function main() {
     const reasonRow = document.getElementById("reason-w2-conflict");
     return {n, rows, focused: detail.contains(document.activeElement),
             snapReason: (p && p.reason || "").slice(0, 60),
-            reasonShown: !!(p && p.reason && reasonRow && reasonRow.textContent.includes(p.reason))};
+            reasonShown: !!(p && p.reason && reasonRow && reasonRow.querySelector("strong").textContent === p.reason.split("\\n", 1)[0])};
   })()`;
   const at = await ev(attnEv);
   check("A: 「需要处理」徽标数 = failed+conflict", at.n === 2, `badge=${at.n}`);
@@ -247,6 +262,8 @@ async function main() {
   })()`;
   const lg = await ev(logsEv, true);
   check("A: 日志按钮加载日志到详情", lg.pre, JSON.stringify(lg).slice(0, 100));
+  await ev(`(() => { open["w2-ok"] = false; window.lsDiagnose("w2-crash"); })()`);
+  await shot("w2-diagnosis-failed.png");
 
   // 修复（移除 crash 文件）→ 真实重试（API，无 open）→ available → 行恢复「打开」
   fs.unlinkSync(crashFile);

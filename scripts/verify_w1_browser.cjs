@@ -189,6 +189,26 @@ async function main() {
   })()`;
   check("状态变化重建后焦点恢复到等价操作", await ev(focusEv).then(r => r.restored), "");
 
+  const reordered = await ev(`(() => {
+    const groups = registry.registry.projects;
+    const service = groups.find(p => !p.favorite && p.services.length === 1 && document.querySelector("#p-" + p.services[0] + " [data-act='logs']"));
+    if (!service) return {fixture: false};
+    const selector = "#p-" + service.services[0] + " [data-act='logs']";
+    const before = [...document.querySelectorAll(".svc")].map(row => row.id).join(",");
+    document.querySelector(selector).focus();
+    const saved = registry;
+    try {
+      registry = JSON.parse(JSON.stringify(registry));
+      registry.registry.projects.find(p => p.id === service.id).favorite = true;
+      render();
+      return {fixture: true, moved: before !== [...document.querySelectorAll(".svc")].map(row => row.id).join(","),
+              focused: document.activeElement === document.querySelector(selector),
+              flat: !!document.querySelector(selector)?.closest(".group.single")};
+    } finally { registry = saved; render(); }
+  })()`);
+  check("项目重排后焦点仍在同一服务和动作", reordered.fixture && reordered.moved && reordered.focused, JSON.stringify(reordered));
+  check("单服务项目使用一张卡片", reordered.flat, JSON.stringify(reordered));
+
   // 3) 滚动锚点：上方内容高度变化后，视口内首个服务行保持原视觉位置
   const scrollEv = `(() => {
     const rows = [...document.querySelectorAll(".svc")];

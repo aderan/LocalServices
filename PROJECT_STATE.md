@@ -42,8 +42,9 @@ D1–D5（LOCOVE-FOUNDATION-DOMAINS-UI）2026-11-06 交付；W1–W4
 （install.sh 重发布，无 LCV）；11 个服务 browsercapture/explore/englishlearn-admin/
 shicha 可用，mediascope partial，orx-analytics 引擎无响应，其余 stopped。
 
-未确立：独立「启动 Colima」按钮（待范围确认，Goal §5）；菜单栏 popover 面板形态
-（本轮保留 NSMenu，可选迭代）。
+11-13 视觉调整以 Stitch 三稿为准。菜单栏采用统一原生面板，工作台单服务项目合并为卡片，
+故障详情将原因与操作前置。界面与交互约定见 [WORKBENCH_DESIGN.md](docs/WORKBENCH_DESIGN.md)。
+独立「启动 Colima」按钮待范围确认（Goal §5）。
 
 已知限制：WKWebView 的 AX 文本桥在菜单自动化会话后不可读（W3 原生冒烟中
 DIAGAX=0，窗口在屏；页面内容级验证经浏览器证据覆盖同一 lsDiagnose）。
@@ -99,5 +100,4 @@ DIAGAX=0，窗口在屏；页面内容级验证经浏览器证据覆盖同一 ls
 
 - 独立「启动 Colima」按钮：待用户确认范围（Goal §5 的约束：不隐含远程 Docker/重启
   其他容器/磁盘解锁）。
-- 菜单栏 popover 面板形态（Stitch menubar 稿）可选迭代；NSMenu 已满足键盘可达验收。
 - orx-analytics 失败原因与 mediascope partial 是否开线，待用户裁定。

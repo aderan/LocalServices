@@ -7,12 +7,12 @@
 <link rel="icon" type="image/png" href="/locove-logo.png">
 <style>
   :root { color-scheme: light dark;
-          --fg:#1d1d1f; --mute:#6e6e73; --line:#e5e5ea; --bg:#fff; --soft:#f5f5f7; --page:#f5f5f7; --card:#fff;
-          --ok:#1f7a3a; --warn:#9a6700; --bad:#b42318; --btn:#0b57d0;
+          --fg:#172133; --mute:#586579; --line:#dfe4eb; --bg:#f8f9fb; --soft:#eef2f7; --page:#f0f2f5; --card:#fff;
+          --ok:#167546; --warn:#875600; --bad:#b42318; --btn:#1859ce; --on-btn:#fff;
           --hair:#ececf0; }
   @media (prefers-color-scheme: dark) { :root {
           --fg:#f5f5f7; --mute:#a1a1a6; --line:#38383a; --bg:#1c1c1e; --soft:#2c2c2e; --page:#111113; --card:#1c1c1e;
-          --ok:#5bd17a; --warn:#f2c14e; --bad:#ff6b5e; --btn:#7aa7ff;
+          --ok:#5bd17a; --warn:#f2c14e; --bad:#ff6b5e; --btn:#9bbdff; --on-btn:#111827;
           --hair:#2a2a2d; } }
   * { box-sizing: border-box; }
   body { font: 14px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; margin: 0;
@@ -45,18 +45,18 @@
            background: var(--bad); color: #fff; text-align: center; margin-left: 4px; }
   .badge.mut { background: var(--mute); }
   .content { display: flex; flex-direction: column; min-width: 0; }
-  .topbar { display: flex; align-items: baseline; gap: 12px; padding: 18px 26px 6px; flex-wrap: wrap; }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 19px 26px 17px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   .topbar h2 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
   .topbar .subtitle { color: var(--mute); font-size: 12.5px; flex: 1 1 160px; }
   .topbar .tools { display: flex; gap: 8px; align-items: center; margin-left: auto; }
   #nav-settings[aria-pressed="true"] { color: var(--btn); border-color: currentColor; }
   #globalSearch { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 7px;
                   border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 220px; }
-  main { padding: 4px 26px 56px; max-width: 1080px; width: 100%; container-type: inline-size;
+  main { padding: 18px 26px 56px; max-width: 1340px; width: 100%; container-type: inline-size;
          container-name: mainc; }
   /* —— 分组：一个项目一组紧凑行（Magpie 语法：细分隔、整组一体） —— */
-  .group { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-           margin: 0 0 14px; overflow: hidden; }
+  .group { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+           margin: 0 0 12px; overflow: hidden; }
   .group-head { display: flex; align-items: center; gap: 8px; padding: 9px 14px 8px;
                 background: var(--card); border-bottom: 1px solid var(--hair); }
   .group-head h3 { font-size: 13.5px; margin: 0 auto 0 0; font-weight: 600; }
@@ -77,16 +77,32 @@
   .svc { border-top: 1px solid var(--hair); }
   .svc:first-of-type { border-top: 0; }
   .svc.expanded { background: color-mix(in srgb, var(--soft) 45%, var(--card)); }
-  /* W1：状态与构建状态合并为同一列（两行主副文本），地址列不再溢出盖住状态 */
-  .line { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(64px, 112px) max-content;
-          gap: 12px; align-items: center; padding: 7px 14px; cursor: pointer; }
+  .line { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(116px, 1fr) max-content;
+          gap: 12px; align-items: center; min-height: 64px; padding: 10px 13px 10px 15px; cursor: pointer; }
   .line > * { min-width: 0; }
+  .line:hover { background: color-mix(in srgb, var(--soft) 45%, transparent); }
   .line:focus-visible { outline: 2px solid var(--btn); outline-offset: -2px; }
-  .statecell { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
-  .name { font-weight: 600; font-size: 13.5px; overflow-wrap: anywhere; min-width: 0;
-          display: flex; flex-direction: column; gap: 1px; }
+  .service-identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .service-mark { display: grid; place-items: center; flex: 0 0 32px; height: 32px; border-radius: 8px;
+                  color: var(--btn); background: color-mix(in srgb, var(--btn) 10%, var(--card));
+                  font-size: 14px; font-weight: 650; }
+  .service-failed .service-mark, .service-conflict .service-mark {
+    color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, var(--card)); }
+  .service-stopped .service-mark { color: var(--mute); background: var(--soft); }
+  .group.single:has(.service-failed), .group.single:has(.service-conflict) {
+    border-color: color-mix(in srgb, var(--bad) 36%, var(--line)); }
+  .service-failed.expanded, .service-conflict.expanded {
+    background: color-mix(in srgb, var(--bad) 3%, var(--card)); }
+  .statecell { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; }
+  .statecell .state { white-space: nowrap; padding: 3px 7px; border-radius: 6px; background: var(--soft); }
+  .statecell .s-available, .statecell .s-external {
+    color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, var(--card)); }
+  .statecell .s-failed, .statecell .s-conflict {
+    background: color-mix(in srgb, var(--bad) 8%, var(--card)); }
+  .name { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; min-width: 0;
+          display: flex; flex-direction: column; gap: 3px; }
   .name small { display: block; font-weight: 400; color: var(--mute); font-size: 11.5px;
-                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 34vw; }
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .state { font-weight: 500; font-size: 12.5px; color: var(--mute); }
   .state::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
                    margin-right: 6px; background: var(--mute); vertical-align: 1px; }
@@ -105,6 +121,10 @@
   .domain { display: flex; flex-direction: column; align-items: flex-start; gap: 0;
     padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; background: transparent;
     color: var(--fg); font: inherit; text-align: left; min-width: 0; cursor: copy; }
+  .statecell .domain { min-width: 0; max-width: 100%; padding: 3px 7px; }
+  .statecell .domain b { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .statecell .domain small { display: none; }
+  .statecell .domain.down small { display: block; }
   .domain:hover { border-color: var(--btn); }
   .domain b { font-size: 12px; font-weight: 600; max-width: 100%; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
@@ -123,7 +143,7 @@
     font: inherit; cursor: copy; min-height: 0; }
   button, .btn { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px;
                  border: 1px solid var(--line); background: var(--soft); color: var(--fg); cursor: pointer; }
-  button.primary, .btn.primary { background: var(--btn); border-color: var(--btn); color: #fff; }
+  button.primary, .btn.primary { background: var(--btn); border-color: var(--btn); color: var(--on-btn); }
   button.ghost { background: transparent; }
   button.danger { color: var(--bad); }
   button:disabled { opacity: .55; cursor: default; }
@@ -134,6 +154,20 @@
   .reason.info { color: var(--mute); }
   /* —— 详情面板（选中行下方；概览/入口/组件/依赖/日志分层） —— */
   .detail { border-top: 1px solid var(--hair); padding: 10px 16px 12px; }
+  .diagnosis { display: grid; gap: 8px; margin: 2px 0 14px; padding: 14px 16px;
+               border: 1px solid color-mix(in srgb, var(--diagnosis-color) 30%, var(--line));
+               border-radius: 10px; background: color-mix(in srgb, var(--diagnosis-color) 6%, var(--card));
+               color: var(--diagnosis-color); --diagnosis-color: var(--bad); }
+  .diagnosis.warning { --diagnosis-color: var(--warn); }
+  .diagnosis strong { font-size: 14px; }
+  .diagnosis p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9em; overflow: auto; }
+  .diagnosis .acts { justify-content: flex-start; }
+  .diagnostic-toggle { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line));
+                       background: color-mix(in srgb, var(--bad) 7%, var(--card)); }
+  .diagnosis:focus { outline: 2px solid var(--btn); outline-offset: 2px; }
+  .log-window { border-radius: 8px; overflow: hidden; background: #20242d; color: #e0e7f1; }
+  .log-window header { padding: 7px 12px; background: #161b23; color: #b8c5d8; font-size: 11px; }
+  .log-window pre { margin: 0; background: transparent; border-radius: 0; padding: 10px 12px; }
   .detail h4 { font-size: 11px; margin: 10px 0 4px; color: var(--mute);
                text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
   .detail h4:first-child { margin-top: 2px; }
@@ -171,7 +205,7 @@
   .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
   .seg button { border: 0; border-radius: 0; background: transparent; padding: 4px 12px; }
-  .seg button.on { background: var(--btn); color: #fff; }
+  .seg button.on { background: var(--btn); color: var(--on-btn); }
   .seg button + button { border-left: 1px solid var(--line); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   /* V2.11 溢出菜单（⋯）与自绘模态 */
@@ -215,9 +249,8 @@
     .navlabel, .navspacer { display: none; }
     .navitem { width: auto; }
     main, .topbar { padding-left: 14px; padding-right: 14px; }
-    .line { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-    .domain, .statecell, .acts { grid-column: 1 / -1; }
-    .acts { justify-content: flex-start; }
+    .line { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .line .acts { justify-content: flex-start; }
     button { min-height: 36px; }
   }
 </style>
@@ -273,6 +306,7 @@ let agentsData = null, resourcesData = null, draftsData = null, removedData = nu
 let locoveData = null;   // /api/locove：dns / 入口 / 代理三层健康 + 路由事实
 let view = "all";     // all | project:<id> | attention | removed | resources | agents | drafts | new-project
 let connOk = null;
+let pendingDiagnosis = null;
 let draftEdit = {};         // draft id -> 编辑中的 service 字段
 let wiz = newWizard();
 // V2.11 自绘交互状态
@@ -349,6 +383,11 @@ function projectGroups() {
                                      directories: [], services: orphans.map(o => o.id), revision: 0},
                                 members: orphans, orphan: true});
   return out;
+}
+
+function matchesQuery(value) {
+  const q = document.getElementById("globalSearch").value.trim().toLowerCase();
+  return (value || "").toLowerCase().includes(q);
 }
 
 function matchesSearch(s) {
@@ -508,8 +547,10 @@ function scrollAnchor() {
 }
 
 function replaceMain(main, html, activeEl) {
+  const focusService = activeEl?.closest?.(".svc");
   const focusInfo = activeEl && main.contains(activeEl) && activeEl.tagName !== "BODY"
-    ? {path: domPath(main, activeEl), tag: activeEl.tagName} : null;
+    ? {path: domPath(focusService || main, activeEl), tag: activeEl.tagName,
+       service: focusService?.id, action: activeEl.dataset?.act, id: activeEl.id} : null;
   const anchor = scrollAnchor();
   const preTops = [];
   try { main.querySelectorAll("pre[id]").forEach(pre => preTops.push([pre.id, pre.scrollTop])); } catch (e) {}
@@ -528,9 +569,12 @@ function replaceMain(main, html, activeEl) {
         if (dy) window.scrollBy(0, dy);
       }
     }
-    if (focusInfo && focusInfo.path) {
-      const el = findByDomPath(main, focusInfo.path, focusInfo.tag);
-      if (el && el.focus) { try { el.focus({preventScroll: true}); } catch (e) { el.focus(); } }
+    if (focusInfo) {
+      const scope = focusInfo.service ? document.getElementById(focusInfo.service) : main;
+      const el = focusInfo.id ? document.getElementById(focusInfo.id)
+        : focusInfo.action ? scope?.querySelector(`[data-act="${focusInfo.action}"]`)
+        : focusInfo.path && scope ? findByDomPath(scope, focusInfo.path, focusInfo.tag) : null;
+      if (el?.focus) el.focus({preventScroll: true});
     }
   } catch (e) { /* 无头桩环境：恢复步骤尽力而为，不阻塞渲染 */ }
 }
@@ -602,7 +646,7 @@ function domainChip(p) {
     const sub = !ok ? "域名模块未就绪（仍可直连）"
       : served ? `:${locoveData?.domain_port || 5670} · 点击复制` : "未运行时显示不可用页";
     const url = e.public_url || `http://${e.host}:${locoveData?.domain_port || 5670}${e.open_path}`;
-    return `<button class="domain${ok ? "" : " down"}" title="${esc(url)}（点击复制）"
+    return `<button class="domain${ok ? "" : " down"}" data-act="copy-address" title="${esc(url)}（点击复制）"
       onclick="event.stopPropagation();copyText('${esc(url)}','${p.id}','地址')">
       <b>${esc(e.host)}:${locoveData?.domain_port || 5670}</b><small>${esc(sub)}</small></button>`;
   }
@@ -610,7 +654,7 @@ function domainChip(p) {
   if (!url) return "";
   let label = url;
   try { const u = new URL(url); label = u.host; } catch (err) {}
-  return `<button class="domain" title="${esc(url)}（点击复制）"
+  return `<button class="domain" data-act="copy-address" title="${esc(url)}（点击复制）"
     onclick="event.stopPropagation();copyText('${esc(url)}','${p.id}','地址')">
     <b>${esc(label)}</b><small>本地直连 · 点击复制（域名需在设置中开启）</small></button>`;
 }
@@ -633,7 +677,7 @@ function primary(p) {
   if (["available", "partial", "external"].includes(p.state))
     return p.can_open ? `<button class="primary" data-act="open" onclick="act('${p.id}','open')">打开</button>` : "";
   if (["failed", "conflict"].includes(p.state))
-    return `<button class="primary" data-act="reason" onclick="showServiceReason('${esc(p.id)}')">查看原因</button>`;
+    return `<button class="diagnostic-toggle" data-act="reason" aria-expanded="${!!open[p.id]}" onclick="toggleReason('${esc(p.id)}')">${open[p.id] ? "收起原因" : "查看原因"}</button>`;
   return `<button class="primary" data-act="start-open" onclick="act('${p.id}','start',{open:true})">启动并打开</button>`;
 }
 
@@ -680,9 +724,21 @@ function detailsHtml(p) {
   const extra = p.observe_only ? `<tr><td class="k">状态</td><td colspan="3">${esc(p.detail || "")}</td></tr>` : "";
   const src = `<tr><td class="k">源码</td><td colspan="3">${esc(p.source)}${p.code && p.code.process_started ? " · 进程启动于 " + t(p.code.process_started) : ""}${p.code && p.code.newest_change ? " · 最近源码修改 " + t(p.code.newest_change) : ""}</td></tr>`;
   const intentRow = `<tr><td class="k">运行意图</td><td colspan="3">${p.intent === "running" ? "运行" : "停止"}${p.intent_by ? " · 由 " + esc(p.intent_by) + " 设置" : ""}${p.managed_by === "external" ? " · 外部管理" : ""}</td></tr>`;
-  const reasonRow = p.reason ? `<tr id="reason-${esc(p.id)}" tabindex="-1"><td class="k">诊断</td><td colspan="3" class="${["failed","conflict"].includes(p.state) ? "" : "muted"}" style="white-space:pre-wrap">${esc(p.reason)}</td></tr>` : "";
-  const lg = logs[p.id] !== undefined ? `<pre id="logs-${p.id}">${esc(logs[p.id] || "(无日志)")}</pre>`
-    : `<p class="inline-note">日志随「日志」按钮加载到此处（最近 200 行）。</p>`;
+  const problem = ["failed", "conflict", "partial"].includes(p.state);
+  const canRetry = ["failed", "conflict"].includes(p.state) && !p.observe_only && !p.can_takeover;
+  const retryDisabled = p.op || busy(p.id) || busy("g-" + p.group) || connOk === false;
+  const diagnosis = p.reason || problem ? `<section class="diagnosis${p.state === "partial" || !problem ? " warning" : ""}" id="reason-${esc(p.id)}" tabindex="-1">
+    <strong>${esc(p.reason ? p.reason.split("\n", 1)[0] : p.label || "诊断")}</strong>
+    ${p.reason?.includes("\n") ? `<p>${esc(p.reason.slice(p.reason.indexOf("\n") + 1))}</p>` : ""}
+    <div class="acts">
+      ${canRetry ? `<button class="primary" data-act="retry" ${retryDisabled ? "disabled" : ""} onclick="act('${p.id}','start',{open:true})">重试服务</button>` : ""}
+      <button data-act="diagnostic-logs" onclick="loadLogs('${p.id}')">查看日志</button>
+      <button class="ghost" data-act="copy-diagnosis" onclick="copyDiagnosis('${p.id}')">复制诊断</button>
+    </div>
+  </section>` : "";
+  const lg = logs[p.id] !== undefined
+    ? `<div class="log-window"><header>stdout / stderr · 最近 200 行</header><pre id="logs-${p.id}">${esc(logs[p.id] || "(无日志)")}</pre></div>`
+    : `<button class="ghost" onclick="loadLogs('${p.id}')">加载最近日志</button>`;
   const eps = (p.endpoints || []).map(e => {
     const route = locoveData?.routes?.[e.host];
     const st = !route ? "未生成路由" : route.state === "proxy"
@@ -694,11 +750,12 @@ function detailsHtml(p) {
   }).join("");
   const direct = p.observe_only ? "" : `<tr><td class="k">直连地址</td><td colspan="3">${esc(p.open || "—")}<span class="note">（内部端口实现细节；域名形式为 http://域名:5670，在设置中启用）</span></td></tr>`;
   return `<div class="detail" id="detail-${esc(p.id)}" tabindex="-1">
-    <h4>概览</h4>
-    <div class="table-scroll"><table>${reasonRow}${extra}${intentRow}${src}</table></div>
-    ${eps ? `<h4>入口</h4><div class="table-scroll"><table>${eps}${direct}</table></div>` : ""}
+    ${diagnosis}
+    ${eps || direct ? `<h4>入口</h4><div class="table-scroll"><table>${eps}${direct}</table></div>` : ""}
     ${rows ? `<h4>组件</h4><div class="table-scroll"><table>${rows}</table></div>` : ""}
     ${deps ? `<h4>依赖</h4><div class="table-scroll"><table>${deps}</table></div>` : ""}
+    <h4>概览</h4>
+    <div class="table-scroll"><table>${extra}${intentRow}${src}</table></div>
     <h4>日志</h4>${lg}
   </div>`;
 }
@@ -713,27 +770,49 @@ function showServiceReason(id) {
   target?.scrollIntoView({block: "nearest"});
 }
 
-function serviceRow(p, showProject) {
+function toggleReason(id) {
+  if (!open[id]) { showServiceReason(id); return; }
+  open[id] = false;
+  render({preserveLogReading: false});
+  document.getElementById("p-" + id)?.querySelector("[data-act='reason']")?.focus();
+}
+
+function copyDiagnosis(id) {
+  const p = servicesById()[id];
+  if (!p) return;
+  const report = [p.name + " · " + p.label, p.reason,
+    ...(p.components || []).map(c => c.name + " · " + c.label),
+    ...(p.dependencies || []).map(d => d.name + " · " + (d.ok ? "可用" : "不可用"))
+  ].filter(Boolean).join("\n");
+  copyText(report, id, "已复制诊断");
+}
+
+function serviceRow(p, showProject, singleProject) {
   const code = p.code || {};
   const msg = msgs[p.id] ? `<div class="msg">${esc(msgs[p.id])}</div>` : "";
   const pjName = showProject && registry?.services ? (registry.services.find(s => s.id === p.id)?.project) : null;
   const expanded = !!open[p.id];
-  const sub = pjName ? `项目 ${esc(projectName(pjName))} · ${esc(p.id)}${p.description ? " · " + esc(p.description) : ""}`
-    : `${esc(p.id)}${p.description ? " · " + esc(p.description) : ""}`;
-  return `<section class="svc${expanded ? " expanded" : ""}" id="p-${p.id}">
-    <div class="line" role="button" tabindex="0" aria-expanded="${expanded}"
-         aria-label="服务 ${esc(p.name)}（点击展开详情）"
+  const sub = pjName ? `项目 ${esc(projectName(pjName))}${p.description ? " · " + esc(p.description) : ""}`
+    : esc(p.description || (singleProject?.name !== p.name ? singleProject?.name : "") || "");
+  const mark = Array.from(p.name || p.id)[0]?.toUpperCase() || "·";
+  const projectControl = singleProject ? `<button class="star${singleProject.favorite ? " on" : ""}" data-act="favorite"
+        aria-label="收藏项目" aria-pressed="${!!singleProject.favorite}" onclick="toggleFav('${esc(singleProject.id)}')">${singleProject.favorite ? "★" : "☆"}</button>` : "";
+  return `<section class="svc service-${esc(p.state)}${expanded ? " expanded" : ""}" id="p-${p.id}">
+    <div class="line" role="button" tabindex="0" aria-expanded="${expanded}" data-act="details"
+         aria-label="服务 ${esc(p.name)}（点击${expanded ? "收起" : "展开"}详情）"
          onclick="toggleDetail('${esc(p.id)}')"
          onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleDetail('${esc(p.id)}')}">
-      <div class="name">${esc(p.name)}<small>${sub}</small></div>
-      ${domainChip(p)}
+      <div class="service-identity"><span class="service-mark" aria-hidden="true">${esc(mark)}</span>
+        <div class="name">${esc(p.name)}${sub ? `<small title="${sub}">${sub}</small>` : ""}</div></div>
       <div class="statecell">
         <div class="state s-${p.state}">${esc(p.label)}</div>
+        ${domainChip(p)}
         ${["pending", "failed"].includes(code.state)
           ? `<div class="code ${code.state}" title="${esc(code.label)}：${esc(code.detail || "")}">${esc(code.label)}</div>` : ""}
       </div>
       <div class="acts" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()">
-        ${primary(p)}<button class="ghost" data-act="logs" onclick="loadLogs('${esc(p.id)}')" aria-label="查看日志">日志</button><button class="kebab" data-act="menu" aria-haspopup="menu" aria-label="服务菜单（编辑 / 日志 / 打开目录 / 生命周期 / 移除登记）" onclick="toggleMenu(event,'svc:${esc(p.id)}')">⋯</button>
+        ${primary(p)}<button class="ghost" data-act="logs" onclick="loadLogs('${esc(p.id)}')" aria-label="查看日志">日志</button>
+        ${projectControl}<button class="kebab" data-act="menu" aria-haspopup="menu" aria-label="更多操作" onclick="toggleMenu(event,'${singleProject ? "single:" + esc(singleProject.id) + ":" : "svc:"}${esc(p.id)}')">⋯</button>
       </div>
     </div>${msg}${expanded ? detailsHtml(p) : ""}</section>`;
 }
@@ -763,16 +842,12 @@ function viewAll() {
   const head = sys + (snap.manifest_error ? `<p class="reason">${esc(snap.manifest_error)}</p>` : "");
   const groups = projectGroups().filter(g => projectMatchesSearch(g.pj, g.members));
   const body = groups.map(({pj, members, orphan}) => {
-    const shown = members.filter(matchesSearch);
+    const shown = matchesQuery(pj.name) ? members : members.filter(matchesSearch);
     if (!shown.length && members.length) return "";
     const groupIds = [...new Set(shown.filter(m => m.group).map(m => m.group))];
-    // 单服务项目：不重复项目标题（行内名称即身份），只留收藏与项目菜单（slim header）
     const slim = !orphan && members.length === 1 && !groupIds.length;
-    const ghead = slim
-      ? `<div class="group-head"><button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${pj.id}')" aria-label="收藏">${pj.favorite ? "★" : "☆"}</button>
-         <span class="note" style="margin:0 auto 0 0">项目 ${esc(pj.name)}</span>
-         <button class="kebab" aria-haspopup="menu" aria-label="项目菜单（添加服务 / 重新识别 / 重命名 / 移除项目）" onclick="toggleMenu(event,'proj:${esc(pj.id)}')">⋯</button></div>`
-      : `<div class="group-head">
+    if (slim) return `<section class="group single" aria-label="项目 ${esc(pj.name)}">${serviceRow(shown[0], false, pj)}</section>`;
+    const ghead = `<div class="group-head">
         ${orphan ? "" : `<button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${pj.id}')" aria-label="收藏">${pj.favorite ? "★" : "☆"}</button>`}
         <h3>${esc(pj.name)}</h3>
         <span class="note">${members.length} 个服务${pj.agent && pj.agent !== "none" ? " · Agent " + esc(pj.agent) : ""}</span>
@@ -1386,6 +1461,10 @@ function serviceMenuItems(sid) {
 }
 
 function menuItems(key) {
+  if (typeof key === "string" && key.startsWith("single:")) {
+    const [, project, service] = key.split(":");
+    return [...serviceMenuItems(service), {sep: true}, ...projectMenuItems(project)];
+  }
   if (typeof key === "string" && key.startsWith("proj:")) return projectMenuItems(key.slice(5));
   if (typeof key === "string" && key.startsWith("svc:")) return serviceMenuItems(key.slice(4));
   return [];
@@ -2564,16 +2643,23 @@ async function wizManualRegister() {
 // ------------------------------------------------------------ 原生入口（macOS 主窗口菜单调用）
 
 window.lsOpenView = function(v) { setView(v); };
-window.lsShowLogs = function(id) { setView("all"); loadLogs(id); };
+window.lsShowLogs = function(id) { revealService(); loadLogs(id); };
 window.lsFocusService = function(id) {
-  view = "all"; open[id] = true; render();
+  revealService(); open[id] = true; render();
   requestAnimationFrame(() => document.getElementById("p-" + id)?.scrollIntoView({block: "center"}));
 };
 // W2：从菜单栏「查看原因」直达诊断行（展开 + 聚焦 + 滚动到诊断，与浏览器内路径同一函数）
 window.lsDiagnose = function(id) {
-  view = "all"; open[id] = true;
-  showServiceReason(id);
+  revealService();
+  if (snap) showServiceReason(id);
+  else pendingDiagnosis = id;
 };
+
+function revealService() {
+  view = "all";
+  document.getElementById("globalSearch").value = "";
+  document.activeElement?.blur?.();
+}
 
 // ------------------------------------------------------------ 刷新循环
 
@@ -2607,6 +2693,12 @@ async function refresh(manual) {
   } catch (e) {
     setConn(false);
     if (snap) for (const p of snap.projects) { p.state = "unknown"; p.label = "未知"; p.op = null; p.can_open = false; p.reason = ""; }
+  }
+  if (connOk && pendingDiagnosis) {
+    const id = pendingDiagnosis;
+    pendingDiagnosis = null;
+    window.lsDiagnose(id);
+    return;
   }
   render();
 }
