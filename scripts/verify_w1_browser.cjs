@@ -428,13 +428,31 @@ async function main() {
           const navButtons = navIds.map(id => document.getElementById('nav-' + id));
           const navLabels = navButtons.map(button => button.querySelector('span').textContent);
           const navFits = navButtons.every(button => button.scrollWidth <= button.clientWidth + 1);
-          const navTitles = navIds.map(id => {
-            view = id;
+          const resources = {ok: true, docker_context: 'local', resources: [
+            {name: 'example-db', image: 'postgres', state: 'exited'}
+          ]};
+          const savedPages = {resourcesData, agentsData, agentCandidates, removedData, expanded: open.three};
+          let pageCopy;
+          try {
+            resourcesData = resources;
+            agentsData = {connections: {codex: {status: 'available', is_default: true}}};
+            agentCandidates = {candidates: {
+              claude: {supported: true, candidates: ['/example/project']},
+              codex: {supported: false}
+            }};
+            removedData = {ok: true, services: [{sid: 'test-service', disposition: 'keep-external'}]};
+            open.three = true;
+            pageCopy = navIds.slice(0, 4).map(id => {
+              view = id;
+              render();
+              return document.getElementById('main').textContent;
+            });
+          } finally {
+            ({resourcesData, agentsData, agentCandidates, removedData} = savedPages);
+            open.three = savedPages.expanded;
+            view = 'settings';
             render();
-            return document.getElementById('viewTitle').textContent;
-          });
-          view = 'settings';
-          render();
+          }
           const switches = [];
           const actionInsets = [];
           for (const enabled of [false, true]) {
@@ -446,7 +464,7 @@ async function main() {
             actionInsets.push(rect(card).right - rect(actions[1]).right);
           }
           const diagnostics = document.querySelector('.settings-grid > div:last-child').textContent;
-          results.push({rows: rows.length, aligned: aligned(states) && aligned(addresses), rightInset, languageRect, toolbarLayout, navLabels, navTitles, navFits, switches, actionInsets,
+          results.push({rows: rows.length, aligned: aligned(states) && aligned(addresses), rightInset, languageRect, toolbarLayout, navLabels, pageCopy, navFits, switches, actionInsets,
             fits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
             mixedDiagnostics: locale === 'en' && /[\\u4e00-\\u9fff]/.test(diagnostics)});
           locoveData.settings.use_domains = false;
@@ -473,9 +491,12 @@ async function main() {
           && [...actionRects(en), ...actionRects(zh)].every(r => JSON.stringify(r) === JSON.stringify(actionRects(en)[0])),
           JSON.stringify({en: en.switches, zh: zh.switches}));
     check(`${width} 英文域名诊断使用英文`, !en.mixedDiagnostics);
-    check(`${width} 英文侧栏说明去向，并与页面标题一致`,
-          en.navLabels.join(',') === 'Needs attention,Docker resources,Agent connections,Removed projects & services,Settings'
-          && en.navLabels.every((label, i) => label === en.navTitles[i]), JSON.stringify(en.navLabels));
+    check(`${width} 英文侧栏保留简短名称`,
+          en.navLabels.join(',') === 'Issues,Resources,Agents,Removed,Settings', JSON.stringify(en.navLabels));
+    check(`${width} 管理页面按所选语言显示正文`,
+          ['Run intent', 'Port mappings', 'Test connection', 'Restore'].every((label, i) => en.pageCopy[i].includes(label))
+          && !en.pageCopy.some(copy => /[\u4e00-\u9fff]/.test(copy))
+          && ['运行意图', '端口映射', '最小调用验证', '恢复'].every((label, i) => zh.pageCopy[i].includes(label)));
     check(`${width} 中英文侧栏选项不被裁切`, en.navFits && zh.navFits);
     check(`${width} 设置无横向溢出`, en.fits && zh.fits);
   }

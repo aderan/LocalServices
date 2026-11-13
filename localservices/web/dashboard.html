@@ -324,10 +324,10 @@
   <div class="navlabel" id="navProjectsLabel" data-en="Projects">项目</div>
   <div id="navProjects"></div>
   <div class="navlabel" data-en="Manage">管理</div>
-  <button class="navitem" id="nav-attention" onclick="setView('attention')"><span data-en="Needs attention">异常</span><span id="attentionBadge" class="badge" hidden></span></button>
-  <button class="navitem" id="nav-resources" onclick="setView('resources')"><span data-en="Docker resources">资源</span></button>
-  <button class="navitem" id="nav-agents" onclick="setView('agents')"><span data-en="Agent connections">Agent</span></button>
-  <button class="navitem" id="nav-removed" onclick="setView('removed')"><span data-en="Removed projects &amp; services">已移除</span></button>
+  <button class="navitem" id="nav-attention" onclick="setView('attention')"><span data-en="Issues">异常</span><span id="attentionBadge" class="badge" hidden></span></button>
+  <button class="navitem" id="nav-resources" onclick="setView('resources')"><span data-en="Resources">资源</span></button>
+  <button class="navitem" id="nav-agents" onclick="setView('agents')"><span data-en="Agents">Agent</span></button>
+  <button class="navitem" id="nav-removed" onclick="setView('removed')"><span data-en="Removed">已移除</span></button>
   <button class="navitem" id="nav-settings" onclick="setView('settings')"><span data-en="Settings">设置</span></button>
   <div class="navspacer"></div>
   <button class="navitem add" id="nav-new-project" onclick="setView('new-project')"><span data-en="+ Add service">＋ 添加服务</span><span id="draftBadge" class="badge mut" hidden></span></button>
@@ -724,7 +724,8 @@ function renderNav() {
 // ------------------------------------------------------------ 服务行（沿用原列表能力）
 
 function copyText(text, key, label) {
-  const done = ok => { msgs[key] = ok ? (label || "已复制") + "：" + text : "复制失败（浏览器未授权剪贴板）"; render();
+  const done = ok => { msgs[key] = ok ? (label || tr("已复制", "Copied")) + " · " + text
+      : tr("复制失败（浏览器未授权剪贴板）", "Clipboard access was denied."); render();
     setTimeout(() => { delete msgs[key]; render(); }, 1800); };
   try {
     if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(text).then(() => done(true), () => done(false)); return; }
@@ -755,20 +756,21 @@ function domainChip(p) {
     const route = locoveData?.routes?.[e.host];
     const ok = locoveData?.state === "available";
     const served = route && route.state === "proxy";
-    const sub = !ok ? "域名模块未就绪（仍可直连）"
-      : served ? `:${locoveData?.domain_port || 5670} · 点击复制` : "未运行时显示不可用页";
+    const sub = !ok ? tr("域名模块未就绪（仍可直连）", "Domain access unavailable. Use the direct URL.")
+      : served ? `:${locoveData?.domain_port || 5670} · ${tr("点击复制", "Click to copy")}`
+        : tr("未运行时显示不可用页", "Shows an unavailable page when stopped");
     const url = e.public_url || `http://${e.host}:${locoveData?.domain_port || 5670}${e.open_path}`;
-    return `<button class="domain${ok ? "" : " down"}" data-act="copy-address" title="${esc(url)}（点击复制）"
-      onclick="event.stopPropagation();copyText('${esc(url)}','${p.id}','地址')">
+    return `<button class="domain${ok ? "" : " down"}" data-act="copy-address" title="${esc(url)} · ${tr("点击复制", "Click to copy")}"
+      onclick="event.stopPropagation();copyText('${esc(url)}','${p.id}')">
       <b>${esc(e.host)}:${locoveData?.domain_port || 5670}</b><small>${esc(sub)}</small></button>`;
   }
   const url = directUrl(p);
   if (!url) return "";
   let label = url;
   try { const u = new URL(url); label = u.host; } catch (err) {}
-  return `<button class="domain" data-act="copy-address" title="${esc(url)}（点击复制）"
-    onclick="event.stopPropagation();copyText('${esc(url)}','${p.id}','地址')">
-    <b>${esc(label)}</b><small>本地直连 · 点击复制（域名需在设置中开启）</small></button>`;
+  return `<button class="domain" data-act="copy-address" title="${esc(url)} · ${tr("点击复制", "Click to copy")}"
+    onclick="event.stopPropagation();copyText('${esc(url)}','${p.id}')">
+    <b>${esc(label)}</b><small>${tr("本地直连 · 点击复制（域名需在设置中开启）", "Direct URL · Click to copy")}</small></button>`;
 }
 
 async function locoveSetting(key, value) {
@@ -823,19 +825,39 @@ async function askTakeover(sid) {
 
 // V2.11：折叠区只保留技术明细；移除登记动作已上移到服务行的 ⋯ 菜单（见 serviceMenuItems）
 // <!-- 移除入口已移至服务 ⋯ 菜单（V2.11） -->
+const EN_COMPONENT_STATE = {
+  ready: "Ready", starting: "Starting", unhealthy: "Not ready", stopped: "Stopped",
+  backoff: "Waiting to retry", crashed: "Automatic recovery stopped", exited: "Exited",
+  unknown: "Unknown", idle: "Idle", ok: "Last run succeeded", failed: "Last run failed",
+  pending: "Waiting to run",
+};
+const EN_CODE_STATE = {
+  idle: "Idle", pending: "Update pending", failed: "Update failed", synced: "Up to date",
+  unknown: "Unknown", na: "Managed externally",
+};
+
+function componentLabel(component) {
+  if (component.label === "外部实例运行中") return tr(component.label, "Running externally");
+  return tr(component.label, EN_COMPONENT_STATE[component.state] || component.label);
+}
+
+function codeLabel(code) {
+  return tr(code.label, EN_CODE_STATE[code.state] || code.label);
+}
+
 function detailsHtml(p) {
   // R6 详情分层：概览（诊断优先）/ 入口 / 组件 / 依赖 / 日志；技术参数不挤服务行
   const componentAction = c => p.group && c.kind === "server" && c.running && p.state !== "external"
-    ? `<button ${p.op || busy(p.id) || busy("g-" + p.group) ? "disabled" : ""} onclick="act('${p.id}','restart',{components:['${c.id}']})">仅重启${c.id === "api" ? " API" : c.id === "web" ? "前端" : " " + esc(c.name)}</button>` : "";
+    ? `<button ${p.op || busy(p.id) || busy("g-" + p.group) ? "disabled" : ""} onclick="act('${p.id}','restart',{components:['${c.id}']})">${tr(c.id === "api" ? "仅重启 API" : c.id === "web" ? "仅重启前端" : `仅重启 ${esc(c.name)}`, `Restart ${esc(c.name)}`)}</button>` : "";
   const rows = (p.components || []).map(c =>
-    `<tr><td class="k">${esc(c.name)}</td><td>${esc(c.label)}${c.detail ? "：" + esc(c.detail) : ""}</td>
-     <td class="k">${c.kind === "generator" ? (c.last_run ? "最近 " + t(c.last_run) : "") : (c.pid ? "pid " + c.pid + " · 启动于 " + t(c.started_at) : "")}</td>
-     <td class="k">${c.code ? esc(c.code.label) + (c.code.detail ? "：" + esc(c.code.detail) : "") : ""}</td><td>${componentAction(c)}</td></tr>`).join("");
+    `<tr><td class="k">${esc(c.name)}</td><td>${esc(componentLabel(c))}${c.detail ? "：" + esc(c.detail) : ""}</td>
+     <td class="k">${c.kind === "generator" ? (c.last_run ? tr(`最近 ${t(c.last_run)}`, `Last run ${t(c.last_run)}`) : "") : (c.pid ? tr(`pid ${c.pid} · 启动于 ${t(c.started_at)}`, `PID ${c.pid} · Started ${t(c.started_at)}`) : "")}</td>
+     <td class="k">${c.code ? esc(codeLabel(c.code)) + (c.code.detail ? "：" + esc(c.code.detail) : "") : ""}</td><td>${componentAction(c)}</td></tr>`).join("");
   const deps = (p.dependencies || []).map(d =>
-    `<tr><td class="k">依赖 ${esc(d.name)}</td><td>${d.ok ? "可用" : "不可用"}${d.detail ? "：" + esc(d.detail) : ""}</td><td class="k">${d.managed ? "" : "外部管理"}</td><td class="k">${esc(d.note || "")}</td></tr>`).join("");
-  const extra = p.observe_only ? `<tr><td class="k">状态</td><td colspan="3">${esc(p.detail || "")}</td></tr>` : "";
-  const src = `<tr><td class="k">源码</td><td colspan="3">${esc(p.source)}${p.code && p.code.process_started ? " · 进程启动于 " + t(p.code.process_started) : ""}${p.code && p.code.newest_change ? " · 最近源码修改 " + t(p.code.newest_change) : ""}</td></tr>`;
-  const intentRow = `<tr><td class="k">运行意图</td><td colspan="3">${p.intent === "running" ? "运行" : "停止"}${p.intent_by ? " · 由 " + esc(p.intent_by) + " 设置" : ""}${p.managed_by === "external" ? " · 外部管理" : ""}</td></tr>`;
+    `<tr><td class="k">${tr("依赖", "Dependency")} ${esc(d.name)}</td><td>${d.ok ? tr("可用", "Available") : tr("不可用", "Unavailable")}${d.detail ? "：" + esc(d.detail) : ""}</td><td class="k">${d.managed ? "" : tr("外部管理", "Managed externally")}</td><td class="k">${esc(d.note || "")}</td></tr>`).join("");
+  const extra = p.observe_only ? `<tr><td class="k">${tr("状态", "Status")}</td><td colspan="3">${esc(p.detail || "")}</td></tr>` : "";
+  const src = `<tr><td class="k">${tr("源码", "Source")}</td><td colspan="3">${esc(p.source)}${p.code && p.code.process_started ? tr(` · 进程启动于 ${t(p.code.process_started)}`, ` · Process started ${t(p.code.process_started)}`) : ""}${p.code && p.code.newest_change ? tr(` · 最近源码修改 ${t(p.code.newest_change)}`, ` · Last source change ${t(p.code.newest_change)}`) : ""}</td></tr>`;
+  const intentRow = `<tr><td class="k">${tr("运行意图", "Run intent")}</td><td colspan="3">${p.intent === "running" ? tr("运行", "Running") : tr("停止", "Stopped")}${p.intent_by ? tr(` · 由 ${esc(p.intent_by)} 设置`, ` · Set by ${esc(p.intent_by)}`) : ""}${p.managed_by === "external" ? tr(" · 外部管理", " · Managed externally") : ""}</td></tr>`;
   const problem = ["failed", "conflict", "partial"].includes(p.state);
   const canRetry = ["failed", "conflict"].includes(p.state) && !p.observe_only && !p.can_takeover;
   const retryDisabled = p.op || busy(p.id) || busy("g-" + p.group) || connOk === false;
@@ -845,24 +867,24 @@ function detailsHtml(p) {
     ${p.reason?.includes("\n") ? `<p>${esc(p.reason.slice(p.reason.indexOf("\n") + 1))}</p>` : ""}
     <div class="acts">
       ${canRetry ? `<button class="primary" data-act="retry" ${retryDisabled ? "disabled" : ""} onclick="act('${p.id}','start',{open:true})">${tr("重试服务", "Retry service")}</button>` : ""}
-      ${canRepair ? `<button data-act="agent-repair" ${retryDisabled ? "disabled" : ""} onclick="wizRepair('${p.id}')">Agent 检查并修复</button>` : ""}
+      ${canRepair ? `<button data-act="agent-repair" ${retryDisabled ? "disabled" : ""} onclick="wizRepair('${p.id}')">${tr("Agent 检查并修复", "Diagnose and repair with an agent")}</button>` : ""}
       <button data-act="diagnostic-logs" onclick="loadLogs('${p.id}')">${tr("查看日志", "View logs")}</button>
       <button class="ghost" data-act="copy-diagnosis" onclick="copyDiagnosis('${p.id}')">${tr("复制诊断", "Copy diagnosis")}</button>
     </div>
   </section>` : "";
   const lg = logs[p.id] !== undefined
-    ? `<div class="log-window"><header>stdout / stderr · 最近 200 行</header><pre id="logs-${p.id}">${esc(logs[p.id] || "(无日志)")}</pre></div>`
+    ? `<div class="log-window"><header>stdout / stderr · ${tr("最近 200 行", "Last 200 lines")}</header><pre id="logs-${p.id}">${esc(logs[p.id] || tr("(无日志)", "(No logs)"))}</pre></div>`
     : `<button class="ghost" onclick="loadLogs('${p.id}')">${tr("加载最近日志", "Load recent logs")}</button>`;
   const eps = (p.endpoints || []).map(e => {
     const route = locoveData?.routes?.[e.host];
-    const st = !route ? "未生成路由" : route.state === "proxy"
-      ? `代理中 → 127.0.0.1:${route.upstream_port}` : "明确不可用页（503）";
-    return `<tr><td class="k">入口 ${esc(e.id)}</td>
-      <td><button class="link" onclick="copyText('${esc(e.public_url)}','${p.id}','地址')" title="点击复制">${esc(e.public_url)}</button>
-        <span class="note">（组件 ${esc(e.component)} · 落点 ${esc(e.open_path)}）</span></td>
+    const st = !route ? tr("未生成路由", "No route configured") : route.state === "proxy"
+      ? tr(`代理中 → 127.0.0.1:${route.upstream_port}`, `Forwards to 127.0.0.1:${route.upstream_port}`) : tr("明确不可用页（503）", "Unavailable (503)");
+    return `<tr><td class="k">${tr("入口", "Endpoint")} ${esc(e.id)}</td>
+      <td><button class="link" onclick="copyText('${esc(e.public_url)}','${p.id}')" title="${tr("点击复制", "Click to copy")}">${esc(e.public_url)}</button>
+        <span class="note"> (${tr("组件", "Component")} ${esc(e.component)} · ${tr("落点", "Path")} ${esc(e.open_path)})</span></td>
       <td class="k">${esc(st)}</td><td></td></tr>`;
   }).join("");
-  const direct = p.observe_only ? "" : `<tr><td class="k">直连地址</td><td colspan="3">${esc(p.open || "—")}<span class="note">（内部端口实现细节；域名形式为 http://域名:5670，在设置中启用）</span></td></tr>`;
+  const direct = p.observe_only ? "" : `<tr><td class="k">${tr("直连地址", "Direct URL")}</td><td colspan="3">${esc(p.open || "—")}<span class="note">${tr("（内部端口实现细节；域名形式为 http://域名:5670，在设置中启用）", " (Enable local domain access in Settings.)")}</span></td></tr>`;
   return `<div class="detail" id="detail-${esc(p.id)}" tabindex="-1">
     ${diagnosis}
     ${eps || direct ? `<h4>${tr("入口", "Endpoints")}</h4><div class="table-scroll"><table>${eps}${direct}</table></div>` : ""}
@@ -894,11 +916,11 @@ function toggleReason(id) {
 function copyDiagnosis(id) {
   const p = servicesById()[id];
   if (!p) return;
-  const report = [p.name + " · " + p.label, p.reason,
-    ...(p.components || []).map(c => c.name + " · " + c.label),
-    ...(p.dependencies || []).map(d => d.name + " · " + (d.ok ? "可用" : "不可用"))
+  const report = [p.name + " · " + stateLabel(p), p.reason,
+    ...(p.components || []).map(c => c.name + " · " + componentLabel(c)),
+    ...(p.dependencies || []).map(d => d.name + " · " + (d.ok ? tr("可用", "Available") : tr("不可用", "Unavailable")))
   ].filter(Boolean).join("\n");
-  copyText(report, id, "已复制诊断");
+  copyText(report, id, tr("已复制诊断", "Diagnosis copied"));
 }
 
 function serviceRow(p, showProject, singleProject) {
@@ -907,15 +929,15 @@ function serviceRow(p, showProject, singleProject) {
   const msg = feedback ? `<p class="msg service-message${feedback.bad ? " bad" : ""}" role="status">${esc(feedback.text || feedback)}</p>` : "";
   const pjName = showProject && registry?.services ? (registry.services.find(s => s.id === p.id)?.project) : null;
   const expanded = !!open[p.id];
-  const sub = pjName ? `项目 ${esc(projectName(pjName))}${p.description ? " · " + esc(p.description) : ""}`
+  const sub = pjName ? `${tr("项目", "Project")} ${esc(projectName(pjName))}${p.description ? " · " + esc(p.description) : ""}`
     : esc(p.description || (singleProject?.name !== p.name ? singleProject?.name : "") || "");
   const mark = Array.from(p.name || p.id)[0]?.toUpperCase() || "·";
   const state = esc(stateLabel(p));
   const projectControl = singleProject ? `<button class="star${singleProject.favorite ? " on" : ""}" data-act="favorite"
-        aria-label="收藏项目" aria-pressed="${!!singleProject.favorite}" onclick="toggleFav('${esc(singleProject.id)}')">${singleProject.favorite ? "★" : "☆"}</button>` : "";
+        aria-label="${tr("收藏项目", "Favorite project")}" aria-pressed="${!!singleProject.favorite}" onclick="toggleFav('${esc(singleProject.id)}')">${singleProject.favorite ? "★" : "☆"}</button>` : "";
   return `<section class="svc service-${esc(p.state)}${expanded ? " expanded" : ""}" id="p-${p.id}">
     <div class="line" role="button" tabindex="0" aria-expanded="${expanded}" data-act="details"
-         aria-label="服务 ${esc(p.name)}（点击${expanded ? "收起" : "展开"}详情）"
+         aria-label="${tr("服务", "Service")} ${esc(p.name)}"
          onclick="toggleDetail('${esc(p.id)}')"
          onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleDetail('${esc(p.id)}')}">
       <div class="service-identity"><span class="service-mark" aria-hidden="true">${esc(mark)}</span>
@@ -924,7 +946,7 @@ function serviceRow(p, showProject, singleProject) {
         <div class="state s-${p.state}" title="${state}">${state}</div>
         ${domainChip(p)}
         ${["pending", "failed"].includes(code.state)
-          ? `<div class="code ${code.state}" title="${esc(code.label)}：${esc(code.detail || "")}">${esc(code.label)}</div>` : ""}
+          ? `<div class="code ${code.state}" title="${esc(codeLabel(code))}：${esc(code.detail || "")}">${esc(codeLabel(code))}</div>` : ""}
       </div>
       <div class="acts" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()">
         ${primary(p)}<button class="ghost" data-act="logs" onclick="loadLogs('${esc(p.id)}')" aria-label="${tr("查看日志", "View logs")}">${tr("日志", "Logs")}</button>
@@ -1027,65 +1049,76 @@ function viewProject(pid) {
 
 function viewAttention() {
   if (!snap) return connOk === false
-      ? `<div class="empty">控制层不可用，服务状态未知——不代表项目已停止。</div>`
-      : `<div class="empty">加载中…</div>`;
+      ? `<div class="empty">${tr("控制层不可用，服务状态未知——不代表项目已停止。", "The control service is unavailable. Service status is unknown.")}</div>`
+      : `<div class="empty">${tr("加载中…", "Loading…")}</div>`;
   const sys = (snap.system_warnings || []).map(w =>
-    `<div class="card"><div class="card-head"><h3>系统警告</h3></div><p class="reason warn" style="margin:0 0 6px">${esc(w)}</p></div>`).join("");
+    `<div class="card"><div class="card-head"><h3>${tr("系统警告", "System warnings")}</h3></div><p class="reason warn" style="margin:0 0 6px">${esc(w)}</p></div>`).join("");
   const rows = attentionServices().filter(matchesSearch).map(p => serviceRow(p, true)).join("");
-  return sys + (rows || `<div class="empty">没有需要处理的服务。</div>`);
+  return sys + (rows || `<div class="empty">${tr("没有需要处理的服务。", "No services need attention.")}</div>`);
 }
 
 const AGENT_STATUS = {
-  not_installed: "未安装", config_only: "已安装，未登录", not_executable: "存在但不可执行",
-  needs_login: "需要登录", call_failed: "调用失败", available: "可用（已验证）"};
+  not_installed: ["未安装", "Not installed"], config_only: ["已安装，未登录", "Installed, not verified"],
+  not_executable: ["存在但不可执行", "Cannot run executable"], needs_login: ["需要登录", "Sign-in required"],
+  call_failed: ["调用失败", "Connection test failed"], available: ["可用（已验证）", "Verified"]};
 
 function viewAgents() {
-  if (!agentsData) return `<div class="empty">加载中…</div>`;
+  if (!agentsData) return `<div class="empty">${tr("加载中…", "Loading…")}</div>`;
   const conns = agentsData.connections || {};
   const cards = ["codex", "claude"].map(kind => {
     const c = conns[kind];
-    if (!c) return `<section class="card"><div class="card-head"><h3>${kind}</h3></div><p class="note">未扫描到</p></section>`;
+    if (!c) return `<section class="card"><div class="card-head"><h3>${kind}</h3></div><p class="note">${tr("未扫描到", "Not detected")}</p></section>`;
     const verifying = busy("verify-" + kind);
+    const details = !c.detail ? "" : language === "en"
+      ? `<details><summary>Connection diagnostics</summary><pre>${esc(c.detail)}</pre></details>`
+      : esc(c.detail);
     return `<section class="card">
-      <div class="card-head"><h3>${kind}${c.is_default ? '<span class="badge mut">默认</span>' : ""}</h3>
+      <div class="card-head"><h3>${kind}${c.is_default ? `<span class="badge mut">${tr("默认", "Default")}</span>` : ""}</h3>
         <div class="acts">
-          <button onclick="agentsVerify('${kind}')" ${verifying ? "disabled" : ""}>${verifying ? "验证中…（最长 120 秒）" : "最小调用验证"}</button>
-          <button onclick="agentsScan()" ${busy("scan") ? "disabled" : ""}>重新扫描</button>
-          <button onclick="agentsDefault('${kind}')" ${c.is_default || busy("default-" + kind) ? "disabled" : ""}>${c.is_default ? "已是默认" : "设为默认"}</button>
+          <button onclick="agentsVerify('${kind}')" ${verifying ? "disabled" : ""}>${verifying ? tr("验证中…（最长 120 秒）", "Testing… (up to 120 seconds)") : tr("最小调用验证", "Test connection")}</button>
+          <button onclick="agentsScan()" ${busy("scan") ? "disabled" : ""}>${tr("重新扫描", "Scan again")}</button>
+          <button onclick="agentsDefault('${kind}')" ${c.is_default || busy("default-" + kind) ? "disabled" : ""}>${c.is_default ? tr("已是默认", "Current default") : tr("设为默认", "Set as default")}</button>
         </div></div>
       <table>
-        <tr><td class="k">状态</td><td class="${c.status === "available" ? "" : c.status === "not_installed" ? "muted" : ""}" style="font-weight:600">${AGENT_STATUS[c.status] || c.status}${c.status === "available" && c.verified_at ? "（" + t(c.verified_at) + " 验证）" : ""}</td></tr>
-        <tr><td class="k">路径</td><td>${esc(c.path || "—")}</td></tr>
-        <tr><td class="k">版本</td><td>${esc(c.version || "—")}</td></tr>
-        <tr><td class="k">配置根</td><td>${esc(c.config_root || "—")}</td></tr>
-        ${c.detail ? `<tr><td class="k">说明</td><td>${esc(c.detail)}</td></tr>` : ""}
+        <tr><td class="k">${tr("状态", "Status")}</td><td class="${c.status === "available" ? "" : c.status === "not_installed" ? "muted" : ""}" style="font-weight:600">${esc(tr(...(AGENT_STATUS[c.status] || [c.status, c.status])))}${c.status === "available" && c.verified_at ? tr(`（${t(c.verified_at)} 验证）`, ` · Verified ${t(c.verified_at)}`) : ""}</td></tr>
+        <tr><td class="k">${tr("路径", "Executable")}</td><td>${esc(c.path || "—")}</td></tr>
+        <tr><td class="k">${tr("版本", "Version")}</td><td>${esc(c.version || "—")}</td></tr>
+        <tr><td class="k">${tr("配置根", "Configuration directory")}</td><td>${esc(c.config_root || "—")}</td></tr>
+        ${details ? `<tr><td class="k">${tr("说明", "Details")}</td><td>${details}</td></tr>` : ""}
       </table></section>`;
   }).join("");
   const manual = busy("scan");
   return cards + candidatesCard() + `<section class="card">
-    <div class="card-head"><h3>手动指定路径</h3></div>
-    <div class="field"><input id="agentPathInput" placeholder="/path/to/codex 或包含它的目录" aria-label="手动 agent 路径">
-      <button onclick="agentsScan(document.getElementById('agentPathInput').value)" ${manual ? "disabled" : ""}>${manual ? "扫描中…" : "按此路径扫描"}</button>
-      <span class="inline-note">验证为真实最小调用，最长 120 秒；超时请重试</span></div>
+    <div class="card-head"><h3>${tr("手动指定路径", "Find an agent by path")}</h3></div>
+    <div class="field"><input id="agentPathInput" placeholder="${tr("/path/to/codex 或包含它的目录", "/path/to/codex or its directory")}" aria-label="${tr("手动 agent 路径", "Agent executable or directory")}">
+      <button onclick="agentsScan(document.getElementById('agentPathInput').value)" ${manual ? "disabled" : ""}>${manual ? tr("扫描中…", "Scanning…") : tr("按此路径扫描", "Scan this path")}</button>
+      <span class="inline-note">${tr("验证为真实最小调用，最长 120 秒；超时请重试", "A connection test can take up to 120 seconds. Try again if it times out.")}</span></div>
   </section>`;
 }
 
 // 已知工具能以受支持方式提供的项目候选（或明确不支持）；导入只建项目，不注册服务、不启动
 function candidatesCard() {
   const c = agentCandidates?.candidates || {};
-  let html = `<section class="card"><div class="card-head"><h3>已知工具的项目候选</h3></div>`;
+  let html = `<section class="card"><div class="card-head"><h3>${tr("已知工具的项目候选", "Project directories found by agents")}</h3></div>`;
   for (const kind of ["claude", "codex"]) {
     const e = c[kind];
-    if (!e) { html += `<p class="note">${kind}：未知</p>`; continue; }
-    if (!e.supported) { html += `<p class="note">${kind}：${esc(e.reason || "不支持")}</p>`; continue; }
+    if (!e) { html += `<p class="note">${kind} · ${tr("未知", "Not checked")}</p>`; continue; }
+    if (!e.supported) {
+      const explanation = kind === "codex"
+        ? "Use Add service to choose a Codex project directory."
+        : "No project directories could be read from the local Claude configuration.";
+      html += `<p class="note">${kind} · ${esc(tr(e.reason || "不支持", explanation))}</p>`;
+      continue;
+    }
     const registered = new Set((registry?.registry?.projects || []).flatMap(p => (p.directories || []).map(d => d.path)));
     const list = (e.candidates || []).map(p => ({p, known: registered.has(p)}));
     const fresh = list.filter(x => !x.known);
-    html += `<p class="note">${kind}：${fresh.length} 个未登记目录（已登记 ${list.length - fresh.length} 个已去重隐藏）</p>`;
+    html += `<p class="note">${kind} · ${tr(`${fresh.length} 个未登记目录（已登记 ${list.length - fresh.length} 个已去重隐藏）`,
+      `New directories: ${fresh.length} · Already registered: ${list.length - fresh.length}`)}</p>`;
     html += `<div class="table-scroll"><table>` + fresh.slice(0, 12).map(x =>
-      `<tr><td>${esc(x.p)}</td><td><button onclick="importCandidate('${esc(x.p).replace(/'/g, "&#39;")}')">导入为项目</button></td></tr>`).join("") + `</table></div>`;
+      `<tr><td>${esc(x.p)}</td><td><button onclick="importCandidate('${esc(x.p).replace(/'/g, "&#39;")}')">${tr("导入为项目", "Import as project")}</button></td></tr>`).join("") + `</table></div>`;
   }
-  html += `<p class="inline-note">导入只创建项目并关联目录，不注册服务、不启动任何进程。</p></section>`;
+  html += `<p class="inline-note">${tr("导入只创建项目并关联目录，不注册服务、不启动任何进程。", "Importing creates a project and links its directory. Add services separately when you’re ready.")}</p></section>`;
   return html;
 }
 
@@ -1097,7 +1130,7 @@ async function importCandidate(path) {
   const name = path.split("/").filter(Boolean).pop() || path;
   try {
     const [code, res] = await api("POST", "/api/projects", {name, directories: [{path}]});
-    if (code !== 200) { alert(res?.error || "导入失败"); return; }
+    if (code !== 200) { alert(res?.error || tr("导入失败", "Could not import the project")); return; }
     await refresh();
     setView("project:" + (res.project?.id || res.id || ""));
   } catch (e) { setConn(false); }
@@ -1110,10 +1143,10 @@ function consumerProject(sid) {
 }
 
 function viewResources() {
-  if (!resourcesData) return `<div class="empty">加载中…</div>`;
-  if (!resourcesData.ok) return `<section class="card"><div class="card-head"><h3>Docker 不可达</h3></div>
-    <p class="reason warn" style="margin:0 0 6px">${esc(resourcesData.error || "未知原因")}</p>
-    <p class="note">共享资源仅做只读盘点，不影响其他功能。</p></section>`;
+  if (!resourcesData) return `<div class="empty">${tr("加载中…", "Loading…")}</div>`;
+  if (!resourcesData.ok) return `<section class="card"><div class="card-head"><h3>${tr("Docker 不可达", "Docker unavailable")}</h3></div>
+    <p class="reason warn" style="margin:0 0 6px">${esc(resourcesData.error || tr("未知原因", "Unknown error"))}</p>
+    <p class="note">${tr("共享资源仅做只读盘点，不影响其他功能。", "Start Docker or check the active context to see its containers.")}</p></section>`;
   const q = document.getElementById("globalSearch").value.trim().toLowerCase();
   const rows = (resourcesData.resources || []).filter(r => !q ||
       r.name.toLowerCase().includes(q) || (r.image || "").toLowerCase().includes(q)).map(r => {
@@ -1122,24 +1155,30 @@ function viewResources() {
     const rid = r.id || ("container:" + r.name);
     const cons = resourceConsumers(rid);
     const projects = [...new Set(cons.map(x => consumerProject(x.service)).filter(Boolean))];
-    const ownership = !cons.length ? "未被引用"
-      : projects.length > 1 ? "共享（多项目引用）"
-      : `由 ${cons.map(x => esc(x.service)).join("、")} 使用`;
-    const consCell = cons.map(x =>
-      `${esc(x.service)}（via ${esc(x.via || "dependency")}）[${x.running ? "运行中" : "未运行"}]`).join("<br>") || "—";
+    const ownership = !cons.length ? tr("未被引用", "Unused by registered services")
+      : projects.length > 1 ? tr("共享（多项目引用）", "Shared across projects")
+      : tr(
+        `由 ${cons.map(x => esc(x.service)).join("、")} 使用`,
+        `Used by ${cons.map(x => esc(x.service)).join(", ")}`);
+    const consCell = cons.map(x => {
+      const service = esc(x.service);
+      const via = esc(x.via || "dependency");
+      return tr(`${service}（via ${via}）[${x.running ? "运行中" : "未运行"}]`,
+        `${service} (${via}) · ${x.running ? "Running" : "Stopped"}`);
+    }).join("<br>") || "—";
     const binds = (r.bind_mounts || []).map(b => `${esc(b.source)}→${esc(b.target)}`).join("<br>") || "—";
-    const stateCell = esc(r.state) + (r.state && r.state !== "running" ? ` <span class="badge mut">已停止</span>` : "");
+    const stateCell = esc(r.state) + (r.state && r.state !== "running" ? ` <span class="badge mut">${tr("已停止", "Stopped")}</span>` : "");
     return `<tr><td style="font-weight:600">${esc(r.name)}</td><td>${esc(r.image || "—")}</td>
-      <td>${stateCell}</td><td>${esc(r.health || "none")}</td>
+      <td>${stateCell}</td><td>${esc(r.health || tr("无", "None"))}</td>
       <td>${esc(r.compose_project || "—")}${r.compose_service ? " / " + esc(r.compose_service) : ""}</td>
       <td>${ports}</td><td>${esc((r.volumes || []).join(", ") || "—")}</td>
       <td>${binds}</td><td>${consCell}</td><td>${ownership}</td></tr>`;
   }).join("");
   return `<section class="card">
-    <div class="card-head"><h3>共享资源</h3><span class="note">docker context：${esc(resourcesData.docker_context || "default")} · 只读盘点（含已停止容器）· 归属/消费者由清单推导</span></div>
+    <div class="card-head"><h3>${tr("共享资源", "Containers")}</h3><span class="note">${tr("Docker 上下文", "Docker context")} · ${esc(resourcesData.docker_context || "default")} · ${tr("只读盘点（含已停止容器）", "Includes stopped containers")}</span></div>
     <div class="table-scroll"><table>
-      <tr><td class="k">名称</td><td class="k">镜像</td><td class="k">状态</td><td class="k">健康</td><td class="k">compose 项目</td><td class="k">端口映射</td><td class="k">卷</td><td class="k">bind_mounts</td><td class="k">消费者</td><td class="k">归属</td></tr>
-      ${rows || `<tr><td class="muted">（无容器）</td></tr>`}
+      <tr><td class="k">${tr("名称", "Name")}</td><td class="k">${tr("镜像", "Image")}</td><td class="k">${tr("状态", "Status")}</td><td class="k">${tr("健康", "Health")}</td><td class="k">${tr("compose 项目", "Compose project")}</td><td class="k">${tr("端口映射", "Port mappings")}</td><td class="k">${tr("卷", "Volumes")}</td><td class="k">${tr("bind_mounts", "Bind mounts")}</td><td class="k">${tr("消费者", "Used by")}</td><td class="k">${tr("归属", "Ownership")}</td></tr>
+      ${rows || `<tr><td class="muted">${tr("（无容器）", "No matching containers")}</td></tr>`}
     </table></div></section>`;
 }
 
@@ -1717,9 +1756,9 @@ async function groupAct(gid, action) {
 async function loadLogs(id) {
   try {
     const [, res] = await api("GET", `/api/projects/${id}/logs?lines=200`);
-    logs[id] = Object.entries(res.logs || {}).map(([c, txt]) => `===== ${c}\n${txt || "(无日志)"}`).join("\n\n");
+    logs[id] = Object.entries(res.logs || {}).map(([c, txt]) => `===== ${c}\n${txt || tr("(无日志)", "(No logs)")}`).join("\n\n");
     open[id] = true;
-  } catch (e) { logs[id] = "无法连接控制服务"; setConn(false); }
+  } catch (e) { logs[id] = tr("无法连接控制服务", "Could not connect to the control service"); setConn(false); }
   render();
   requestAnimationFrame(() => document.getElementById(`logs-${id}`)?.scrollIntoView({block: "nearest"}));
 }
@@ -2268,34 +2307,34 @@ async function loadRemoved() {
     const [c, d] = await api("GET", "/api/removed");
     removedData = c === 200 && d && d.ok ? d : {ok: false, error: (d && d.error) || `HTTP ${c}`};
     setConn(true);
-  } catch (e) { removedData = {ok: false, error: "无法连接控制服务"}; setConn(false); }
+  } catch (e) { removedData = {ok: false, error: tr("无法连接控制服务", "Could not connect to the control service")}; setConn(false); }
   render();
 }
 
 function viewRemoved() {
-  if (!removedData) return `<div class="empty">加载中…</div>`;
-  if (!removedData.ok) return `<section class="card"><div class="card-head"><h3>已移除登记</h3></div>
-    <p class="reason warn" style="margin:0 0 6px">${esc(removedData.error || "不可用")}</p>
-    <p class="note">后台可能尚未提供该端点（501）；稍后重试。</p>
-    <div class="acts" style="justify-content:flex-start"><button onclick="loadRemoved()">重新加载</button></div></section>`;
+  if (!removedData) return `<div class="empty">${tr("加载中…", "Loading…")}</div>`;
+  if (!removedData.ok) return `<section class="card"><div class="card-head"><h3>${tr("已移除登记", "Removed registrations")}</h3></div>
+    <p class="reason warn" style="margin:0 0 6px">${esc(removedData.error || tr("不可用", "Unavailable"))}</p>
+    <p class="note">${tr("后台可能尚未提供该端点（501）；稍后重试。", "Try loading removed registrations again.")}</p>
+    <div class="acts" style="justify-content:flex-start"><button onclick="loadRemoved()">${tr("重新加载", "Reload")}</button></div></section>`;
   const svcs = (removedData.services || []).map(s => `
     <tr><td style="font-weight:600">${esc(s.sid)}</td><td>${esc(s.project_id || "—")}</td>
-        <td>${esc(s.disposition || "")}</td><td>${esc(s.removed_at || "—")}</td>
-        <td><label class="radio"><input type="radio" name="ri-${esc(s.sid)}" checked onchange="removedIntents['${esc(s.sid)}']='stopped'">停止</label>
-            <label class="radio"><input type="radio" name="ri-${esc(s.sid)}" onchange="removedIntents['${esc(s.sid)}']='running'">运行意图</label></td>
-        <td><button class="primary" onclick="restoreService('${esc(s.sid)}')" ${busy("rst-" + s.sid) ? "disabled" : ""}>${busy("rst-" + s.sid) ? "恢复中…" : "恢复"}</button></td></tr>`).join("");
+        <td>${esc(({stop: tr("已停止", "Stopped"), "keep-external": tr("保留运行", "Left running")})[s.disposition] || s.disposition || "")}</td><td>${esc(s.removed_at || "—")}</td>
+        <td><label class="radio"><input type="radio" name="ri-${esc(s.sid)}" checked onchange="removedIntents['${esc(s.sid)}']='stopped'">${tr("停止", "Stopped")}</label>
+            <label class="radio"><input type="radio" name="ri-${esc(s.sid)}" onchange="removedIntents['${esc(s.sid)}']='running'">${tr("运行意图", "Keep run intent")}</label></td>
+        <td><button class="primary" onclick="restoreService('${esc(s.sid)}')" ${busy("rst-" + s.sid) ? "disabled" : ""}>${busy("rst-" + s.sid) ? tr("恢复中…", "Restoring…") : tr("恢复", "Restore")}</button></td></tr>`).join("");
   const projs = (removedData.projects || []).map(p => `
     <tr><td style="font-weight:600">${esc(p.pid)}</td><td>${esc((p.services || []).join(", ") || "—")}</td><td>${esc(p.removed_at || "—")}</td>
-        <td><label class="radio"><input type="radio" name="ri-p-${esc(p.pid)}" checked onchange="removedIntents['p:${esc(p.pid)}']='stopped'">停止</label>
-            <label class="radio"><input type="radio" name="ri-p-${esc(p.pid)}" onchange="removedIntents['p:${esc(p.pid)}']='running'">运行意图</label></td>
-        <td><button class="primary" onclick="restoreProject('${esc(p.pid)}')" ${busy("rst-p-" + p.pid) ? "disabled" : ""}>${busy("rst-p-" + p.pid) ? "恢复中…" : "恢复项目"}</button></td></tr>`).join("");
+        <td><label class="radio"><input type="radio" name="ri-p-${esc(p.pid)}" checked onchange="removedIntents['p:${esc(p.pid)}']='stopped'">${tr("停止", "Stopped")}</label>
+            <label class="radio"><input type="radio" name="ri-p-${esc(p.pid)}" onchange="removedIntents['p:${esc(p.pid)}']='running'">${tr("运行意图", "Keep run intent")}</label></td>
+        <td><button class="primary" onclick="restoreProject('${esc(p.pid)}')" ${busy("rst-p-" + p.pid) ? "disabled" : ""}>${busy("rst-p-" + p.pid) ? tr("恢复中…", "Restoring…") : tr("恢复项目", "Restore project")}</button></td></tr>`).join("");
   const svcTable = svcs ? `<div class="table-scroll"><table>
-    <tr><td class="k">服务</td><td class="k">原项目</td><td class="k">处置</td><td class="k">移除时间</td><td class="k">恢复后意图</td><td class="k"></td></tr>${svcs}</table></div>` : "";
+    <tr><td class="k">${tr("服务", "Service")}</td><td class="k">${tr("原项目", "Original project")}</td><td class="k">${tr("处置", "On removal")}</td><td class="k">${tr("移除时间", "Removed at")}</td><td class="k">${tr("恢复后意图", "Run intent after restore")}</td><td class="k"></td></tr>${svcs}</table></div>` : "";
   const projTable = projs ? `<div class="table-scroll"><table>
-    <tr><td class="k">项目</td><td class="k">成员</td><td class="k">移除时间</td><td class="k">恢复后意图</td><td class="k"></td></tr>${projs}</table></div>` : "";
+    <tr><td class="k">${tr("项目", "Project")}</td><td class="k">${tr("成员", "Services")}</td><td class="k">${tr("移除时间", "Removed at")}</td><td class="k">${tr("恢复后意图", "Run intent after restore")}</td><td class="k"></td></tr>${projs}</table></div>` : "";
   return `<section class="card">
-    <div class="card-head"><h3>已移除登记</h3><span class="note">恢复绝不自动启动；「运行意图」仅恢复意图，不立即拉起</span></div>
-    ${svcTable || projTable ? svcTable + projTable : `<div class="empty">当前没有已移除的登记。</div>`}
+    <div class="card-head"><h3>${tr("已移除登记", "Removed registrations")}</h3><span class="note">${tr("恢复绝不自动启动；「运行意图」仅恢复意图，不立即拉起", "Restoring an entry adds it back to the workbench. Start it separately when needed.")}</span></div>
+    ${svcTable || projTable ? svcTable + projTable : `<div class="empty">${tr("当前没有已移除的登记。", "No removed registrations.")}</div>`}
   </section>`;
 }
 
@@ -2305,8 +2344,8 @@ async function restoreService(sid) {
   try {
     const [code, res] = await api("POST", `/api/removed/services/${sid}/restore`, {intent});
     msgs[sid] = code === 200 && res && res.ok
-        ? `已恢复 ${sid}（意图 ${intent}，未自动启动）` : ((res && res.error) || `恢复失败（HTTP ${code}）`);
-  } catch (e) { msgs[sid] = "无法连接控制服务"; setConn(false); }
+        ? tr(`已恢复 ${sid}（意图 ${intent}，未自动启动）`, `Restored ${sid} with run intent set to ${intent}.`) : ((res && res.error) || tr(`恢复失败（HTTP ${code}）`, `Restore failed (HTTP ${code}).`));
+  } catch (e) { msgs[sid] = tr("无法连接控制服务", "Could not connect to the control service"); setConn(false); }
   pending["rst-" + sid] = null;
   await refresh();
   await loadRemoved();
@@ -2318,8 +2357,8 @@ async function restoreProject(pid) {
   try {
     const [code, res] = await api("POST", `/api/removed/projects/${pid}/restore`, {intent});
     msgs["p:" + pid] = code === 200 && res && res.ok
-        ? `已恢复项目 ${pid}（意图 ${intent}，未自动启动）` : ((res && res.error) || `恢复失败（HTTP ${code}）`);
-  } catch (e) { msgs["p:" + pid] = "无法连接控制服务"; setConn(false); }
+        ? tr(`已恢复项目 ${pid}（意图 ${intent}，未自动启动）`, `Restored project ${pid} with run intent set to ${intent}.`) : ((res && res.error) || tr(`恢复失败（HTTP ${code}）`, `Restore failed (HTTP ${code}).`));
+  } catch (e) { msgs["p:" + pid] = tr("无法连接控制服务", "Could not connect to the control service"); setConn(false); }
   pending["rst-p-" + pid] = null;
   await refresh();
   await loadRemoved();

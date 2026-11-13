@@ -134,8 +134,7 @@ class ReviewFixCStaticTest(unittest.TestCase):
     # ---- R08：资源视图消费者/归属/复用 ----
 
     def test_r08_resources_columns(self):
-        res = self.html[self.html.index("function viewResources"):
-                        self.html.index("function viewResources") + 2600]
+        res = self.html.split("function viewResources()", 1)[1].split("function draftSummary(", 1)[0]
         for anchor in ("消费者", "bind_mounts", "归属", "共享（多项目引用）", "已停止"):
             self.assertIn(anchor, res)
         # 消费者行形状：service（via …）[运行中|未运行]
