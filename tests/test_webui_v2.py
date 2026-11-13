@@ -132,8 +132,8 @@ class DashboardV2StaticTest(unittest.TestCase):
     def test_disambiguation_is_named_function(self):
         # 必须是具名可测函数（不在 render 内联），且在联合识别批次完成时调用
         import re
-        self.assertRegex(self.html, r"function disambiguateIds\(cands\)")
-        self.assertIn("disambiguateIds(wiz.candidates)", self.html)
+        self.assertRegex(self.html, r"function disambiguateIds\(cands, w = wiz\)")
+        self.assertIn("disambiguateIds(w.candidates, w)", self.html)
         self.assertIn("多目录同名服务已分配稳定 ID，可修改", self.html)
 
     def test_candidate_id_remains_editable(self):

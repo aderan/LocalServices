@@ -132,7 +132,7 @@ const dispatchKey = (key, target) => {
     fn({key, target: target || null, preventDefault() {}, stopPropagation() {}});
 };
 
-const runner = new Function(script + "\n; return {render, api, refresh, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
+const runner = new Function(script + "\n; return {render, api, refresh, wizField, wizNewTask, wizSelectTask, wizardTarget, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
 const page = runner();
 const out = [];
 const SECTIONS = [];
@@ -747,6 +747,32 @@ try {
   check("R6: 分组为整组紧凑行容器（group + 细分隔行）",
         group.includes('class="group"') && group.includes('class="svc'), group.slice(0, 80));
 } catch (e) { check("R6 workbench", false, e.message); }
+
+section("independent recognition tasks");
+{
+  const oldWizard = page.wizGet();
+  const oldRegistry = page.regGet();
+  try {
+    page.wizNewTask();
+    const first = page.wizGet();
+    page.wizField("dir", srcA + "/Buildbase/");
+    check("目录变更自动填写项目名", first.name === "Buildbase");
+    page.wizField("name", "My app");
+    page.wizField("dir", srcA + "/Renamed");
+    check("切换目录保留手填项目名", first.name === "My app");
+    first.job = {state: "running"};
+    page.wizNewTask();
+    check("另开任务显示独立表单", page.wizGet() !== first && page.wizGet().dir === "");
+    page.wizSelectTask(first.taskId);
+    check("切回原任务保留识别状态", page.wizGet() === first && first.job.state === "running");
+    page.setRegistry({registry: {projects: [{id: "empty-fixture", name: "Empty fixture", services: [], revision: 3, directories: [{path: first.dir}]}]}});
+    check("空项目隐藏于服务列表", !page.viewAll().includes("Empty fixture"));
+    check("重新选择关联目录时复用隐藏的空项目", page.wizardTarget(first)?.id === "empty-fixture");
+  } finally {
+    page.setWiz(oldWizard);
+    page.setRegistry(oldRegistry);
+  }
+}
 
 section("analysis activity");
 {

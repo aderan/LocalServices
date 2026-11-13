@@ -66,6 +66,23 @@ class ClaudeAdapter:
         elif kind == "result":
             yield "cli_result"
 
+    @staticmethod
+    def display_output(event: dict):
+        if event.get("type") == "assistant":
+            for block in (event.get("message") or {}).get("content", []):
+                if block.get("type") == "text":
+                    yield block.get("text", "")
+                elif block.get("type") == "tool_use":
+                    tool = block.get("name")
+                    target_key = {"Read": "file_path", "Glob": "pattern", "Grep": "pattern"}.get(tool)
+                    if target_key:
+                        args = block.get("input") or {}
+                        target = args.get(target_key) or ""
+                        location = args.get("path")
+                        yield f"{tool}: {target}" + (f" ({location})" if location else "")
+        elif event.get("type") == "result" and event.get("is_error"):
+            yield str(event.get("result") or event.get("errors") or event.get("subtype", ""))
+
     def parse_output(self, raw: str | bytes, last_message_path: str | None = None) -> dict:
         """Parse the final stream event or a legacy JSON result envelope."""
         if isinstance(raw, bytes):

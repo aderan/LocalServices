@@ -89,6 +89,10 @@
   .star { border: 0; background: none; cursor: pointer; font-size: 15px; line-height: 1; padding: 2px 4px;
           color: var(--mute); }
   .star.on { color: var(--warn); }
+  .recognition-task { display: grid; grid-template-columns: minmax(0, 1fr) auto; text-align: left;
+                      gap: 2px 10px; width: 100%; margin: 4px 0; background: var(--card); }
+  .recognition-task[aria-pressed="true"] { border-color: var(--btn); background: var(--soft); }
+  .recognition-task small { grid-column: 1 / -1; color: var(--mute); overflow-wrap: anywhere; }
   .note { color: var(--mute); font-size: 12px; margin: 2px 0 8px; }
   /* —— 服务行（Magpie：主副文本 + 行尾对齐 + 细分隔；整行可点开详情） —— */
   .svc { border-top: 1px solid var(--hair); }
@@ -325,6 +329,7 @@ let view = "all";     // all | project:<id> | attention | removed | resources | 
 let connOk = null;
 let pendingDiagnosis = null;
 let draftEdit = {};         // draft id -> 编辑中的 service 字段
+const recognitionTasks = [];
 let wiz = newWizard();
 // V2.11 自绘交互状态
 let modalState = null;      // 打开中的模态（{overlay, dialog, okBtn}）；轮询刷新期间不重建内容区
@@ -336,7 +341,7 @@ const removedIntents = {};        // 恢复目标 -> "stopped" | "running"（缺
 
 function newWizard() {
   return {step: "dir", dir: "", name: "", agent: "", project: null,
-          jobId: null, job: null, pollTimer: null, error: "",
+          jobId: null, job: null, error: "",
           candidates: [], unresolved: [], results: {}, registering: false, manual: false,
           diffs: {},        // 候选下标 → dry_run 差异（与已登记服务的对比预览）
           dirs: [],         // 多目录联合识别：待分析目录队列
@@ -390,7 +395,8 @@ function projectGroups() {
   const projects = (registry?.registry?.projects || []).slice()
     .sort((a, b) => (b.favorite - a.favorite) || a.name.localeCompare(b.name, "zh-CN"));
   for (const pj of projects) {
-    const members = (pj.services || []).map(s => byId[s]).filter(Boolean);
+    if (!(pj.services || []).length) continue;
+    const members = pj.services.map(s => byId[s]).filter(Boolean);
     if (!members.length) { out.push({pj, members: []}); continue; }
     members.forEach(m => claimed.add(m.id));
     out.push({pj, members});
@@ -1292,7 +1298,8 @@ function analysisActivity(job) {
     detect_agent: ["检查 Agent 连接", "Checking Agent connection"],
     scan_directory: ["扫描目录，收集识别线索", "Scanning the directory for evidence"],
     launch_cli: ["已请求启动 CLI，等待事件", "Starting the CLI and waiting for activity"],
-    cli_ready: ["Claude CLI 已就绪，等待模型响应", "Claude CLI is ready and waiting for the model"],
+    cli_ready: ["CLI 已就绪，等待模型响应", "CLI is ready and waiting for the model"],
+    tool_command: ["Codex 正在检查工程", "Codex is inspecting the project"],
     model_response: ["开始收到模型响应", "Receiving a model response"],
     tool_read: ["Claude 发起文件读取", "Claude requested a file read"],
     tool_glob: ["Claude 发起文件查找", "Claude requested a file search"],
@@ -1304,7 +1311,9 @@ function analysisActivity(job) {
   const latest = events.at(-1);
   const now = Date.now() / 1000;
   const elapsed = Math.max(0, Math.floor(now - (job.started_at || job.created_at || now)));
-  const quietFor = latest ? Math.floor(now - latest.at) : 0;
+  const output = job.output || [];
+  const lastEventAt = Math.max(latest?.at || 0, output.at(-1)?.at || 0);
+  const quietFor = lastEventAt ? Math.floor(now - lastEventAt) : 0;
   const status = job.state === "queued" ? tr("等待识别任务开始", "Waiting for the analysis job to start")
     : job.state === "failed" ? tr("识别未完成", "Analysis failed")
     : job.state === "done" ? tr("识别完成", "Analysis complete")
@@ -1312,37 +1321,58 @@ function analysisActivity(job) {
   return `<p class="note" role="status">${esc(status)}</p>
     ${job.state === "running" ? `<p class="note">${tr(`已运行 ${elapsed} 秒 · CLI 超时限制 ${job.timeout || 240} 秒`, `${elapsed}s elapsed · CLI timeout ${job.timeout || 240}s`)}
       ${quietFor >= 10 ? tr(` · 已有 ${quietFor} 秒没有新活动`, ` · No new activity for ${quietFor}s`) : ""}</p>` : ""}
-    ${events.length ? `<details id="analysis-activity" ${wiz.activityOpen ? "open" : ""} ontoggle="wiz.activityOpen = this.open">
+    ${events.length ? `<details id="analysis-activity" ${wiz.activityOpen ? "open" : ""} ontoggle="if (this.isConnected) wiz.activityOpen = this.open">
       <summary>${tr("识别活动", "Analysis activity")}</summary>
       <ul>${events.map(entry => `<li><span class="note">${esc(new Date(entry.at * 1000).toLocaleTimeString(language, {hour12: false}))}</span> ${esc(tr(...labels[entry.event]))}</li>`).join("")}</ul>
-    </details>` : ""}`;
+    </details>` : ""}
+    <details id="analysis-output" ${wiz.outputOpen ? "open" : ""} ontoggle="if (this.isConnected) wiz.outputOpen = this.open">
+      <summary>CLI 输出</summary>
+      <pre id="analysis-output-lines">${output.length ? output.map(entry =>
+        esc(new Date(entry.at * 1000).toLocaleTimeString(language, {hour12: false}) + "  " + entry.text)).join("\n")
+        : "尚未收到可展示的 CLI 输出。"}</pre>
+    </details>`;
+}
+
+function recognitionTaskList() {
+  return `<section class="card">
+    <div class="card-head"><h3>识别任务</h3><button id="wizNewTask" onclick="wizNewTask()">新建识别任务</button></div>
+    ${recognitionTasks.map(task => {
+      const status = task.registering || task.manualRegistering ? "登记中" : task.registered ? "已登记"
+        : ({queued: "排队中", running: "识别中", done: task.candidates.length ? "待核对" : "无可用候选",
+            failed: "识别失败"})[task.job?.state] || (task.step === "job" ? "提交中" : "待选择目录");
+      return `<button class="recognition-task" onclick="wizSelectTask(${task.taskId})" aria-pressed="${task === wiz}">
+        <strong>${esc(task.name || "新任务")}</strong><span>${esc(status)}</span>
+        ${task.dir ? `<small>${esc(task.dir)}${task.agent ? " · " + esc(task.agent) : ""}</small>` : ""}
+      </button>`;
+    }).join("")}
+  </section>`;
 }
 
 function viewNewProject() {
   const w = wiz;
   const bridge = nativeBridge();
-  // R6：草稿归入添加流程——未完成的登记在添加页顶部继续补全（设置页不再混放草稿）
-  const draftsTop = draftCards();
+  const hasPresets = !!w.presetDirs?.length;
+  const pageTop = recognitionTaskList() + draftCards();
   const dirStep = `
     <section class="card">
-      <div class="card-head"><h3>1 · 目录与项目</h3></div>
+      <div class="card-head"><h3>目录与项目</h3></div>
       <div class="field"><label>项目目录</label>
-        <input id="wizDir" value="${esc(w.dir)}" placeholder="/绝对/路径" oninput="wizField('dir',this.value)" aria-label="项目目录">
-        <button onclick="chooseDirectory()">${bridge ? "选择目录…" : "手动输入路径"}</button>
+        <input id="wizDir" value="${esc(w.dir)}" placeholder="/绝对/路径" oninput="wizField('dir',this.value)" aria-label="项目目录" ${hasPresets ? "readonly" : ""}>
+        ${hasPresets ? "" : `<button onclick="chooseDirectory()">${bridge ? "选择目录…" : "手动输入路径"}</button>`}
         ${bridge ? "" : `<span class="inline-note">浏览器环境：直接输入路径（原生窗口中可用系统目录选择器）</span>`}
       </div>
-      <div class="field"><label>项目名称</label><input id="wizName" value="${esc(w.name)}" placeholder="默认取目录名" oninput="wizField('name',this.value)"></div>
+      <div class="field"><label>项目名称</label><input id="wizName" aria-label="项目名称" value="${esc(w.name)}" placeholder="默认取目录名" oninput="wizField('name',this.value)" onblur="if (!this.value.trim()) wizField('dir', wiz.dir)"></div>
       <div class="field"><label>识别 Agent</label>
         <select oninput="wizField('agent',this.value)" aria-label="识别 Agent">
-          ${["codex", "claude"].map(a => `<option value="${a}" ${w.agent === a ? "selected" : ""}>${a}</option>`).join("")}
+          ${["codex", "claude"].map(a => `<option value="${a}" ${(w.agent || agentsData?.default || "codex") === a ? "selected" : ""}>${a}</option>`).join("")}
         </select>
         <span class="inline-note">当前默认：${esc(agentsData?.default || "codex")}</span></div>
       <div class="acts" style="justify-content:flex-start">
-        ${w.project
-          ? `<button class="primary" onclick="wizAnalyzePresetDirs()" ${busy("wiz-create") ? "disabled" : ""}>识别所选目录</button>
+        ${hasPresets
+          ? `<button class="primary" onclick="wizAnalyzePresetDirs()" ${w.step === "job" ? "disabled" : ""}>识别所选目录</button>
              <button onclick="wizStartManual()">手动添加服务</button>
              <span class="inline-note">已选用项目 ${esc(w.project.id)}（${(w.presetDirs || []).filter(d => d.sel).length}/${(w.presetDirs || []).length} 目录）</span>`
-          : `<button class="primary" onclick="wizCreateProject()" ${busy("wiz-create") ? "disabled" : ""}>${busy("wiz-create") ? "创建中…" : "创建项目"}</button>
+          : `<button class="primary" onclick="wizStartAnalyze()" ${w.step === "job" ? "disabled" : ""}>开始识别</button>
              <button onclick="wizStartManual()">跳过识别，手动添加服务</button>`}
       </div>
       ${(w.presetDirs || []).length ? `<div class="card-head"><h3 style="font-size:14px">项目目录（多选 = 联合识别，逐目录分析后合并候选）</h3></div>
@@ -1351,9 +1381,9 @@ function viewNewProject() {
       ${w.error ? `<div class="msg bad">${esc(w.error)}</div>` : ""}
     </section>`;
 
-  if (w.step === "dir") return draftsTop + dirStep;
+  if (w.step === "dir") return pageTop + dirStep;
 
-  const projNote = `<p class="note">项目 ${esc(w.project?.name || "")}（id ${esc(w.project?.id || "")}，修订 ${w.project?.revision ?? 0}） · 目录 ${esc(w.dir)}</p>`;
+  const projNote = `<p class="note">${esc(w.target?.name || w.project?.name || w.name)} · ${esc(w.jobDir || w.dir)}${w.registered || w.project || w.target?.services ? "" : " · 登记服务时创建项目"}</p>`;
 
   if (w.step === "job") {
     const job = w.job || {};
@@ -1365,14 +1395,14 @@ function viewNewProject() {
         : e.startsWith("timeout") ? "调用超时（进程组已终止，无残留）：可重试。" : "";
       errBox = `<div class="result-box bad">${esc(e)}${hint ? `<br>${esc(hint)}` : ""}</div>
         <div class="acts" style="justify-content:flex-start">
-          <button onclick="wizStartAnalyze()">重试</button>
+          <button onclick="wizStartAnalyze(null, wiz.jobDir)">重试</button>
           <button onclick="wizRetryOther()">换一个 agent 重试</button>
           <button onclick="setView('agents')">去 Agent 连接</button>
           <button onclick="wizStartManual()">改为手动添加服务</button>
         </div>`;
     }
-    return draftsTop + dirStep.replace('1 · 目录与项目', '1 · 目录与项目 ✓') + `
-      <section class="card"><div class="card-head"><h3>2 · 识别（${esc(w.agent)}，任务 ${esc(w.jobId || "")}）</h3></div>
+    return pageTop + `
+      <section class="card"><div class="card-head"><h3>识别 · ${esc(w.agent)}</h3></div>
       ${projNote}
       ${analysisActivity(job)}
       ${errBox}${(w.unresolved || []).length ? `<p class="reason warn">未解决项：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}
@@ -1380,8 +1410,8 @@ function viewNewProject() {
   }
 
   // step === review（进入时预取每候选与已登记服务的差异预览，dry_run 不落盘；R08 复用资源懒加载）
-  if (!w._diffFetched && w.project) { w._diffFetched = true; w.candidates.forEach((_, i) => wizPrefetchDiff(i)); }
-  if (!w._resFetched && w.project) { w._resFetched = true; wizLoadResources(); }
+  if (!w._diffFetched && (w.target || w.project)) { w._diffFetched = true; w.candidates.forEach((_, i) => wizPrefetchDiff(i)); }
+  if (!w._resFetched && (w.target || w.project)) { w._resFetched = true; wizLoadResources(); }
   const candCards = w.candidates.map((c, i) => {
     const r = w.results[i];
     const d = w.diffs[i];
@@ -1407,7 +1437,8 @@ function viewNewProject() {
           : `<p class="inline-note">与已登记服务 ${esc(d.service_id)} 内容一致（将返回 unchanged/duplicate，不产生重复登记）</p>`)
       : "";
     const res = r
-      ? (r.code === 200
+      ? (r.res?.action === "draft" ? `<div class="result-box">已保存为草稿</div>`
+        : r.code === 200 && r.res?.service_id
           ? `<div class="result-box ok">已注册（${esc(r.res.action)}，服务 ${esc(r.res.service_id)}）${(r.res.validation?.warnings || []).length ? `<div class="warnlist">警告：${r.res.validation.warnings.map(esc).join("；")}</div>` : ""}
              <button class="primary" onclick="wizStartService('${esc(r.res.service_id)}')" ${busy("wiz-start-" + r.res.service_id) ? "disabled" : ""}>${busy("wiz-start-" + r.res.service_id) ? "启动中…" : "启动并打开"}</button></div>`
           : `<div class="result-box bad">注册失败：${esc(r.res?.error || r.code)}${(r.res?.details || []).length ? `<div class="warnlist">${r.res.details.map(esc).join("；")}</div>` : ""}
@@ -1417,7 +1448,7 @@ function viewNewProject() {
       ? `<p class="reason warn">provision=up：需勾选「允许创建容器/拉镜像——由我确认」后才能注册（未确认时后台同样拒绝，注册前请确认）。</p>` : "";
     return `<div class="cand">
       <div class="cand-head">
-        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" ${c._sel !== false ? "checked" : ""} onchange="wizToggleCand(${i})"> 启用</label>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" ${c._sel !== false ? "checked" : ""} onchange="wizToggleCand(${i})"> 选择</label>
         <div class="name">${esc(c.name || c.id)}<small>${esc(c.description || "")}</small></div>
       </div>
       <div class="field"><label>服务 id</label><input value="${esc(c.id)}" oninput="wizCandField(${i},'id',this.value)"></div>
@@ -1469,29 +1500,30 @@ function viewNewProject() {
       ${compEditorHtml("man", w.manualService)}
       <div class="acts" style="justify-content:flex-start">
         <button onclick="wizManualAddComp()">＋ 添加组件</button>
-        <button class="primary" onclick="wizManualRegister()" ${busy("wiz-manual") ? "disabled" : ""}>${busy("wiz-manual") ? "注册中…" : "注册服务"}</button>
+        <button class="primary" onclick="wizManualRegister()" ${w.manualRegistering ? "disabled" : ""}>${w.manualRegistering ? "注册中…" : "注册服务"}</button>
       </div>
-      ${msgs["wiz-manual"] ? `<div class="msg ${msgs["wiz-manual"].bad ? "bad" : ""}">${esc(msgs["wiz-manual"].text)}</div>` : ""}
-      ${w.manualResult ? (w.manualResult.code === 200
+      ${w.manualError ? `<div class="msg bad">${esc(w.manualError)}</div>` : ""}
+      ${w.manualResult ? (w.manualResult.res?.action === "draft" ? `<div class="result-box">已保存为草稿</div>`
+        : w.manualResult.code === 200 && w.manualResult.res?.service_id
         ? `<div class="result-box ok">已注册（${esc(w.manualResult.res.action)}，服务 ${esc(w.manualResult.res.service_id)}）
            <button class="primary" onclick="wizStartService('${esc(w.manualResult.res.service_id)}')">启动并打开</button></div>`
         : `<div class="result-box bad">注册失败：${esc(w.manualResult.res?.error || w.manualResult.code)}${(w.manualResult.res?.details || []).length ? `<div class="warnlist">${w.manualResult.res.details.map(esc).join("；")}</div>` : ""}</div>`) : ""}
     </section>` : "";
 
   return `
-    ${draftsTop}
-    <section class="card"><div class="card-head"><h3>1 · 目录与项目 ✓</h3>
-      <div class="acts"><button onclick="wizReset()">重新开始</button></div></div>
+    ${pageTop}
+    <section class="card"><div class="card-head"><h3>目录与项目</h3>
+      <div class="acts"><button onclick="wizNewTask()">另开任务</button></div></div>
       ${projNote}
       ${w.job?.state === "done" ? analysisActivity(w.job) : ""}
-      <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()">重新识别</button></div>
+      <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()" ${w.registering ? "disabled" : ""}>重新识别</button></div>
     </section>
-    ${w.candidates.length ? `<section class="card"><div class="card-head"><h3>3 · 候选服务（${w.candidates.length}）</h3>
-      <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || busy("wiz-reg") ? "disabled" : ""}>${w.registering || busy("wiz-reg") ? "注册中…" : "注册所选"}</button></div></div>
+    ${w.candidates.length ? `<section class="card"><div class="card-head"><h3>候选服务（${w.candidates.length}）</h3>
+      <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || !w.candidates.some((c, i) => c._sel !== false && !(w.results[i]?.res?.service_id || w.results[i]?.res?.draft_id)) ? "disabled" : ""}>${w.registering ? "注册中…" : "注册所选"}</button></div></div>
       ${(w.unresolved || []).length ? `<p class="reason warn">未解决项（不会静默丢弃）：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}
       ${w.dupIds ? `<p class="inline-note">多目录同名服务已分配稳定 ID，可修改</p>` : ""}
       ${candCards}
-    </section>` : `<section class="card"><p class="note">识别完成，但没有可用的候选。可重试、换 agent，或手动添加。</p>
+    </section>` : w.job?.state !== "done" ? "" : `<section class="card"><p class="note">识别完成，但没有可用的候选。可重试、换 agent，或手动添加。</p>
       <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()">重试识别</button>
       <button onclick="wizStartManual()">手动添加服务</button></div>
       ${(w.unresolved || []).length ? `<p class="reason warn">未解决项：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}</section>`}
@@ -2320,53 +2352,76 @@ async function draftDelete(id) {
 
 // ------------------------------------------------------------ 添加项目流程
 
-function wizField(key, value) { wiz[key] = value; }
-function wizReset() {
-  if (wiz.pollTimer) clearInterval(wiz.pollTimer);
+function wizField(key, value) {
+  wiz[key] = value;
+  if (key === "name") wiz.customName = !!value.trim();
+  if (!wiz.customName && key === "dir") {
+    wiz.name = wiz.dir.trim().split("/").filter(Boolean).at(-1) || "";
+    const name = document.getElementById("wizName");
+    if (name) name.value = wiz.name;
+  }
+}
+
+function trackWizard(w) {
+  if (w.taskId == null) {
+    w.taskId = recognitionTasks.length;
+    recognitionTasks.push(w);
+  }
+}
+
+function wizNewTask() {
+  if (wiz.dir || wiz.name || wiz.step !== "dir") trackWizard(wiz);
   wiz = newWizard();
-  render();
+  trackWizard(wiz);
+  document.activeElement?.blur?.();
+  setView("new-project");
+  document.getElementById("wizDir")?.focus();
+}
+
+function wizSelectTask(id) {
+  wiz = recognitionTasks[id];
+  document.activeElement?.blur?.();
+  setView("new-project");
 }
 
 function chooseDirectory() {
-  const b = nativeBridge();
-  const input = document.getElementById("wizDir");
-  if (b) {
-    window.__lsPickCb = path => {
-      if (path == null) return;
-      if (input) { input.value = path; input.dispatchEvent(new Event("input")); }
-    };
-    b.postMessage({action: "pickDirectory"});
-  } else {
-    input?.focus();  // 浏览器辅助入口：退化为文本输入
-  }
+  const bridge = nativeBridge();
+  if (!bridge) { document.getElementById("wizDir")?.focus(); return; }
+  const w = wiz;
+  window.__lsPickCb = path => {
+    if (path == null || wiz !== w) return;
+    wizField("dir", path);
+    document.activeElement?.blur?.();
+    render();
+  };
+  bridge.postMessage({action: "pickDirectory"});
 }
-async function wizCreateProject() {
-  const dir = (wiz.dir || "").trim();
-  if (!dir) { wiz.error = "请先填写项目目录（绝对路径）"; render(); return; }
-  const name = (wiz.name || dir.split("/").filter(Boolean).pop() || "").trim();
-  if (!name) { wiz.error = "项目名称不能为空"; render(); return; }
-  pending["wiz-create"] = true; wiz.error = ""; render();
-  try {
-    const [code, res] = await api("POST", "/api/projects",
-        {name, directories: [{path: dir, role: "source"}], agent: wiz.agent || "codex"});
-    if (code === 200 && res.ok) {
-      wiz.project = res.project;
-      wiz.error = "";
-      pending["wiz-create"] = null;
-      await wizStartAnalyze();
-      return;
-    }
-    wiz.error = res?.error || `创建失败（${code}）`;
-  } catch (e) { wiz.error = "无法连接控制服务"; setConn(false); }
-  pending["wiz-create"] = null; render();
+
+function wizardTarget(w, useResolvedDirectory = false) {
+  if (w.project) return w.project;
+  const dir = (useResolvedDirectory && w.job?.directory || w.dir).trim().replace(/\/+$/, "") || (w.dir.trim() === "/" ? "/" : "");
+  const name = w.name.trim() || dir.split("/").at(-1);
+  if (!dir || !name) return null;
+  const projects = registry?.registry?.projects || [];
+  const matches = projects.filter(p => p.directories?.some(d => d.path === dir));
+  const existing = matches.find(p => p.name === name) || (matches.length === 1 ? matches[0] : null);
+  if (existing) return existing;
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);
+  const base = slug || "project";
+  let id = base;
+  for (let n = 2; projects.some(p => p.id === id); n++) id = base.slice(0, 43) + "-" + n;
+  return {id, name, revision: 0};
 }
 
 function wizPresetFor(pid, mode) {
   const g = registry?.registry?.projects?.find(p => p.id === pid);
   if (!g) return;
+  if (wiz.dir || wiz.step !== "dir") trackWizard(wiz);
   wiz = newWizard();
+  trackWizard(wiz);
   wiz.project = g;
   wiz.name = g.name;
+  wiz.customName = true;
   wiz.presetDirs = (g.directories || []).map(d => ({path: d.path, sel: true}));
   wiz.dir = wiz.presetDirs[0]?.path || "";
   wiz.agent = g.agent || "";
@@ -2383,70 +2438,77 @@ function wizAnalyzePresetDirs() {
   wizStartAnalyze(null, sel[0]);
 }
 
-async function wizStartAnalyze(agentOverride, dirOverride) {
-  if (agentOverride) wiz.agent = agentOverride;
-  const dir = (dirOverride || wiz.dir || "").trim();
-  if (!dir) { wiz.step = "dir"; render(); return; }
-  wiz.step = "job"; wiz.job = null; wiz.error = ""; wiz.candidates = wiz.candidates || []; wiz.results = {};
-  wiz.jobDir = dir; wiz._diffFetched = false; wiz.diffs = {};
+async function wizStartAnalyze(agentOverride, dirOverride, w = wiz, continuing = false) {
+  const dir = (dirOverride || w.dir).trim();
+  if (!dir.startsWith("/")) { w.error = "请先填写项目目录（绝对路径）"; render(); return; }
+  if (w.registering || (!continuing && ["queued", "running"].includes(w.job?.state))) return;
+  document.activeElement?.blur?.();
+  trackWizard(w);
+  if (!continuing) {
+    w.candidates = []; w.unresolved = []; w.results = {}; w.diffs = {};
+    w.registered = false; w.dupIds = false;
+    w.target = wizardTarget(w);
+  }
+  w.agent = agentOverride || w.agent || agentsData?.default || "codex";
+  w.step = "job"; w.job = {state: "queued"}; w.error = "";
+  w.jobDir = dir; w.jobId = null; w._diffFetched = false;
   render();
   try {
+    const target = w.target;
+    const existing = registry?.registry?.projects?.some(p => p.id === target?.id);
     const [code, res] = await api("POST", "/api/analyze",
-        {directory: dir, agent: wiz.agent || "codex", project_id: wiz.project?.id});
+        {directory: dir, agent: w.agent, project_id: existing ? target.id : undefined});
     if (code === 202 && res?.job_id) {
-      wiz.jobId = res.job_id;
-      if (wiz.pollTimer) clearInterval(wiz.pollTimer);
-      wiz.pollTimer = setInterval(wizPoll, 2000);
-      wizPoll();
-    } else {
-      wiz.job = {state: "failed", error: res?.error || `提交分析失败（${code}）`};
-      render();
+      w.jobId = res.job_id;
+      wizPoll(w, res.job_id);
+      return;
     }
-  } catch (e) { wiz.job = {state: "failed", error: "无法连接控制服务"}; setConn(false); render(); }
+    w.job = {state: "failed", error: res?.error || `提交分析失败（${code}）`};
+  } catch (e) {
+    w.job = {state: "failed", error: "无法连接控制服务"};
+    setConn(false);
+  }
+  render();
 }
 
 function wizRetryOther() {
-  wiz.agent = wiz.agent === "codex" ? "claude" : "codex";
-  wizStartAnalyze();
+  wizStartAnalyze(wiz.agent === "codex" ? "claude" : "codex", wiz.jobDir);
 }
 
-async function wizPoll() {
-  if (!wiz.jobId) return;
+async function wizPoll(w, jobId) {
   try {
-    const [code, job] = await api("GET", `/api/jobs/${wiz.jobId}`);
-    if (code !== 200) return;
-    wiz.job = job;
-    setConn(true);
-    if (job.state === "done") {
-      if (wiz.pollTimer) clearInterval(wiz.pollTimer);
-      const r = job.result || {};
-      const fresh = (r.services || r.candidates || []).map(c => ({...c, _root: wiz.jobDir || wiz.dir,
-        _orig: JSON.parse(JSON.stringify(c))}));   // R06：审核期编辑 diff 的原始值基准
-      wiz.candidates = wiz.candidates.concat(fresh);   // 多目录：合并候选（同身份注册时去重）
-      wiz.unresolved = (wiz.unresolved || []).concat(r.unresolved || []);
-      if (wiz.dirs && wiz.dirs.length) {               // 联合识别：继续下一个目录
-        const next = wiz.dirs.shift();
-        wizStartAnalyze(null, next);
-        return;
+    const [code, job] = await api("GET", `/api/jobs/${jobId}`);
+    if (code === 404) {
+      w.job = {state: "failed", error: "识别任务已过期，请重新识别"};
+      render();
+      return;
+    }
+    if (code === 200) {
+      w.job = job;
+      setConn(true);
+      if (job.state === "done") {
+        const r = job.result || {};
+        const fresh = (r.services || r.candidates || []).map(c => ({...c, _root: job.directory || w.jobDir,
+          _orig: JSON.parse(JSON.stringify(c))}));
+        w.candidates.push(...fresh);
+        w.unresolved.push(...(r.unresolved || []));
+        if (w.dirs?.length) {
+          wizStartAnalyze(null, w.dirs.shift(), w, true);
+          return;
+        }
+        await refresh();
+        w.target = wizardTarget(w, true);
+        w.dupIds = disambiguateIds(w.candidates, w);
+        w.step = "review";
       }
-      // V2.10 多目录消歧：同 id 候选按目录出现顺序分配稳定后缀，杜绝第二次注册覆盖第一次
-      if (disambiguateIds(wiz.candidates)) wiz.dupIds = true;
-      wiz.step = "review";
-      await refresh();  // 刷新 registry 拿到最新 revision
-      const g = registry?.registry?.projects?.find(p => p.id === wiz.project?.id);
-      if (g) wiz.project = g;
       render();
-    } else if (job.state === "failed") {
-      if (wiz.pollTimer) clearInterval(wiz.pollTimer);
-      render();
-    } else {
-      const stale = document.activeElement?.tagName;
-      if (stale !== "INPUT") render();
+      if (job.state === "done" || job.state === "failed") return;
     }
   } catch (e) { setConn(false); }
+  setTimeout(() => wizPoll(w, jobId), 2000);
 }
 
-function wizToggleCand(i) { wiz.candidates[i]._sel = wiz.candidates[i]._sel === false; }
+function wizToggleCand(i) { wiz.candidates[i]._sel = wiz.candidates[i]._sel === false; render(); }
 function wizCandField(i, key, value) { wiz.candidates[i][key] = value; }
 function wizCompField(i, ci, key, value) {
   const c = wiz.candidates[i].components[ci] = {...wiz.candidates[i].components[ci]};
@@ -2481,10 +2543,11 @@ function wizConfirmProvision(i, checked) {
 
 // ---- V2.6/R08：资源复用绑定（Goal §6.2：不要求用户手填 container/name/volume）----
 async function wizLoadResources() {
+  const w = wiz;
   try {
     const [c, d] = await api("GET", "/api/resources");
-    wiz.resources = (c === 200 && d && d.ok) ? (d.resources || []) : [];
-  } catch (e) { wiz.resources = []; }
+    w.resources = (c === 200 && d && d.ok) ? (d.resources || []) : [];
+  } catch (e) { w.resources = []; }
   render();
 }
 
@@ -2537,9 +2600,9 @@ function sameSource(a, b) {
   const norm = s => String(s || "").replace(/\/+$/, "");
   return !!a && !!b && norm(a) === norm(b);
 }
-function candSource(c) { return joinDir(c._root || wiz.dir || "", c.source_dir || "."); }
+function candSource(c, w = wiz) { return joinDir(c._root || w.dir || "", c.source_dir || "."); }
 
-function disambiguateIds(cands) {
+function disambiguateIds(cands, w = wiz) {
   const registered = registry?.services || [];
   const occupied = new Set(registered.map(s => s.id));
   for (const c of (cands || []))
@@ -2549,7 +2612,7 @@ function disambiguateIds(cands) {
   for (const c of (cands || [])) {
     if (!c || typeof c.id !== "string" || !c.id) continue;
     const reg = registered.find(s => s.id === c.id);
-    if (reg && sameSource(candSource(c), reg.source)) continue;  // 再识别/更新路径：不改名
+    if (reg && sameSource(candSource(c, w), reg.source)) continue;  // 再识别/更新路径：不改名
     if (!reg && !claimed.has(c.id)) { claimed.add(c.id); continue; }   // 首个出现且未登记：保持
     let n = 2, next = c.id + "-" + n;
     while (occupied.has(next) || claimed.has(next)) { n += 1; next = c.id + "-" + n; }
@@ -2579,8 +2642,8 @@ function fwdReady(k, port) {
   return Object.keys(out).length ? out : (port ? {http: `http://127.0.0.1:${port}/`} : null);
 }
 
-function candPayload(c, proj) {
-  const root = c._root || wiz.dir;
+function candPayload(c, proj, w = wiz) {
+  const root = c._root || w.dir;
   const source = joinDir(root, c.source_dir || ".");
   const compNotes = [];
   const comps = (c.components || []).map(k => {
@@ -2632,7 +2695,7 @@ function candPayload(c, proj) {
   if (depNotes.length && c.unresolved) c.unresolved = c.unresolved.concat(depNotes);
   const svc = {id: c.id, name: c.name, description: c.description || "", source,
                open: c.open || null,
-               evidence: {agent: wiz.agent, summary: (c.evidence?.summary) || "agent 识别候选",
+               evidence: {agent: w.agent, summary: (c.evidence?.summary) || "agent 识别候选",
                           files: c.evidence?.files || [], unresolved: c.unresolved || []},
                components: comps};
   if (deps.length) svc.dependencies = deps;
@@ -2641,50 +2704,57 @@ function candPayload(c, proj) {
   const edited = candidateEditedPaths(c);
   if (edited.length) svc.edited = edited;   // R06/V2.3：审核期编辑随注册携带（本次编辑优先于旧覆盖）
   if (c._accept_new?.length) svc.accept_new = [...new Set(c._accept_new)];  // V2.3：显式清除指定覆盖
-  return {schemaVersion: 1, revision: wiz.project?.revision || 0,
-          project: {id: proj.id, name: proj.name, agent: wiz.agent || proj.agent || "none"},
+  return {schemaVersion: 1, revision: proj.revision || 0,
+          project: {id: proj.id, name: proj.name, agent: w.agent || proj.agent || "none"},
           directories: [{path: root, role: "source"}],
           by: "gui", service: svc};
 }
 
-async function wizRegisterOnce(i) {
-  const c = wiz.candidates[i];
-  const [code, res] = await api("POST", "/api/register", candPayload(c, wiz.project));
-  if (code === 409) {  // 批量注册：用服务端最新 revision 重试一次，不静默失败
+async function wizRegisterOnce(w, i) {
+  const c = w.candidates[i];
+  const [code, res] = await api("POST", "/api/register", candPayload(c, w.target, w));
+  if (code === 409 && w.target.revision && res?.current_revision != null) {  // 批量注册：用服务端最新 revision 重试一次，不静默失败
     await refresh();
-    const g = registry?.registry?.projects?.find(p => p.id === wiz.project.id);
-    if (g) wiz.project = g;
-    return await api("POST", "/api/register", candPayload(c, wiz.project));
+    const g = registry?.registry?.projects?.find(p => p.id === w.target.id);
+    if (!g) return [code, res];
+    w.target = {...g};
+    return await api("POST", "/api/register", candPayload(c, w.target, w));
   }
   return [code, res];
 }
 
 async function wizRegister() {
-  if (!wiz.project) return;
-  pending["wiz-reg"] = true; wiz.registering = true; render();
-  for (let i = 0; i < wiz.candidates.length; i++) {
-    const c = wiz.candidates[i];
-    if (c._sel === false) continue;
+  const w = wiz;
+  if (!w.target || w.registering) return;
+  w.registering = true; render();
+  for (let i = 0; i < w.candidates.length; i++) {
+    const c = w.candidates[i];
+    if (c._sel === false || (w.results[i]?.res?.service_id || w.results[i]?.res?.draft_id)) continue;
     // R07：provision=up 未确认 → 后台必 400；GUI 先解释并拦下该条（其余候选不受影响）
     if (isComposeCand(c) && effectiveProvision(c) === "up" && !c._confirmed_provision) {
-      wiz.results[i] = {code: 400, res: {error: "provision=up 需先勾选「允许创建容器/拉镜像——由我确认」（后台同样拒绝未确认的 up）"}};
+      w.results[i] = {code: 400, res: {error: "provision=up 需先勾选「允许创建容器/拉镜像——由我确认」（后台同样拒绝未确认的 up）"}};
       continue;
     }
     try {
-      const [code, res] = await wizRegisterOnce(i);
-      wiz.results[i] = {code, res};
-      if (res?.revision != null && wiz.project) wiz.project.revision = res.revision;  // 后续候选不再撞修订号
-    } catch (e) { wiz.results[i] = {code: 0, res: {error: "无法连接控制服务"}}; setConn(false); }
+      const [code, res] = await wizRegisterOnce(w, i);
+      w.results[i] = {code, res};
+      if (code === 200 && res?.service_id) {
+        w.target = {...w.target, id: res.project_id, revision: res.revision};
+        w.registered = true;
+      }  // 后续候选不再撞修订号
+    } catch (e) { w.results[i] = {code: 0, res: {error: "无法连接控制服务"}}; setConn(false); }
   }
-  wiz.registering = false; pending["wiz-reg"] = null;
+  w.registering = false;
   await refresh(); render();
 }
 
 async function wizPrefetchDiff(i) {
-  const c = wiz.candidates[i];
-  if (!c || wiz.diffs[i] || !wiz.project) return;
+  const w = wiz;
+  const target = w.target || w.project;
+  const c = w.candidates[i];
+  if (!c || w.diffs[i] || !target) return;
   try {
-    const payload = candPayload(c, wiz.project);
+    const payload = candPayload(c, target, w);
     const [code, res] = await api("POST", "/api/register", {...payload, dry_run: true});
     if (code === 200) {
       // V2.3：diff 命中已登记服务时取其覆盖层（端点未就绪/404/501 → 静默降级）
@@ -2694,10 +2764,10 @@ async function wizPrefetchDiff(i) {
           if (oc === 200 && o && o.ok) res.overrideFields = Object.keys(o.fields || {});
         } catch (e2) { /* 覆盖层获取失败不阻塞 diff */ }
       }
-      wiz.diffs[i] = res;
+      w.diffs[i] = res;
       render();
     } else if (res) {
-      wiz.diffs[i] = res;
+      w.diffs[i] = res;
       render();
     }
   } catch (e) { /* 差异预览失败不阻塞注册 */ }
@@ -2722,8 +2792,10 @@ async function wizStartService(sid) {
 }
 
 function wizStartManual() {
+  if (!wizardTarget(wiz)) { wiz.error = "请先选择项目目录"; render(); return; }
+  trackWizard(wiz);
   wiz.manual = true;
-  if (wiz.step === "dir") wiz.step = "review";
+  wiz.step = "review";
   if (!wiz.manualService) {
     const name = (wiz.name || wiz.dir.split("/").filter(Boolean).pop() || "service").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "service";
     wiz.manualService = {id: name, name: wiz.name || name, source: wiz.dir, open: "",
@@ -2744,23 +2816,14 @@ function wizManualAddComp() {
   render();
 }
 
-async function ensureWizProject() {
-  if (wiz.project) return wiz.project;
-  const dir = (wiz.dir || "").trim();
-  const name = (wiz.name || dir.split("/").filter(Boolean).pop() || "").trim();
-  if (!dir || !name) { msgs["wiz-manual"] = {text: "请先填写项目目录与名称", bad: true}; render(); return null; }
-  const [code, res] = await api("POST", "/api/projects", {name, directories: [{path: dir, role: "source"}], agent: wiz.agent || "none"});
-  if (code === 200 && res.ok) { wiz.project = res.project; return res.project; }
-  msgs["wiz-manual"] = {text: res?.error || "创建项目失败", bad: true};
-  return null;
-}
-
 async function wizManualRegister() {
-  const proj = await ensureWizProject();
-  if (!proj) { render(); return; }
+  const w = wiz;
+  if (w.manualRegistering) return;
+  const proj = wizardTarget(w, true);
+  if (!proj) { w.error = "请先选择项目目录"; w.step = "dir"; render(); return; }
   const m = wiz.manualService;
   if (!m.id || !m.name || !m.source || !m.components.length) {
-    msgs["wiz-manual"] = {text: "id / 名称 / 源码目录 / 至少一个组件为必填", bad: true}; render(); return;
+    w.manualError = "id / 名称 / 源码目录 / 至少一个组件为必填"; render(); return;
   }
   const comps = m.components.map(k => {
     const out = {id: k.id, kind: k.kind || "server", name: k.name || k.id, cmd: k.cmd || [], cwd: k.cwd || "."};
@@ -2772,14 +2835,14 @@ async function wizManualRegister() {
                    directories: [{path: wiz.dir, role: "source"}], by: "gui",
                    service: {id: m.id, name: m.name, description: "", source: m.source, open: m.open || null,
                              evidence: {agent: "none", summary: "手动登记"}, components: comps}};
-  pending["wiz-manual"] = true; msgs["wiz-manual"] = null; render();
+  w.manualRegistering = true; w.manualError = ""; render();
   try {
     const [code, res] = await api("POST", "/api/register", payload);
-    wiz.manualResult = {code, res};
+    w.manualResult = {code, res};
     msgs["wiz-manual"] = code === 200 ? {text: `已注册（${res.action}）`} : null;
-    if (code === 409 && res?.current_revision != null && wiz.project) wiz.project.revision = res.current_revision;
-  } catch (e) { wiz.manualResult = {code: 0, res: {error: "无法连接控制服务"}}; setConn(false); }
-  pending["wiz-manual"] = null;
+    if (code === 200 && res?.service_id) w.registered = true;
+  } catch (e) { w.manualResult = {code: 0, res: {error: "无法连接控制服务"}}; setConn(false); }
+  w.manualRegistering = false;
   await refresh(); render();
 }
 
@@ -2812,6 +2875,7 @@ function setView(v) {
   if (v === "agents") loadAgents();
   if (v === "removed") loadRemoved();
   if (v === "new-project") {
+    trackWizard(wiz);
     if (!agentsData) loadAgents();
     if (!draftsData) loadDrafts();   // R6：草稿随添加流程展示
   }

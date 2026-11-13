@@ -403,6 +403,8 @@ class AgentApiTest(InvokeEnv):
             job = wait_for(lambda j: any(e["event"] == "tool_read" for e in j.get("activity", [])))
             self.assertEqual(job["state"], "running")
             self.assertNotIn("private", json.dumps(job["activity"]))
+            self.assertIn("Read: private-file", [entry["text"] for entry in job["output"]])
+            self.assertIn("private message", [entry["text"] for entry in job["output"]])
         finally:
             release.touch()
             final = wait_for(lambda j: j["state"] in ("done", "failed"))

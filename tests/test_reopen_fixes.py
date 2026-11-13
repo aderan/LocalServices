@@ -233,7 +233,7 @@ class GuiAnchorTest(unittest.TestCase):
 
     def test_6_batch_revision_handling(self):
         self.assertIn("wizRegisterOnce", self.html)
-        self.assertIn("wiz.project.revision = res.revision", self.html)
+        self.assertIn("w.target = {...w.target, id: res.project_id, revision: res.revision}", self.html)
 
     def test_7_project_management_entries(self):
         for anchor in ("wizPresetFor", "添加服务…", "重新识别", "toggleAutostart",

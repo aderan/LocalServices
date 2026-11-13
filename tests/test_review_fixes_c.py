@@ -118,15 +118,15 @@ class ReviewFixCStaticTest(unittest.TestCase):
     # ---- R09：候选消歧不得产生重复 ID ----
 
     def test_r09_disambiguate_occupied_set(self):
-        dis = self.html[self.html.index("function disambiguateIds(cands)"):
-                        self.html.index("function disambiguateIds(cands)") + 1600]
+        dis = self.html[self.html.index("function disambiguateIds(cands, w = wiz)"):
+                        self.html.index("function disambiguateIds(cands, w = wiz)") + 1600]
         # 已占用集合 = 全部已登记 id ∪ 批内候选 id；分配时从占用集中消费
         self.assertIn("occupied", dis)
         self.assertIn("registry", dis)
 
     def test_r09_identity_match_keeps_id(self):
-        dis = self.html[self.html.index("function disambiguateIds(cands)"):
-                        self.html.index("function disambiguateIds(cands)") + 1600]
+        dis = self.html[self.html.index("function disambiguateIds(cands, w = wiz)"):
+                        self.html.index("function disambiguateIds(cands, w = wiz)") + 1600]
         # 与已登记服务同运行身份（复用/再识别更新路径）→ 保持原 id，绝不改名
         self.assertIn("sameSource", dis)
         self.assertIn("再识别", dis)

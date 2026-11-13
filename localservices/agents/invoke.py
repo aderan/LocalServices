@@ -256,8 +256,8 @@ def _snip(text: str) -> str:
     return text if len(text) <= SNIPPET else text[:SNIPPET] + "…"
 
 
-def _collect_claude(proc: subprocess.Popen, timeout: float,
-                    report: Callable[[str], None]) -> tuple[bytes, bytes]:
+def _collect_cli(proc: subprocess.Popen, timeout: float, adapter,
+                 report: Callable[[str], None], output: Callable[[str], None]) -> tuple[bytes, bytes]:
     """Read CLI events as they arrive, retaining the final result and bounded diagnostics."""
     deadline = time.monotonic() + timeout
     stderr = bytearray()
@@ -290,7 +290,10 @@ def _collect_claude(proc: subprocess.Popen, timeout: float,
                         except (ValueError, UnicodeError):
                             event = None
                         if isinstance(event, dict):
-                            for activity in ClaudeAdapter.activity(event):
+                            for entry in adapter.display_output(event):
+                                if isinstance(entry, str) and entry.strip():
+                                    output(_snip(entry))
+                            for activity in adapter.activity(event):
                                 report(activity)
                             if event.get("type") == "result":
                                 result = bytes(line)
@@ -311,7 +314,8 @@ def _collect_claude(proc: subprocess.Popen, timeout: float,
 
 def run_analysis(kind: str, directory: str, focus: str | None = None,
                  timeout: float = 240.0, project_context: dict | None = None,
-                 on_activity: Callable[[str], None] | None = None) -> dict:
+                 on_activity: Callable[[str], None] | None = None,
+                 on_output: Callable[[str], None] | None = None) -> dict:
     """对 directory 做一次 Agent 分析。绝不以目标目录为 cwd 执行任何东西；
     超时杀整个进程组；坏 JSON/根级 schema 违规整单失败，服务级违规降级进 unresolved。
     project_context（V2.10）：目标项目既有服务/覆盖层/资源摘要，只进 prompt。"""
@@ -363,22 +367,14 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
             start_new_session=True,
         ) as proc:
             try:
-                if kind == "claude":
-                    out_b, err_b = _collect_claude(proc, timeout, report)
-                else:
-                    out_b, err_b = proc.communicate(timeout=timeout)
+                out_b, err_b = _collect_cli(proc, timeout, adapter, report,
+                                            on_output or (lambda _: None))
                 timed_out = False
             except subprocess.TimeoutExpired as error:
                 _kill_group(proc)
+                proc.wait()
                 timed_out = True
-                if kind == "claude":
-                    proc.wait()
-                    out_b, err_b = b"", error.stderr or b""
-                else:
-                    try:
-                        out_b, err_b = proc.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        out_b, err_b = b"", b""
+                out_b, err_b = b"", error.stderr or b""
             except BaseException:
                 _kill_group(proc)
                 raise

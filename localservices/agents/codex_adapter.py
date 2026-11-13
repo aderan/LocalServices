@@ -41,7 +41,7 @@ class CodexAdapter:
         strict_schema = Path(prompt_file).with_name("codex-output-schema.json")
         strict_schema.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
         argv = [
-            self.bin, "exec",
+            self.bin, "exec", "--json",
             "--skip-git-repo-check",   # 临时空目录不是 git 仓库
             "--ephemeral",             # 不落 session 文件
             "-s", "read-only",         # 只读沙箱：模型不能改文件/跑写操作
@@ -52,6 +52,28 @@ class CodexAdapter:
             argv += ["-o", last_message_path]
         argv.append(prompt if prompt else "-")
         return argv
+
+    @staticmethod
+    def activity(event: dict):
+        if event.get("type") == "turn.started":
+            yield "cli_ready"
+        elif event.get("type") == "item.started" and (event.get("item") or {}).get("type") == "command_execution":
+            yield "tool_command"
+        elif event.get("type") == "turn.completed":
+            yield "cli_result"
+
+    @staticmethod
+    def display_output(event: dict):
+        kind = event.get("type")
+        item = event.get("item") or {}
+        if kind == "item.started" and item.get("type") == "command_execution":
+            yield item.get("command", "")
+        elif kind == "item.completed" and item.get("type") == "agent_message":
+            yield item.get("text", "")
+        elif kind == "error":
+            yield event.get("message", "")
+        elif kind == "turn.failed":
+            yield (event.get("error") or {}).get("message", "")
 
     def parse_output(self, raw: str | bytes, last_message_path: str | None = None) -> dict:
         """优先读 -o 落盘的最终消息（结构化 JSON），退回 stdout。"""

@@ -34,7 +34,7 @@ JOB_TTL = 24 * 3600.0  # >24h 的已结束任务在新任务提交时顺带删�
 
 _POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ls-analyze")
 _LOCK = threading.Lock()
-_RUNNING: dict[str, str] = {}  # f"{agent}\0{directory}" -> job_id（分析进行中）
+_RUNNING: dict[tuple, str] = {}  # 同一识别请求 -> job_id
 
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -410,7 +410,7 @@ def handle_analyze(body: dict) -> tuple[int, dict]:
                 return 400, {"ok": False, "error": "timeout 必须是数字"}
             timeout = min(max(float(body["timeout"]), 1.0), MAX_ANALYZE_TIMEOUT)
 
-        key = f"{agent}\0{d}"
+        key = (agent, str(d), project_id, focus)
         with _LOCK:
             existing = _RUNNING.get(key)
             if existing:
@@ -434,7 +434,7 @@ def handle_analyze(body: dict) -> tuple[int, dict]:
 
 
 def _run_job(job_id: str, agent: str, directory: str, focus: str | None,
-             timeout: float, key: str, project_ctx: dict | None = None) -> None:
+             timeout: float, key: tuple, project_ctx: dict | None = None) -> None:
     """线程体：queued → running → done/failed，每次状态变化原子落盘。"""
     job = _read_job(job_id) or {"id": job_id, "kind": "analyze"}
 
@@ -447,11 +447,18 @@ def _run_job(job_id: str, agent: str, directory: str, focus: str | None,
         del activity[:-16]
         _write_job(job)
 
+    def record_output(text: str) -> None:
+        output = job.setdefault("output", [])
+        output.append({"text": text, "at": time.time()})
+        del output[:-100]
+        _write_job(job)
+
     try:
         job.update({"state": "running", "started_at": time.time()})
         _write_job(job)
         result = invoke.run_analysis(agent, directory, focus=focus, timeout=timeout,
-                                     project_context=project_ctx, on_activity=record_activity)
+                                     project_context=project_ctx, on_activity=record_activity,
+                                     on_output=record_output)
         if result.get("ok"):
             job.update({"state": "done", "result": result, "error": None,
                         "finished_at": time.time()})
