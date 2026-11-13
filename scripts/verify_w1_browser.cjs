@@ -4,7 +4,7 @@
  *    互不覆盖、无横向溢出；设置长诊断在窄内容区单列可读。
  *  - 轮询稳定性：html 未变时节点身份保持；状态变化重建后焦点/滚动按锚点恢复；
  *    展开态跨真实 3s 轮询保持。
- *  - 侧栏项目项无常驻数字（异常才有点提示）；搜索/刷新/设置顶部可达。
+ *  - 顶栏搜索、侧栏设置、状态异常时提供手动刷新；项目仅在异常时标记。
  * 用法：node scripts/verify_w1_browser.cjs [证据目录]
  * 环境：LS_URL 指向工作台入口（默认真实 daemon 47800；只读断言，注入态均 finally 还原）。 */
 const { spawn } = require("child_process");
@@ -187,21 +187,22 @@ async function main() {
 
   // ---------- 顶部工具栏与侧栏 ----------
   const topEv = `(() => ({
-    search: !!document.getElementById("globalSearch"),
-    refresh: !!document.getElementById("refreshBtn"),
-    settings: !!document.getElementById("nav-settings"),
+    search: !!document.querySelector(".topbar #globalSearch"),
+    refresh: !!document.querySelector(".topbar #refreshBtn"),
+    settings: !!document.querySelector("nav #nav-settings"),
     projectBadges: document.querySelectorAll("#navProjects .badge").length,
     primary: !!document.querySelector(".svc [data-act='open'], .svc [data-act='start-open']"),
   }))()`;
   const top = await ev(topEv);
-  check("顶部搜索/刷新/设置可达", top.search && top.refresh && top.settings, JSON.stringify(top));
+  check("搜索在顶栏，设置在侧栏，顶栏无刷新", top.search && !top.refresh && top.settings, JSON.stringify(top));
   check("侧栏项目项无常驻数字（无 badge）", top.projectBadges === 0, `badges=${top.projectBadges}`);
   check("服务行主操作可达（打开/启动并打开）", top.primary, "");
 
   for (const locale of ['zh-CN', 'en']) {
     const header = await ev(`(async () => {
-    const saved = {fetch: window.fetch, snap, registry, connOk, language};
+    const saved = {fetch: window.fetch, snap, registry, connOk, language, refreshFailed};
     const banner = document.getElementById('banner');
+    const message = document.getElementById('bannerMessage');
     const button = document.getElementById('refreshBtn');
     const search = document.getElementById('globalSearch');
     const rect = () => [button.offsetLeft, button.offsetWidth];
@@ -217,7 +218,7 @@ async function main() {
     let requests = 0, offline = false;
     window.fetch = (url, options) => {
       if (url === '/api/refresh') { requests++; return new Promise(resolve => { responses.push(resolve); }); }
-      if (url === '/api/status') return offline ? Promise.reject(new Error('offline')) : reply(200, status);
+      if (url === '/api/status') return offline ? Promise.reject(new Error('offline')) : reply(200, {...status});
       if (url === '/api/registry') return reply(200, {...registry, registry: {...registry.registry, settings: {language}}});
       return saved.fetch(url, options);
     };
@@ -226,7 +227,7 @@ async function main() {
       snap = status;
       setConn(true);
       setView('all');
-      const normal = banner.hidden && !document.getElementById('conn');
+      const normal = banner.hidden && button.getClientRects().length === 0 && !document.getElementById('conn');
       const subtitle = document.getElementById('viewSubtitle').textContent;
       const count = document.querySelectorAll('.svc [data-act="open"]:enabled').length === 1
         && /1 个可打开|Ready to open: 1/.test(subtitle);
@@ -236,14 +237,15 @@ async function main() {
       search.value = '';
       snap = {...status, generated_at: status.generated_at - 60};
       render();
-      const stale = !banner.hidden && /未更新|out of date/.test(banner.textContent);
+      const stale = /未更新|out of date/.test(message.textContent) && button.getClientRects().length > 0;
       snap = status;
       render();
       const recovered = banner.hidden;
       offline = true;
       await refresh();
-      const disconnected = !banner.hidden && /无法连接|unavailable/.test(banner.textContent);
+      const disconnected = /无法连接|unavailable/.test(message.textContent) && button.getClientRects().length > 0;
       offline = false;
+      status.generated_at -= 60;
       await refresh();
       const before = rect();
       const failedRefresh = refresh(true);
@@ -251,24 +253,33 @@ async function main() {
         && button.getAttribute('aria-disabled') === 'true';
       button.click();
       const deduped = requests === 1;
-      for (const resolve of responses.splice(0)) resolve(reply(500, {error: 'test failure'}));
+      responses.shift()(reply(500, {error: 'test failure'}));
       await failedRefresh;
-      const failed = /刷新失败|Refresh failed/.test(document.getElementById('refreshStatus')?.textContent || '');
+      const failed = /刷新失败|Refresh failed/.test(message.textContent);
       const cachedRefresh = refresh(true);
       responses.shift()(reply(200, status));
       await cachedRefresh;
-      const cached = /刷新失败|Refresh failed/.test(document.getElementById('refreshStatus')?.textContent || '');
+      const cached = /刷新失败|Refresh failed/.test(message.textContent);
       const retried = refresh(true);
       status.generated_at = (Date.now() + 1000) / 1000;
       responses.shift()(reply(200, status));
       await retried;
-      const cleared = !document.getElementById('refreshStatus')?.textContent && banner.hidden;
-      return {normal, count, filtered, stale, recovered, disconnected, working, deduped, failed, cached, cleared};
+      const cleared = !message.textContent && banner.hidden;
+      status.generated_at -= 60;
+      await refresh();
+      const failedAgain = refresh(true);
+      responses.shift()(reply(500, {error: 'test failure'}));
+      await failedAgain;
+      status.generated_at = Date.now() / 1000;
+      await refresh();
+      const pollRecovered = !message.textContent && banner.hidden;
+      return {normal, count, filtered, stale, recovered, disconnected, working, deduped, failed, cached, cleared, pollRecovered};
     } finally {
       window.fetch = saved.fetch;
       search.value = '';
       snap = saved.snap;
       registry = saved.registry;
+      refreshFailed = saved.refreshFailed;
       setConn(saved.connOk);
       applyLanguage(saved.language);
       render();
@@ -411,9 +422,9 @@ async function main() {
           const rightInset = cardRect.right - rect(languageSwitch).right;
           const languageRect = [rect(languageSwitch).left, rect(languageSwitch).top - cardRect.top, rect(languageSwitch).width];
           const toolbar = rect(document.querySelector('.topbar'));
-          const settingsButton = rect(document.getElementById('nav-settings'));
-          const toolbarLayout = [toolbar.height, cardRect.top - toolbar.bottom, toolbar.right - settingsButton.right, settingsButton.width];
-          const navLabels = ['attention', 'resources', 'agents', 'removed'].map(id =>
+          const search = rect(document.getElementById('globalSearch'));
+          const toolbarLayout = [toolbar.height, cardRect.top - toolbar.bottom, toolbar.right - search.right, search.width];
+          const navLabels = ['attention', 'resources', 'agents', 'removed', 'settings'].map(id =>
             document.querySelector('#nav-' + id + ' span').textContent);
           const switches = [];
           const actionInsets = [];
@@ -453,7 +464,7 @@ async function main() {
           && [...actionRects(en), ...actionRects(zh)].every(r => JSON.stringify(r) === JSON.stringify(actionRects(en)[0])),
           JSON.stringify({en: en.switches, zh: zh.switches}));
     check(`${width} 英文域名诊断使用英文`, !en.mixedDiagnostics);
-    check(`${width} Manage 入口使用简短名称`, en.navLabels.join(',') === 'Issues,Resources,Agents,Removed');
+    check(`${width} Manage 入口使用简短名称`, en.navLabels.join(',') === 'Issues,Resources,Agents,Removed,Settings');
     check(`${width} 设置无横向溢出`, en.fits && zh.fits);
   }
   await setViewport(1280, 900);

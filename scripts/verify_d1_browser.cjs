@@ -76,8 +76,7 @@ async function main() {
     try {
       snap = {...snap, projects: [failed]};
       setView("attention");
-      const button = [...document.querySelectorAll("#p-diagnosis-fixture button")]
-        .find(button => button.textContent === "查看原因");
+      const button = document.querySelector('#p-diagnosis-fixture [data-act="reason"]');
       button.click();
       const detail = document.querySelector("#p-diagnosis-fixture .detail");
       return !!detail?.textContent.includes(reason) &&
@@ -108,17 +107,17 @@ async function main() {
       const projects = [...document.querySelectorAll("#navProjects button")];
       const find = name => projects.find(button => button.textContent.trim() === name);
       const settings = document.getElementById("nav-settings");
-      const inToolbar = !!settings?.closest(".topbar");
+      const inSidebar = !!settings?.closest("nav");
       settings?.click();
       return {
         healthy: !!find("正常项目") && !find("正常项目").querySelector(".project-alert"),
-        partial: find("部分项目")?.getAttribute("aria-label") === "部分项目，部分可用" &&
+        partial: find("部分项目")?.getAttribute("aria-label") === "部分项目，" + tr("部分可用", "Degraded") &&
           !!find("部分项目").querySelector(".project-alert.partial"),
-        failure: find("冲突项目")?.getAttribute("aria-label") === "冲突项目，需要处理" &&
+        failure: find("冲突项目")?.getAttribute("aria-label") === "冲突项目，" + tr("需要处理", "Needs attention") &&
           !!find("冲突项目").querySelector(".project-alert:not(.partial)"),
         attentionCount: document.getElementById("attentionBadge").textContent,
-        settings: inToolbar && document.getElementById("viewTitle").textContent === "设置" &&
-          settings.getAttribute("aria-pressed") === "true",
+        settings: inSidebar && document.getElementById("viewTitle").textContent === tr("设置", "Settings") &&
+          settings.classList.contains("active") && settings.getAttribute("aria-current") === "page",
       };
     } finally {
       snap = previous.snap;
@@ -128,7 +127,7 @@ async function main() {
   })()`);
   check("项目侧栏只标记异常并保留全局待处理数", navigation.healthy &&
         navigation.partial && navigation.failure && navigation.attentionCount === "2", JSON.stringify(navigation));
-  check("设置入口位于顶部工具栏并打开设置", navigation.settings);
+  check("侧栏设置入口可打开设置并标记当前页", navigation.settings);
 
   // ---------------- UX1：地址 chip 的完整独立事件语义 ----------------
   const chipExists = await ev("!!document.querySelector('.svc .line button.domain')");

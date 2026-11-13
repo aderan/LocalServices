@@ -51,13 +51,17 @@ class DashboardStaticTest(unittest.TestCase):
         self.assertIn("lsPickDirectory", self.html)
 
     def test_global_search_box(self):
-        self.assertIn('id="globalSearch"', self.html)
+        header = self.html.split('<header class="topbar">', 1)[1].split("</header>", 1)[0]
+        self.assertIn('id="globalSearch"', header)
+        self.assertNotIn('id="refreshBtn"', header)
 
-    def test_six_nav_items(self):
+    def test_sidebar_navigation(self):
         # R6 IA：服务 / 按 Project 分组列表 / 需要处理 / 共享资源 / Agent 连接 / 设置（与草稿分离）
+        nav = self.html.split("<nav ", 1)[1].split("</nav>", 1)[0]
         for anchor in ('id="nav-all"', 'id="navProjects"', "需要处理", "共享资源", "Agent 连接",
                        'id="nav-settings"', "已移除登记", "＋ 添加服务"):
             self.assertIn(anchor, self.html)
+        self.assertIn('id="nav-settings"', nav)
         self.assertNotIn("设置 / 草稿", self.html)  # 草稿归入添加流程，不再与设置混放
 
     def test_api_anchors(self):

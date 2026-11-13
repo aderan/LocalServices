@@ -19,6 +19,7 @@
          background: var(--page); color: var(--fg); }
   .banner { background: var(--soft); border-bottom: 1px solid var(--line); color: var(--bad);
             font-weight: 600; padding: 8px 20px; text-align: center; }
+  .banner:not([hidden]) { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; }
   .banner.stale { color: var(--warn); }
   .shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
   nav { background: var(--bg); border-right: 1px solid var(--line); padding: 14px 10px;
@@ -48,15 +49,11 @@
   .topbar h2 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
   .topbar .subtitle { color: var(--mute); font-size: 12.5px; flex: 1 1 160px; }
   .topbar .subtitle:empty { display: none; }
-  .topbar .tools { display: grid; grid-template-columns: minmax(0, 1fr) 104px 74px;
-                   width: min(100%, 414px); gap: 8px; align-items: center; margin-left: auto; }
-  #refreshBtn { white-space: nowrap; }
+  #refreshBtn { white-space: nowrap; min-width: 104px; }
   #refreshBtn[aria-disabled="true"] { opacity: .55; cursor: default; }
-  #refreshStatus:not(:empty) { color: var(--bad); font-size: 12.5px; padding: 8px 26px 0; text-align: right; }
-  #nav-settings { white-space: nowrap; }
-  #nav-settings[aria-pressed="true"] { color: var(--btn); border-color: currentColor; }
   #globalSearch { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 7px;
-                  border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 100%; min-width: 0; }
+                  border: 1px solid var(--line); background: var(--card); color: var(--fg);
+                  width: min(100%, 240px); min-width: 0; margin-left: auto; }
   main { padding: 18px 26px 56px; max-width: 1340px; width: 100%; container-type: inline-size;
          container-name: mainc; }
   /* —— 分组：一个项目一组紧凑行（Magpie 语法：细分隔、整组一体） —— */
@@ -306,7 +303,10 @@
 </style>
 </head>
 <body>
-<div id="banner" class="banner" role="status" hidden></div>
+<div id="banner" class="banner" hidden>
+  <span id="bannerMessage" role="status"></span>
+  <button id="refreshBtn" onclick="refresh(true)" aria-disabled="false">立即刷新</button>
+</div>
 <div class="shell">
 <nav aria-label="工作台导航">
   <div class="brand">
@@ -323,6 +323,7 @@
   <button class="navitem" id="nav-resources" onclick="setView('resources')"><span data-en="Resources">资源</span></button>
   <button class="navitem" id="nav-agents" onclick="setView('agents')"><span data-en="Agents">Agent</span></button>
   <button class="navitem" id="nav-removed" onclick="setView('removed')"><span data-en="Removed">已移除</span></button>
+  <button class="navitem" id="nav-settings" onclick="setView('settings')"><span data-en="Settings">设置</span></button>
   <div class="navspacer"></div>
   <button class="navitem add" id="nav-new-project" onclick="setView('new-project')"><span data-en="+ Add service">＋ 添加服务</span><span id="draftBadge" class="badge mut" hidden></span></button>
 </nav>
@@ -330,13 +331,8 @@
   <header class="topbar">
     <h2 id="viewTitle">服务</h2>
     <div class="subtitle" id="viewSubtitle"></div>
-    <div class="tools">
-      <input id="globalSearch" type="search" placeholder="搜索项目 / 服务" aria-label="全局搜索">
-      <button id="refreshBtn" onclick="refresh(true)" aria-disabled="false">刷新</button>
-      <button id="nav-settings" aria-pressed="false" onclick="setView('settings')"><span data-en="Settings">设置</span></button>
-    </div>
+    <input id="globalSearch" type="search" placeholder="搜索项目 / 服务" aria-label="全局搜索">
   </header>
-  <div id="refreshStatus" role="status"></div>
   <div id="locoveHealth" role="status"></div>
   <main id="main" aria-live="polite"></main>
 </section>
@@ -404,18 +400,16 @@ function renderStatusBanner() {
   const message = connOk === false
     ? tr("无法连接控制服务，服务状态未知。恢复连接后将自动更新。", "Daemon unavailable. Service status will update when the connection returns.")
     : stale ? tr(`服务状态长时间未更新。上次采集于 ${t(snap.generated_at)}。`, `Service status is out of date. Last checked ${t(snap.generated_at)}.`) : "";
-  banner.classList.toggle("stale", stale);
-  banner.hidden = !message;
-  if (banner.textContent !== message) banner.textContent = message;
-}
-
-function renderRefreshControl() {
+  const failure = refreshFailed ? tr("刷新失败，请重试。", "Refresh failed. Try again.") : "";
+  const status = [message, failure].filter(Boolean).join(" ");
+  banner.classList.toggle("stale", stale && !refreshFailed);
+  banner.hidden = !(status || manualRefresh);
+  const label = document.getElementById("bannerMessage");
+  if (label.textContent !== status) label.textContent = status;
   const button = document.getElementById("refreshBtn");
-  button.textContent = manualRefresh ? tr("刷新中…", "Refreshing…") : tr("刷新", "Refresh");
+  const action = manualRefresh ? tr("刷新中…", "Refreshing…") : tr("立即刷新", "Refresh now");
+  if (button.textContent !== action) button.textContent = action;
   button.setAttribute("aria-disabled", String(manualRefresh));
-  const status = document.getElementById("refreshStatus");
-  const message = refreshFailed ? tr("刷新失败，请重试。", "Refresh failed. Try again.") : "";
-  if (status.textContent !== message) status.textContent = message;
 }
 
 function nativeBridge() {
@@ -508,7 +502,6 @@ function applyLanguage(value) {
     if (el.textContent !== label) el.textContent = label;
   });
   renderStatusBanner();
-  renderRefreshControl();
   const search = document.getElementById("globalSearch");
   search.placeholder = tr("搜索项目 / 服务", "Search projects or services");
   search.setAttribute("aria-label", tr("全局搜索", "Search"));
@@ -692,9 +685,10 @@ function replaceMain(main, html, activeEl) {
 function renderNav() {
   document.querySelectorAll("nav .navitem").forEach(b => b.classList.remove("active"));
   const map = {"all": "nav-all", "attention": "nav-attention", "removed": "nav-removed",
-               "resources": "nav-resources", "agents": "nav-agents", "new-project": "nav-new-project"};
+               "resources": "nav-resources", "agents": "nav-agents", "settings": "nav-settings",
+               "new-project": "nav-new-project"};
   (map[view] ? [map[view]] : []).forEach(id => document.getElementById(id)?.classList.add("active"));
-  document.getElementById("nav-settings").setAttribute("aria-pressed", String(view === "settings"));
+  document.getElementById("nav-settings").setAttribute("aria-current", view === "settings" ? "page" : "false");
   const projNav = document.getElementById("navProjects");
   const groups = projectGroups().filter(g => !g.orphan && projectMatchesSearch(g.pj, g.members));
   projNav.innerHTML = groups.map(({pj, members}) => {
@@ -3076,7 +3070,7 @@ async function refresh(manual) {
     const previous = snap?.generated_at || 0;
     manualRefresh = true;
     refreshFailed = false;
-    renderRefreshControl();
+    renderStatusBanner();
     try {
       const [code, result] = await api("POST", "/api/refresh").catch(() => []);
       refreshFailed = code !== 200 || !(result?.generated_at > previous);
@@ -3084,7 +3078,7 @@ async function refresh(manual) {
       if (connOk === false) refreshFailed = true;
     } finally {
       manualRefresh = false;
-      renderRefreshControl();
+      renderStatusBanner();
     }
     return;
   }
@@ -3092,6 +3086,7 @@ async function refresh(manual) {
   try {
     const [code, snapNew] = await api("GET", "/api/status");
     if (code !== 200 || !snapNew) throw new Error(snapNew?.error || "status failed");
+    if (!manualRefresh && snapNew.generated_at > (snap?.generated_at || 0)) refreshFailed = false;
     snap = snapNew;
     const [rc, reg] = await api("GET", "/api/registry");
     if (rc === 200 && reg?.ok) {
