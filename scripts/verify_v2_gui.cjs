@@ -740,6 +740,26 @@ try {
         group.includes('class="group"') && group.includes('class="svc'), group.slice(0, 80));
 } catch (e) { check("R6 workbench", false, e.message); }
 
+section("analysis activity");
+{
+  const oldWizard = page.wizGet();
+  const now = Date.now() / 1000;
+  try {
+    page.setWiz({step: "job", agent: "claude", dir: srcA, jobId: "job-fixture", activityOpen: true,
+      job: {state: "running", started_at: now - 30, timeout: 240, activity: [
+        {event: "scan_directory", at: now - 29},
+        {event: "tool_read", at: now - 15},
+      ]}});
+    const analysisHtml = page.viewNewProject();
+    check("分析中显示实际 CLI 活动与等待时长",
+          analysisHtml.includes("Claude 发起文件读取") && analysisHtml.includes("没有新活动")
+          && analysisHtml.includes('id="analysis-activity" open'), "");
+    page.wizGet().job = {state: "failed", error: "timeout"};
+    check("旧任务无活动记录仍可显示超时",
+          page.viewNewProject().includes("调用超时"), "");
+  } finally { page.setWiz(oldWizard); }
+}
+
 // ---------- W1：轮询稳定性 + 稳定操作标识（共享工作台重构） ----------
 section("W1 workbench");
 try {

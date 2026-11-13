@@ -13,6 +13,20 @@ from pathlib import Path
 from . import paths
 
 
+ANALYSIS_ACTIVITY = {
+    "detect_agent": "检查 Agent 连接",
+    "scan_directory": "扫描目录，收集识别线索",
+    "launch_cli": "启动 CLI，等待事件",
+    "cli_ready": "Claude CLI 已就绪，等待模型响应",
+    "model_response": "开始收到模型响应",
+    "tool_read": "Claude 发起文件读取",
+    "tool_glob": "Claude 发起文件查找",
+    "tool_grep": "Claude 发起内容搜索",
+    "cli_result": "收到 CLI 结果",
+    "validate_result": "校验候选服务",
+}
+
+
 def call(method: str, path: str, body: dict | None = None, timeout: float = 10) -> tuple[int, dict]:
     token = paths.token_file().read_text().strip()
     url = f"http://127.0.0.1:{paths.daemon_port()}{path}"
@@ -335,13 +349,23 @@ def main(argv=None) -> int:
                 print(json.dumps(res, ensure_ascii=False, indent=1))
                 return 0
             end = time.time() + a.wait
+            last_activity = 0
             while time.time() < end:
                 time.sleep(min(3, max(0.5, a.wait / 10)))
                 _, job = call("GET", f"/api/jobs/{job_id}", timeout=15)
+                if not a.json:
+                    for entry in job.get("activity", []):
+                        label = ANALYSIS_ACTIVITY.get(entry["event"])
+                        if label and entry["at"] > last_activity:
+                            print(label, file=sys.stderr, flush=True)
+                    if job.get("activity"):
+                        last_activity = job["activity"][-1]["at"]
                 if job.get("state") in ("done", "failed"):
                     if a.json:
                         print(json.dumps(job, ensure_ascii=False, indent=1))
                     else:
+                        if job.get("error"):
+                            print(job["error"], file=sys.stderr)
                         r = job.get("result") or {}
                         for s in r.get("services", []):
                             print(f"候选 {s['id']}: {s['name']}  组件 {','.join(c['id'] for c in s.get('components', []))}")

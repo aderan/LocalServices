@@ -23,7 +23,7 @@ class ObserveRemoveAnchorTest(unittest.TestCase):
 
     def test_service_menu_has_remove(self):
         self.assertIn("function serviceMenuItems", HTML)
-        self.assertIn('label: "移除登记…", danger: true', HTML)
+        self.assertIn('label: tr("移除登记…", "Remove registration…"), danger: true', HTML)
 
 
 if __name__ == "__main__":

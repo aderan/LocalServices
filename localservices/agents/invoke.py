@@ -6,11 +6,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import selectors
 import shutil
 import signal
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .. import paths
@@ -237,12 +239,66 @@ def local_issues(service: dict, root: Path) -> list[str]:
 # ---------- 主入口 ----------
 
 def _snip(text: str) -> str:
-    text = text.strip()
+    text = _redact(text.strip())
     return text if len(text) <= SNIPPET else text[:SNIPPET] + "…"
 
 
+def _collect_claude(proc: subprocess.Popen, timeout: float,
+                    report: Callable[[str], None]) -> tuple[bytes, bytes]:
+    """Read CLI events as they arrive, retaining the final result and bounded diagnostics."""
+    deadline = time.monotonic() + timeout
+    stderr = bytearray()
+    sample = bytearray()
+    line = bytearray()
+    oversized = False
+    result = b""
+    with selectors.DefaultSelector() as selector:
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        selector.register(proc.stderr, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(proc.args, timeout, stderr=bytes(stderr))
+            for key, _ in selector.select(remaining):
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if key.fileobj is proc.stderr:
+                    stderr.extend(chunk[:MAX_CAPTURE - len(stderr)])
+                    continue
+                sample.extend(chunk[:SNIPPET - len(sample)])
+                lines = chunk.split(b"\n")
+                for part in lines[:-1]:
+                    if not oversized and len(line) + len(part) <= MAX_CAPTURE:
+                        line.extend(part)
+                        try:
+                            event = json.loads(line)
+                        except (ValueError, UnicodeError):
+                            event = None
+                        if isinstance(event, dict):
+                            for activity in ClaudeAdapter.activity(event):
+                                report(activity)
+                            if event.get("type") == "result":
+                                result = bytes(line)
+                    line.clear()
+                    oversized = False
+                if len(line) + len(lines[-1]) > MAX_CAPTURE:
+                    line.clear()
+                    oversized = True
+                if not oversized:
+                    line.extend(lines[-1])
+    try:
+        proc.wait(timeout=max(0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as error:
+        error.stderr = bytes(stderr)
+        raise
+    return result or bytes(line or sample), bytes(stderr)
+
+
 def run_analysis(kind: str, directory: str, focus: str | None = None,
-                 timeout: float = 240.0, project_context: dict | None = None) -> dict:
+                 timeout: float = 240.0, project_context: dict | None = None,
+                 on_activity: Callable[[str], None] | None = None) -> dict:
     """对 directory 做一次 Agent 分析。绝不以目标目录为 cwd 执行任何东西；
     超时杀整个进程组；坏 JSON/根级 schema 违规整单失败，服务级违规降级进 unresolved。
     project_context（V2.10）：目标项目既有服务/覆盖层/资源摘要，只进 prompt。"""
@@ -258,6 +314,11 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
     if not root.is_dir():
         raise ValueError(f"directory not found: {directory}")
 
+    def report(event: str) -> None:
+        if on_activity is not None:
+            on_activity(event)
+
+    report("detect_agent")
     conns = detect.scan(run_version=False)
     conn = conns.get(kind)
     if conn is None or conn.status in ("not_installed", "not_executable"):
@@ -265,6 +326,7 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
         return {"ok": False, "error": "agent_not_available", "detail": detail,
                 "agent": kind, "duration": round(time.monotonic() - started, 2)}
 
+    report("scan_directory")
     try:
         evidence = scanner.scan_directory(root)
     except Exception as e:  # noqa: BLE001 — 扫描失败不阻塞分析
@@ -280,22 +342,33 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
         last_message = str(Path(workdir) / "last-message.txt")
         argv = adapter.build_argv(str(root), prompt_file, str(SCHEMA_PATH), timeout, last_message)
 
-        proc = subprocess.Popen(
+        report("launch_cli")
+        with subprocess.Popen(
             argv, cwd=workdir,  # 临时空目录，绝不是目标目录
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True,
-        )
-        try:
-            out_b, err_b = proc.communicate(timeout=timeout)
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            _kill_group(proc)
+        ) as proc:
             try:
-                out_b, err_b = proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                out_b, err_b = b"", b""
-            timed_out = True
+                if kind == "claude":
+                    out_b, err_b = _collect_claude(proc, timeout, report)
+                else:
+                    out_b, err_b = proc.communicate(timeout=timeout)
+                timed_out = False
+            except subprocess.TimeoutExpired as error:
+                _kill_group(proc)
+                timed_out = True
+                if kind == "claude":
+                    proc.wait()
+                    out_b, err_b = b"", error.stderr or b""
+                else:
+                    try:
+                        out_b, err_b = proc.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        out_b, err_b = b"", b""
+            except BaseException:
+                _kill_group(proc)
+                raise
         stdout = (out_b or b"")[:MAX_CAPTURE].decode("utf-8", "replace")
         stderr = (err_b or b"")[:MAX_CAPTURE].decode("utf-8", "replace")
         if timed_out:
@@ -303,9 +376,10 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
                     "detail": f"{timeout:.0f}s 超时，进程组已终止。stderr: {_snip(stderr)}",
                     "agent": kind, "duration": round(time.monotonic() - started, 2)}
 
+        report("validate_result")
         try:
             data = adapter.parse_output(stdout, last_message)
-        except ValueError:
+        except ValueError as error:
             # codex prints startup banners to stdout; the actual failure reason is an
             # "ERROR: {...}" line on stderr (e.g. API schema rejection, auth, quota).
             # Diagnose that first instead of dumping the banner as "bad json".
@@ -318,14 +392,15 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
                 if api_err:
                     break
             if proc.returncode != 0:
-                reason = api_err or _snip((stderr or stdout)[:600])
+                detail = str(error) if kind == "claude" and stdout.lstrip().startswith("{") else stderr or stdout
+                reason = _snip(api_err or detail)
                 low = reason.lower()
                 if "unauthorized" in low or "login" in low or "api key" in low:
                     return {"ok": False, "error": "needs_login", "detail": reason,
                             "agent": kind, "duration": round(time.monotonic() - started, 2)}
                 return {"ok": False, "error": "call_failed", "detail": reason,
                         "agent": kind, "duration": round(time.monotonic() - started, 2)}
-            raw = stdout or stderr
+            raw = str(error) if kind == "claude" and stdout.strip().startswith("{") else stdout or stderr
             try:
                 raw += "\n--- last-message ---\n" + Path(last_message).read_text(encoding="utf-8", errors="replace")
             except OSError:

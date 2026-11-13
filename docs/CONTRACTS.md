@@ -93,7 +93,9 @@ Docker 不可达时 `{"ok": false, "error": "..."}`，不阻塞其余 API。服�
 - `POST /api/analyze` `{"directory": "/abs", "agent": "codex|claude", "project_id"?: "..."}`
   → `202 {"ok": true, "job_id": "..."}`。
 - `GET /api/jobs/<id>` → `{"id", "kind": "analyze", "state": "queued|running|done|failed",
-  "agent", "directory", "started_at", "finished_at", "result"?, "error"?}`；
+  "agent", "directory", "started_at", "finished_at", "timeout"?, "activity"?, "result"?, "error"?}`；
+  `activity` 保留最近 16 条 `{event, at}`，`at` 为 Unix 秒。包含连接检查、扫描、CLI 启动、
+  结果校验，以及 Claude 流中观测到的就绪、模型响应和只读工具调用。仅记录事件类型与时间。
   `result` = `{"services": [服务定义（§2 service 结构）], "evidence": {...}, "unresolved": [...]}`。
 - `POST /api/agents/default` `{"kind"}` 切换默认连接（404 = 未发现该 Agent）。
 - Wrapper 一次有界调用（默认 240s，上限 600s）：只读沙箱（codex `--sandbox read-only`；claude 只允许

@@ -404,6 +404,7 @@ def handle_analyze(body: dict) -> tuple[int, dict]:
             job_id = "job-" + secrets.token_hex(8)
             job = {"id": job_id, "kind": "analyze", "state": "queued",
                    "agent": agent, "directory": str(d), "project_id": project_id,
+                   "timeout": timeout, "activity": [],
                    "created_at": time.time(), "started_at": None,
                    "finished_at": None, "result": None, "error": None}
             _write_job(job)
@@ -417,12 +418,22 @@ def handle_analyze(body: dict) -> tuple[int, dict]:
 def _run_job(job_id: str, agent: str, directory: str, focus: str | None,
              timeout: float, key: str, project_ctx: dict | None = None) -> None:
     """线程体：queued → running → done/failed，每次状态变化原子落盘。"""
+    job = _read_job(job_id) or {"id": job_id, "kind": "analyze"}
+
+    def record_activity(event: str) -> None:
+        activity = job.setdefault("activity", [])
+        now = time.time()
+        if activity and activity[-1]["event"] == event and now - activity[-1]["at"] < 1:
+            return
+        activity.append({"event": event, "at": now})
+        del activity[:-16]
+        _write_job(job)
+
     try:
-        job = _read_job(job_id) or {"id": job_id, "kind": "analyze"}
         job.update({"state": "running", "started_at": time.time()})
         _write_job(job)
         result = invoke.run_analysis(agent, directory, focus=focus, timeout=timeout,
-                                     project_context=project_ctx)
+                                     project_context=project_ctx, on_activity=record_activity)
         if result.get("ok"):
             job.update({"state": "done", "result": result, "error": None,
                         "finished_at": time.time()})
@@ -430,7 +441,6 @@ def _run_job(job_id: str, agent: str, directory: str, focus: str | None,
             job.update({"state": "failed", "error": f"{result.get('error')}: {result.get('detail', '')}".strip(": "),
                         "finished_at": time.time()})
     except Exception as e:  # noqa: BLE001
-        job = _read_job(job_id) or {"id": job_id, "kind": "analyze"}
         job.update({"state": "failed", "error": str(e)[:500], "finished_at": time.time()})
     finally:
         _write_job(job)

@@ -1287,6 +1287,37 @@ function draftCards() {
 
 // ------------------------------------------------------------ 视图：添加项目（真实 API 流程）
 
+function analysisActivity(job) {
+  const labels = {
+    detect_agent: ["检查 Agent 连接", "Checking Agent connection"],
+    scan_directory: ["扫描目录，收集识别线索", "Scanning the directory for evidence"],
+    launch_cli: ["已请求启动 CLI，等待事件", "Starting the CLI and waiting for activity"],
+    cli_ready: ["Claude CLI 已就绪，等待模型响应", "Claude CLI is ready and waiting for the model"],
+    model_response: ["开始收到模型响应", "Receiving a model response"],
+    tool_read: ["Claude 发起文件读取", "Claude requested a file read"],
+    tool_glob: ["Claude 发起文件查找", "Claude requested a file search"],
+    tool_grep: ["Claude 发起内容搜索", "Claude requested a content search"],
+    cli_result: ["收到 CLI 结果", "Received the CLI result"],
+    validate_result: ["校验候选服务", "Validating candidate services"],
+  };
+  const events = (job.activity || []).filter(entry => Object.hasOwn(labels, entry.event));
+  const latest = events.at(-1);
+  const now = Date.now() / 1000;
+  const elapsed = Math.max(0, Math.floor(now - (job.started_at || job.created_at || now)));
+  const quietFor = latest ? Math.floor(now - latest.at) : 0;
+  const status = job.state === "queued" ? tr("等待识别任务开始", "Waiting for the analysis job to start")
+    : job.state === "failed" ? tr("识别未完成", "Analysis failed")
+    : job.state === "done" ? tr("识别完成", "Analysis complete")
+    : latest ? tr(...labels[latest.event]) : tr("等待识别进度", "Waiting for analysis progress");
+  return `<p class="note" role="status">${esc(status)}</p>
+    ${job.state === "running" ? `<p class="note">${tr(`已运行 ${elapsed} 秒 · CLI 超时限制 ${job.timeout || 240} 秒`, `${elapsed}s elapsed · CLI timeout ${job.timeout || 240}s`)}
+      ${quietFor >= 10 ? tr(` · 已有 ${quietFor} 秒没有新活动`, ` · No new activity for ${quietFor}s`) : ""}</p>` : ""}
+    ${events.length ? `<details id="analysis-activity" ${wiz.activityOpen ? "open" : ""} ontoggle="wiz.activityOpen = this.open">
+      <summary>${tr("识别活动", "Analysis activity")}</summary>
+      <ul>${events.map(entry => `<li><span class="note">${esc(new Date(entry.at * 1000).toLocaleTimeString(language, {hour12: false}))}</span> ${esc(tr(...labels[entry.event]))}</li>`).join("")}</ul>
+    </details>` : ""}`;
+}
+
 function viewNewProject() {
   const w = wiz;
   const bridge = nativeBridge();
@@ -1326,7 +1357,6 @@ function viewNewProject() {
 
   if (w.step === "job") {
     const job = w.job || {};
-    const running = ["queued", "running"].includes(job.state);
     let errBox = "";
     if (job.state === "failed") {
       const e = job.error || "";
@@ -1344,7 +1374,7 @@ function viewNewProject() {
     return draftsTop + dirStep.replace('1 · 目录与项目', '1 · 目录与项目 ✓') + `
       <section class="card"><div class="card-head"><h3>2 · 识别（${esc(w.agent)}，任务 ${esc(w.jobId || "")}）</h3></div>
       ${projNote}
-      <p class="note">${running ? "进行中…（只读分析，默认最长 240 秒；本页每 2 秒轮询）" : job.state === "done" ? "完成" : "未完成"}</p>
+      ${analysisActivity(job)}
       ${errBox}${(w.unresolved || []).length ? `<p class="reason warn">未解决项：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}
       </section>`;
   }
@@ -1449,6 +1479,7 @@ function viewNewProject() {
     <section class="card"><div class="card-head"><h3>1 · 目录与项目 ✓</h3>
       <div class="acts"><button onclick="wizReset()">重新开始</button></div></div>
       ${projNote}
+      ${w.job?.state === "done" ? analysisActivity(w.job) : ""}
       <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()">重新识别</button></div>
     </section>
     ${w.candidates.length ? `<section class="card"><div class="card-head"><h3>3 · 候选服务（${w.candidates.length}）</h3>

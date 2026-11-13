@@ -40,7 +40,7 @@ class ClaudeAdapter:
                 pass
         argv = [
             self.bin, "-p",
-            "--output-format", "json",
+            "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--tools", "Read,Glob,Grep",  # 只读工具白名单：无 Bash/Edit/Write
             "--permission-prompts", "none",
             "--add-dir", directory,
@@ -50,16 +50,35 @@ class ClaudeAdapter:
         argv.append(prompt if prompt else "Reply with a JSON object.")
         return argv
 
+    @staticmethod
+    def activity(event: dict):
+        """Project CLI events into fixed labels without forwarding message contents."""
+        kind = event.get("type")
+        if kind == "system" and event.get("subtype") == "init":
+            yield "cli_ready"
+        elif kind == "stream_event" and (event.get("event") or {}).get("type") == "message_start":
+            yield "model_response"
+        elif kind == "assistant":
+            tools = {"Read": "tool_read", "Glob": "tool_glob", "Grep": "tool_grep"}
+            for block in (event.get("message") or {}).get("content", []):
+                if block.get("type") == "tool_use" and block.get("name") in tools:
+                    yield tools[block["name"]]
+        elif kind == "result":
+            yield "cli_result"
+
     def parse_output(self, raw: str | bytes, last_message_path: str | None = None) -> dict:
-        """stdout 是 JSON envelope {"type":"result","result":...}；result 里可能是围栏 JSON。"""
+        """Parse the final stream event or a legacy JSON result envelope."""
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", "replace")
         try:
             env = json.loads(raw)
         except ValueError as e:
             raise ValueError(f"claude stdout 不是 JSON: {e}") from e
-        if not isinstance(env, dict) or "result" not in env:
-            raise ValueError(f"claude envelope 缺 result: {str(env)[:200]}")
+        if not isinstance(env, dict):
+            raise ValueError("Claude 结果不是 JSON 对象")
         if env.get("is_error"):
-            raise ValueError(f"claude 返回错误: {str(env.get('result', ''))[:200]}")
-        return extract_json(str(env["result"]))
+            reason = env.get("result") or env.get("errors") or env.get("subtype", "")
+            raise ValueError(f"Claude 返回错误: {str(reason)[:200]}")
+        if isinstance(env.get("structured_output"), dict):
+            return env["structured_output"]
+        return extract_json(str(env.get("result", "")))

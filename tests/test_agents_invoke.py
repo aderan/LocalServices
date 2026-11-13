@@ -325,6 +325,47 @@ class AgentApiTest(InvokeEnv):
         self.assertEqual(agent_api.handle_agents_verify({"kind": "nope"})[0], 400)
         self.assertEqual(agent_api.handle_agents_verify({"kind": "codex", "timeout": "x"})[0], 400)
 
+    def test_claude_tool_activity_is_visible_before_cli_exits(self):
+        from localservices import agent_api
+
+        release = self.root / "release"
+        events = [
+            {"type": "system", "subtype": "init"},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "private-file"}},
+                {"type": "text", "text": "private message"},
+            ]}},
+        ]
+        cli = self.bin / "claude"
+        cli.write_text("#!/bin/sh\n"
+                       + "".join(f"printf '%s\\n' '{json.dumps(event)}'\n" for event in events)
+                       + f'while [ ! -f "{release}" ]; do sleep 0.05; done\n'
+                       + """printf '%s\\n' '{"type":"result","is_error":false,"structured_output":{"services":[]}}'\n""")
+        cli.chmod(0o755)
+        code, body = agent_api.handle_analyze(
+            {"directory": str(self.target), "agent": "claude", "timeout": 8})
+        self.assertEqual(code, 202, body)
+        job_id = body["job_id"]
+
+        def wait_for(predicate):
+            end = time.monotonic() + 3
+            while time.monotonic() < end:
+                _, job = agent_api.handle_job_get(job_id)
+                if predicate(job):
+                    return job
+                time.sleep(0.02)
+            self.fail("Job did not reach the expected state")
+
+        try:
+            job = wait_for(lambda j: any(e["event"] == "tool_read" for e in j.get("activity", [])))
+            self.assertEqual(job["state"], "running")
+            self.assertNotIn("private", json.dumps(job["activity"]))
+        finally:
+            release.touch()
+            final = wait_for(lambda j: j["state"] in ("done", "failed"))
+        self.assertEqual(final["state"], "done", final)
+        self.assertEqual(final["result"]["services"], [])
+
     def test_job_get_not_found_and_bad_id(self):
         from localservices import agent_api
         self.assertEqual(agent_api.handle_job_get("job-nonexistent")[0], 404)
