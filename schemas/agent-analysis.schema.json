@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "LocalServices agent analysis output",
-  "description": "What a Codex/Claude recognition call must return: candidate service definitions grounded in the analyzed directory, with evidence. Analysis only - no execution, no installation, no migration. Optional fields are nullable unions or may be omitted (cmd is omitted for run=compose components; run/compose_*/provision/confirmed_provision are optional) so codex --output-schema / OpenAI structured output accepts it.",
+  "description": "Shared validation schema for service candidates grounded in the analyzed directory. Analysis only. Optional fields may be omitted (including cmd for Compose components). The Codex adapter prepares a strict output schema from this definition.",
   "type": "object",
   "required": ["services"],
   "additionalProperties": false,

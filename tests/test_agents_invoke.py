@@ -90,6 +90,41 @@ class InvokeEnv(unittest.TestCase):
 
 
 class GoodPathTest(InvokeEnv):
+    def test_codex_accepts_strict_schema_and_returns_a_candidate(self):
+        candidate = _service()
+        candidate["components"][0]["compose_files"] = None
+        compose = _service("demo-compose")
+        compose["components"][0].update(cmd=None, run="compose", compose_service="web")
+        payload = self.write_payload("strict.json", json.dumps({"services": [candidate, compose]}))
+        cli = self.bin / "codex"
+        cli.write_text(f"""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+def check_strict(schema):
+    if "properties" in schema:
+        fields = schema["properties"]
+        assert schema.get("additionalProperties") is False
+        assert set(schema["required"]) == set(fields)
+        for child in fields.values():
+            check_strict(child)
+    if "items" in schema:
+        check_strict(schema["items"])
+
+args = sys.argv
+schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
+check_strict(schema)
+component = schema["properties"]["services"]["items"]["properties"]["components"]["items"]
+assert "null" in component["properties"]["cmd"]["type"]
+assert "null" in component["properties"]["compose_files"]["type"]
+Path(args[args.index("-o") + 1]).write_text(Path({payload!r}).read_text())
+""")
+        cli.chmod(0o755)
+        result = invoke.run_analysis("codex", str(self.target), timeout=20)
+        self.assertEqual([s["id"] for s in result.get("services", [])],
+                         ["demo-web", "demo-compose"], result)
+
     def test_codex_good_json(self):
         payload = json.dumps({"services": [_service()]})
         self.write_fake_codex(self.write_payload("good.json", payload))
@@ -204,6 +239,14 @@ class ValidationTest(InvokeEnv):
         script.chmod(0o755)
         r = self._run([_service("rel-cmd", cmd=["./run.sh"])])
         self.assertEqual(r["services"][0]["id"], "rel-cmd")
+
+    def test_cmd_relative_to_component_directory_ok(self):
+        script = self.target / "apps/web/node_modules/.bin/vite"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o755)
+        r = self._run([_service("web", cmd=["node_modules/.bin/vite"], cwd="apps/web")])
+        self.assertEqual([s["id"] for s in r["services"]], ["web"], r)
 
     def test_mixed_good_and_bad(self):
         script = self.target / "run.sh"

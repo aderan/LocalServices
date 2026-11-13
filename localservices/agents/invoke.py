@@ -43,14 +43,14 @@ Hard rules:
 - Each component "cmd" MUST be an argv array (e.g. ["make", "dev"], ["npm", "run", "dev"]);
   never a shell string. Use "shell_script" only for an existing script inside the directory.
 - cmd[0] must resolve: absolute path, PATH executable, <source>/node_modules/.bin,
-  or a path relative to the service source directory.
+  or a path relative to the component's working directory or service source directory.
 - Ports must be 1-65535. "cwd" is relative to the service "source_dir" and must stay
   inside the analyzed directory.
 - For services defined by a compose file you MAY propose a component with
   "run": "compose" and "compose_service": "<service name in the compose file>"
   (optional: "compose_project", "compose_files" as paths relative to source_dir,
-  "provision": "existing"|"up"). Compose components have NO "cmd" (it is optional
-  and unused for them). provision="up" may create/pull containers and requires
+  "provision": "existing"|"up"). For Compose components, omit "cmd" or return null
+  when the output schema requires the field. provision="up" may create/pull containers and requires
   explicit user confirmation later — never assume that authorization; when unsure
   keep "provision": "existing" and put the question in "unresolved".
 - Anything uncertain or only the user can decide goes into that service's "unresolved"
@@ -172,14 +172,15 @@ def _inside(child: Path, root: Path) -> bool:
     return child == root or root in child.parents
 
 
-def _cmd0_ok(cmd0: str, src: Path) -> bool:
+def _cmd0_ok(cmd0: str, src: Path, cdir: Path) -> bool:
     if cmd0.startswith("/"):
         return Path(cmd0).exists()
     if "/" in cmd0:
-        return (src / cmd0).resolve().exists()
+        return (cdir / cmd0).is_file() or (src / cmd0).is_file()
     if shutil.which(cmd0):
         return True
-    return (src / "node_modules" / ".bin" / cmd0).exists()
+    return any((directory / "node_modules" / ".bin" / cmd0).is_file()
+               for directory in (cdir, src))
 
 
 def local_issues(service: dict, root: Path) -> list[str]:
@@ -224,7 +225,7 @@ def local_issues(service: dict, root: Path) -> list[str]:
             cmd = comp.get("cmd") or []
             if not cmd or not isinstance(cmd[0], str):
                 issues.append(f"{sid}.{cid}: cmd 为空")
-            elif not _cmd0_ok(cmd[0], src):
+            elif not _cmd0_ok(cmd[0], src, cdir):
                 issues.append(f"{sid}.{cid}: cmd[0] 无法解析（{cmd[0]}）")
         port = comp.get("port")
         if port is not None and (isinstance(port, bool) or not isinstance(port, int)
