@@ -1,0 +1,25 @@
+# Local verification output and scratch files
+/artifacts/
+/tmp/
+/.tmp/
+*.log
+*.tmp
+
+# Python caches and local coverage
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+.coverage.*
+/htmlcov/
+
+# macOS and native build output
+.DS_Store
+/menubar/build/
+
+# Generated dependencies and build output in test fixtures
+tests/fixtures/**/node_modules/
+tests/fixtures/**/.venv/
+tests/fixtures/**/uv.lock
+tests/fixtures/**/godemo
+tests/fixtures/**/.next/
