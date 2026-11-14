@@ -9,3 +9,9 @@ To update, replace the source in the same directory and rerun `bash scripts/inst
 Existing registrations and language choices carry over. If you used a development checkout with bundled private manifests, move the TOML files you still use into `~/Library/Application Support/LocalServices/builtin-services/` before updating.
 
 For a bug report, include your Locove version, macOS version, Mac architecture, and a redacted error or log.
+
+## Publish a source release
+
+Run **Source release** from the GitHub Actions tab to preview the archive. The workflow uploads the archive and checksum to the run's **Artifacts**.
+
+Push a version tag such as `v0.1.0` from a commit that contains the workflow. The tag run attaches `locove-0.1.0.tar.gz` and its checksum to the GitHub Release.
