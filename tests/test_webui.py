@@ -301,8 +301,8 @@ class MenubarBuildTest(unittest.TestCase):
         swiftc = shutil.which("swiftc")
         if not swiftc:
             self.skipTest("swiftc 不可用（未安装 Xcode Command Line Tools）")
-        app = REPO_ROOT / "menubar" / "build" / "MyBrain Services.app"
-        exe = app / "Contents" / "MacOS" / "MyBrainServices"
+        app = REPO_ROOT / "menubar" / "build" / "Locove.app"
+        exe = app / "Contents" / "MacOS" / "Locove"
         try:
             subprocess.run(["bash", str(REPO_ROOT / "menubar" / "build.sh")],
                            cwd=REPO_ROOT / "menubar", timeout=300, check=True,
@@ -315,7 +315,10 @@ class MenubarBuildTest(unittest.TestCase):
         self.assertTrue((app / "Contents" / "Info.plist").exists())
         plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
         self.assertIn("0.2.0", plist)
-        icon_name = plistlib.loads(plist.encode())["CFBundleIconFile"]
+        metadata = plistlib.loads(plist.encode())
+        for key in ("CFBundleName", "CFBundleDisplayName", "CFBundleExecutable"):
+            self.assertEqual(metadata[key], "Locove", key)
+        icon_name = metadata["CFBundleIconFile"]
         icon = app / "Contents" / "Resources" / icon_name
         self.assertEqual(icon.read_bytes()[:4], b"icns")
         status_logo = app / "Contents" / "Resources" / "LocoveStatus.png"

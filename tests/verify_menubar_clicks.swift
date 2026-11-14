@@ -159,8 +159,9 @@ for (button, flags): (CGMouseButton, CGEventFlags) in [
 
 click(item)
 waitFor("The panel must reopen") { control("locove-filter") != nil }
+guard let panel = control("locove-panel") else { fatalError("Panel frame unavailable") }
+check(abs(frame(panel).width - 410) < 1, "The menu bar panel must be 410 points wide")
 if CommandLine.arguments.count >= 3 {
-    guard let panel = control("locove-panel") else { fatalError("Panel frame unavailable") }
     let bounds = frame(panel).integral
     let capture = Process()
     capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")

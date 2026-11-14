@@ -15,7 +15,7 @@ bash "$REPO/menubar/build.sh" >/dev/null
 
 T="$(mktemp -d /tmp/ls-w3-XXXXXX)"
 APP="$T/LocoveMenubarTest.app"
-cp -R "$REPO/menubar/build/MyBrain Services.app" "$APP"
+cp -R "$REPO/menubar/build/Locove.app" "$APP"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.mybrain.localservices.menubar.guitest' \
   "$APP/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c 'Set :CFBundleName LocoveMenubarTest' "$APP/Contents/Info.plist" >/dev/null
@@ -102,7 +102,7 @@ PY
 
 echo "LAUNCH guitest App（隔离端口 ${PORT}）"
 LOCALSERVICES_PORT="$PORT" LOCALSERVICES_HOME="$T/home" \
-  "$APP/Contents/MacOS/MyBrainServices" >/dev/null 2>&1 &
+  "$APP/Contents/MacOS/Locove" >/dev/null 2>&1 &
 APP_PID=$!
 sleep 5
 kill -0 "$APP_PID" 2>/dev/null || fail "test app exited early"

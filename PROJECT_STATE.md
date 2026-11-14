@@ -54,7 +54,7 @@ DIAGAX=0，窗口在屏；页面内容级验证经浏览器证据覆盖同一 ls
 - `localservices/`：daemon（仅监听 127.0.0.1:47800，launchd KeepAlive）、controller、
   registry、adapters（MediaScope/BrowserCapture/To2050 忙碌判断，orx-analytics 只读）、
   `web/dashboard.html`（单文件 Dashboard）。
-- `menubar/`：菜单栏 + 主窗口 App（`~/Applications/MyBrain Services.app`）。
+- `menubar/`：菜单栏 + 主窗口 App（`~/Applications/Locove.app`）。
 - `services/*.toml`：随仓内置清单（shicha/buildbase/climbo/explore/ui-atlas/
   mediascope/to2050/browsercapture/folklio/orx-analytics）；用户注册写入 user_services_dir，
   tombstone 在用户配置层 `removed.json`（内置模板永不修改）。

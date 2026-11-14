@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install / update Locove／洛湾 (LocalServices) for the current user (idempotent).
 #   - control daemon: LaunchAgent com.mybrain.localservices.daemon (KeepAlive, runs from this repo)
-#   - menu bar app:   ~/Applications/MyBrain Services.app + login LaunchAgent (no KeepAlive, so "退出" sticks)
+#   - menu bar app:   ~/Applications/Locove.app + login LaunchAgent (no KeepAlive, so "退出" sticks)
 #   - CLI:            ~/.local/bin/lsctl
 # Python is resolved generically (no personal absolute path dependency):
 #   LOCALSERVICES_PYTHON wins; otherwise the first python3 on PATH (then common fallbacks)
@@ -11,7 +11,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 UID_="$(id -u)"
 LA="$HOME/Library/LaunchAgents"
 LOGS="$HOME/Library/Logs/LocalServices"
-APP="$HOME/Applications/MyBrain Services.app"
+APP="$HOME/Applications/Locove.app"
 mkdir -p "$LA" "$LOGS" "$HOME/Applications" "$HOME/.local/bin"
 
 resolve_python() {
@@ -40,9 +40,13 @@ PY="$(resolve_python)"
 
 "$REPO/menubar/build.sh" >/dev/null
 launchctl bootout "gui/$UID_/com.mybrain.localservices.menubar" 2>/dev/null || true
-pkill -x MyBrainServices 2>/dev/null && sleep 1 || true
+pkill -x 'Locove|MyBrainServices' 2>/dev/null && sleep 1 || true
 rm -rf "$APP"
-cp -R "$REPO/menubar/build/MyBrain Services.app" "$APP"
+cp -R "$REPO/menubar/build/Locove.app" "$APP"
+rm -rf "$HOME/Applications/MyBrain Services.app"
+# Register the bundle with Launch Services before loading its associated login agent.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+"$LSREGISTER" -f "$APP"
 mkdir -p "$HOME/Library/Application Support/LocalServices/bin"
 cp "$REPO/menubar/build/fsevents-check" "$HOME/Library/Application Support/LocalServices/bin/fsevents-check"
 
@@ -71,7 +75,8 @@ cat > "$LA/com.mybrain.localservices.menubar.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.mybrain.localservices.menubar</string>
-  <key>ProgramArguments</key><array><string>$APP/Contents/MacOS/MyBrainServices</string></array>
+  <key>ProgramArguments</key><array><string>$APP/Contents/MacOS/Locove</string></array>
+  <key>AssociatedBundleIdentifiers</key><array><string>com.mybrain.localservices.menubar</string></array>
   <key>RunAtLoad</key><true/>
   <key>LimitLoadToSessionType</key><string>Aqua</string>
   <key>ProcessType</key><string>Interactive</string>

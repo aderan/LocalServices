@@ -6,14 +6,14 @@ set -uo pipefail
 UID_="$(id -u)"
 LA="$HOME/Library/LaunchAgents"
 launchctl bootout "gui/$UID_/com.mybrain.localservices.menubar" 2>/dev/null
-pkill -x MyBrainServices 2>/dev/null
+pkill -x 'Locove|MyBrainServices' 2>/dev/null
 launchctl bootout "gui/$UID_/com.mybrain.localservices.daemon" 2>/dev/null
 for label in $(launchctl list | awk '{print $3}' | grep '^com\.mybrain\.ls\.'); do
   echo "stopping $label"
   launchctl bootout "gui/$UID_/$label" 2>/dev/null
 done
 rm -f "$LA/com.mybrain.localservices.daemon.plist" "$LA/com.mybrain.localservices.menubar.plist"
-rm -rf "$HOME/Applications/MyBrain Services.app"
+rm -rf "$HOME/Applications/Locove.app" "$HOME/Applications/MyBrain Services.app"
 rm -f "$HOME/.local/bin/lsctl"
 # Remove only skill files this tool installed and the user did not modify (§6 契约)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

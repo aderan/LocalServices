@@ -46,7 +46,7 @@ scripts/uninstall.sh --purge  # 另删本工具状态与日志；子项目数据
 安装后：
 
 - 控制服务 `com.mybrain.localservices.daemon`（launchd KeepAlive），仅监听 `127.0.0.1:47800`；
-- 菜单栏 + 主窗口 `~/Applications/MyBrain Services.app`（登录自启；关窗不退出、退出 UI 不停服务）；
+- 菜单栏 + 主窗口 `~/Applications/Locove.app`（登录自启；关窗不退出、退出 UI 不停服务）；
 - Dashboard：主窗口和浏览器（`http://127.0.0.1:47800/`）从同一控制服务加载页面。页面更新后，空闲窗口会自动加载新版，编辑中或正在识别时会提示。修改 Python 后台或 macOS 原生代码后，使用 `scripts/install.sh` 更新运行中的组件；
 - CLI：`~/.local/bin/lsctl`（见下）；Python 经 `LOCALSERVICES_PYTHON` 覆盖或通用解析，无个人绝对路径依赖；
 - Codex Skill：`~/.codex/skills/localservices`（安装/更新经 sha256 记录，绝不覆盖用户改动，自动备份第三方同名技能）。

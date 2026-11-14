@@ -1,8 +1,8 @@
 #!/bin/bash
-# Build "MyBrain Services.app" (menu bar + main window, LSUIElement) into menubar/build/.
+# Build Locove.app (menu bar + main window, LSUIElement) into menubar/build/.
 set -euo pipefail
 cd "$(dirname "$0")"
-APP="build/MyBrain Services.app"
+APP="build/Locove.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 icon_tmp="$(mktemp -d "${TMPDIR:-/tmp}/locove-icon.XXXXXXXX")"
@@ -16,14 +16,15 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$APP/Contents/Resources/Locove.icns"
 cp "$iconset/icon_128x128.png" "$APP/Contents/Resources/LocoveStatus.png"
-swiftc -O -o "$APP/Contents/MacOS/MyBrainServices" main.swift MainWindow.swift StatusPanel.swift
+swiftc -O -o "$APP/Contents/MacOS/Locove" main.swift MainWindow.swift StatusPanel.swift
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>com.mybrain.localservices.menubar</string>
-  <key>CFBundleName</key><string>MyBrain Services</string>
-  <key>CFBundleExecutable</key><string>MyBrainServices</string>
+  <key>CFBundleName</key><string>Locove</string>
+  <key>CFBundleDisplayName</key><string>Locove</string>
+  <key>CFBundleExecutable</key><string>Locove</string>
   <key>CFBundleIconFile</key><string>Locove.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.2.0</string>

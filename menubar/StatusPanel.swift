@@ -19,7 +19,7 @@ final class StatusPanelModel: ObservableObject {
 }
 
 struct StatusPanel: View {
-    static let size = NSSize(width: 414, height: 556)
+    static let size = NSSize(width: 410, height: 556)
     @ObservedObject var model: StatusPanelModel
     let app: App
     @Environment(\.colorScheme) private var colorScheme
