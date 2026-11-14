@@ -1,6 +1,8 @@
 # Locove
 
-Locove is a macOS menu bar app and workbench for running local development services. Register a project once, then start it, open its URL, check logs, or diagnose a port conflict. Coding agents can use the same controls through `lsctl`.
+**English** · [简体中文](README.zh-CN.md)
+
+Locove is a macOS menu bar app and workbench for running local development services. Register a service once, then start it, open its URL, check logs, or diagnose a port conflict.
 
 ## Install
 
@@ -12,11 +14,23 @@ Extract the source to a directory you can keep. Open Terminal in that directory 
 bash scripts/install.sh
 ```
 
-The installer places the app at `~/Applications/Locove.app`. Open Locove from the menu bar or visit the [local workbench](http://127.0.0.1:47800/). It starts in English with an empty service list. Choose **Settings → Interface language** to switch to Simplified Chinese.
+The installer places the app at `~/Applications/Locove.app`. On a fresh install, the service list is empty and the interface defaults to English. In the workbench, choose **Settings → Interface language → 简体中文** to switch to Simplified Chinese.
 
-Choose **Add service**, select your project directory, and enter its start command and local port. Then choose **Start and open**. Use **Issues** to see why a service failed.
+## Workbench
+
+Open the [local workbench](http://127.0.0.1:47800/) and choose **Add service**. Enter your project directory, then choose **Add manually** and fill in the start command and local port. Register the service and choose **Start and open**. Use **Issues** to see why a service failed.
+
+![Locove workbench showing the service list, status, and controls in English](docs/screenshots/workbench-en.png)
+
+## Menu bar
+
+Click the Locove icon in the macOS menu bar to check service status or open a running service. Choose **Open in browser** to go to the workbench.
+
+<img src="docs/screenshots/menubar-en.png" alt="Locove menu bar panel showing running services and issues in English" width="280">
 
 ## Use your coding agent
+
+The installer includes `lsctl`, Locove’s command-line client for scripts and coding agents, at `~/.local/bin/lsctl`.
 
 Paste this into a local coding agent and provide the path to the extracted source:
 
@@ -25,12 +39,5 @@ Paste this into a local coding agent and provide the path to the extracted sourc
 To start a registered service, give the agent its name and ask it to run `"$HOME/.local/bin/lsctl" start <service-id> --open --wait 60`. The [registration format](skills/localservices/references/payload-format.md) covers new projects. Agent discovery is optional.
 
 Locove keeps service definitions and edits in `~/Library/Application Support/LocalServices/`. Store credentials in private files referenced by `env_files`.
-
-## Screenshots
-
-| English | Simplified Chinese |
-| --- | --- |
-| ![Locove workbench in English](docs/screenshots/workbench-en.png) | ![Locove workbench in Simplified Chinese](docs/screenshots/workbench-zh.png) |
-| <img src="docs/screenshots/menubar-en.png" alt="Locove menu bar in English" width="280"> | <img src="docs/screenshots/menubar-zh.png" alt="Locove menu bar in Simplified Chinese" width="280"> |
 
 [Product scope](docs/SCOPE.md) · [Release notes, updates, and removal](docs/RELEASE-0.1.0.md) · [MIT license](LICENSE)
