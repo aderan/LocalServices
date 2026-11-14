@@ -879,8 +879,13 @@ class Registry:
                         "details": clash}
 
             # ---- 校验完成，开始落盘 ----
-            target = (Path(existing.file) if existing is not None and existing.file
+            existing_file = Path(existing.file) if existing is not None and existing.file else None
+            builtin = (existing_file is not None
+                       and existing_file.parent.resolve() == paths.services_dir().resolve())
+            target = (existing_file if existing_file is not None and not builtin
                       else paths.user_services_dir() / f"{sid}.toml")
+            if target != existing_file and target.exists():
+                return {"ok": False, "error": f"本机清单路径已被占用：{target}", "details": []}
             text = dumps_toml(final_def).encode("utf-8")
             if trial is not None:
                 trial(action, final_def, existing)
@@ -921,7 +926,10 @@ class Registry:
                                       edited=svc.get("edited"), final_definition=final_def)
             if ov_bytes is not None:
                 writes.append((paths.overrides_file(), ov_bytes))
-            if sid in tombstones.services():
+            if builtin:
+                shadow = tombstones.apply_add_service(tombstones.base(), sid, {"builtin_shadow": True})
+                writes.append((paths.removed_file(), shadow))
+            elif sid in tombstones.services():
                 # 同 sid 重新注册解除 tombstone（内置遮蔽语义：有内置模板则保留条目）
                 rm_bytes = tombstones.plan_clear_on_reregister(sid)
                 if rm_bytes is not None:
@@ -1513,7 +1521,7 @@ class Registry:
             writes: list[tuple[Path, bytes]] = [
                 (paths.user_services_dir() / f"{sid}.toml", out_text.encode("utf-8"))]
             # tombstone：有内置模板 → 保留条目（持续遮蔽 builtin）；纯用户层 id → 解除
-            builtin_shadow = (paths.services_dir() / f"{sid}.toml").exists()
+            builtin_shadow = tombstones.has_builtin(sid)
             if not builtin_shadow:
                 rm_bytes = tombstones.plan_remove_service(sid)
                 if rm_bytes is not None:
@@ -1661,7 +1669,7 @@ class Registry:
             rm_data = tombstones.base()
             rm_bytes = tombstones.apply_remove_project(rm_data, pid)
             for sid in members:
-                if (paths.services_dir() / f"{sid}.toml").exists():
+                if tombstones.has_builtin(sid):
                     continue  # 内置遮蔽语义：保留条目
                 b = tombstones.apply_remove_service(rm_data, sid)
                 if b is not None:
@@ -1729,10 +1737,13 @@ class Registry:
                 for sid in x.get("services", []):
                     assigned.setdefault(sid, x["id"])
 
-            # 1) 需要追加 project= 的 TOML（内置 services/ 与用户目录一视同仁）。
+            # 1) 需要追加 project= 的 TOML；内置清单在用户目录生成副本。
             #    V2.5：TOML 已声明**不同** project 值 → 跳过写入并记 note（绝不插第二个顶层键）；
             #    registry 已把 sid 指派给其他项目 → 同样不写映射键（不挪归属）。
-            toml_writes: list[tuple[Path, bytes, bytes]] = []
+            toml_writes: list[tuple[Path, bytes | None, bytes]] = []
+            shadows = tombstones.base()
+            shadow_bytes = None
+            builtin_dir = paths.services_dir().resolve()
             declared: dict[str, str | None] = {}  # sid → TOML 声明的 project（无键=None）
             for spec in desired:
                 for sid in spec["services"]:
@@ -1751,6 +1762,12 @@ class Registry:
                                      f"不写入 project={spec['id']!r}、不挪归属")
                         continue
                     new = _insert_project_line(orig.decode("utf-8"), spec["id"]).encode("utf-8")
+                    if file.parent.resolve() == builtin_dir:
+                        file = paths.user_services_dir() / f"{sid}.toml"
+                        if file.exists():
+                            return {"ok": False, "error": f"本机清单路径已被占用：{file}"}
+                        orig = None
+                        shadow_bytes = tombstones.apply_add_service(shadows, sid, {"builtin_shadow": True})
                     toml_writes.append((file, orig, new))
 
             # 2) registry 合并（保留用户已有的项目与目录，仅补齐迁移映射）。
@@ -1806,6 +1823,11 @@ class Registry:
                 for file, orig, new in toml_writes:
                     _write_bytes_atomic(file, new)
                     replaced.append((file, orig))
+                if shadow_bytes is not None:
+                    removed_file = paths.removed_file()
+                    original = _current_bytes(removed_file)
+                    _write_bytes_atomic(removed_file, shadow_bytes)
+                    replaced.append((removed_file, original))
                 if old_bytes is not None:
                     bak = reg_path.with_name(f"registry.json.bak-{ts}")
                     bak.write_bytes(old_bytes)

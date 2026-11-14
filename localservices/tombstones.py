@@ -141,9 +141,15 @@ def plan_remove_project(pid: str) -> bytes | None:
 def plan_clear_on_reregister(sid: str) -> bytes | None:
     """重新注册成功后解除 tombstone（V2.0 修订）：存在同 id 内置模板则保留条目
     （继续遮蔽内置文件，避免与用户层文件形成 duplicate id），纯用户层 id 才删除。"""
-    if (paths.services_dir() / f"{sid}.toml").exists():
+    if has_builtin(sid):
         return None
     return plan_remove_service(sid)
+
+
+def has_builtin(sid: str) -> bool:
+    from . import manifest
+
+    return any(manifest.load_file(file).id == sid for file in paths.services_dir().glob("*.toml"))
 
 
 def add_service(sid: str, entry: dict) -> None:

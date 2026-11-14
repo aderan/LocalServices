@@ -107,9 +107,11 @@ class FirstMigrationTest(MigrationBase):
         self.assertEqual(mapped["solo"], ["solo"])
 
     def test_project_line_lands_at_top_level(self):
+        original = self.toml_bytes()
         self.reg.migrate_from_manifests()
+        self.assertEqual(self.toml_bytes(), original)
         # project= 必须位于第一个 [[components]] 之前，而不是落入最后一个组件表
-        text = (self.services / "solo.toml").read_text()
+        text = (self.user_services / "solo.toml").read_text()
         self.assertLess(text.index('project = "solo"'), text.index("[[components]]"))
         import tomllib
         self.assertEqual(tomllib.loads(text)["project"], "solo")
@@ -146,8 +148,19 @@ class FailureTest(MigrationBase):
         self.assertFalse(res["ok"])
         self.assertIn("恢复", res["error"])
         self.assertEqual(self.toml_bytes(), original)  # 已写/未写文件一律恢复原字节
+        self.assertEqual(list(self.user_services.glob("*.toml")), [])
+        self.assertFalse(paths.removed_file().exists())
         self.assertFalse((self.home / "registry.json").exists())
         self.assertFalse((self.home / "registry.json.migration-backup").exists())
+
+    def test_existing_local_file_is_preserved(self):
+        local = self.user_services / "solo.toml"
+        local.write_text(f'id = "different"\nname = "Different"\nsource = "{self.root / "srcA"}"\n')
+        original = local.read_bytes()
+        result = self.reg.migrate_from_manifests()
+        self.assertFalse(result["ok"])
+        self.assertEqual(local.read_bytes(), original)
+        self.assertEqual(list(self.user_services.glob("*.toml")), [local])
 
 
 if __name__ == "__main__":

@@ -229,6 +229,25 @@ class DryRunTest(V2Base):
 
 
 class UpdateSemanticsTest(V2Base):
+    def test_editing_builtin_keeps_repository_file_and_loads_user_copy(self):
+        builtin = self.services / "bundled.toml"
+        builtin.write_text(
+            f'id = "demo"\nname = "Demo"\nproject = "p1"\nsource = "{self.src}"\n'
+            f'[[components]]\nid = "web"\ncmd = ["{PY}", "-m", "http.server", "48301"]\n'
+            'port = 48301\n'
+        )
+        original = builtin.read_bytes()
+        result = self.reg.register_service(self.payload(revision=0, name="Local Demo"))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(builtin.read_bytes(), original)
+        service = manifest.load_all()["demo"]
+        self.assertEqual(service.file, self.user_services / "demo.toml")
+        self.assertEqual(service.name, "Local Demo")
+        result = self.reg.register_service(self.payload(revision=result["revision"], name="Edited Again"))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(manifest.load_all()["demo"].name, "Edited Again")
+        self.assertEqual(builtin.read_bytes(), original)
+
     def test_empty_description_preserves_manual_text(self):
         """GUI 恒携带 description；重新识别的空串不得清空用户手写描述（复现项 4 的登记层防线）。"""
         self.assertTrue(self.reg.register_service(

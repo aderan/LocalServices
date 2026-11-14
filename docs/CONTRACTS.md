@@ -158,8 +158,9 @@ lsctl resources [--json]
 ## 7. 迁移映射（一次性，幂等）
 
 - 旧 group → 新 Project（`ui-atlas` 组：explore + ui-atlas）；无 group 服务各自成 Project（id=service id）。
-- 旧 `source` → Project 的 Directory（role=source）。服务 TOML 追加 `project` 字段（其余不动）。
-- 迁移仅生成/更新 `registry.json`（origin=migrated），不改 state.json、launchd 标签、端口、数据根。
+- 旧 `source` → Project 的 Directory（role=source）。服务 TOML 追加 `project` 字段；内置清单需要补字段时，
+  在用户目录生成副本并遮蔽内置清单。
+- 迁移更新本机 `registry.json`（origin=migrated）和需要补字段的用户层清单，保留运行状态、launchd 标签、端口和数据根。
 - 迁移前快照（registry.json 不存在时首次执行）；失败恢复原状。二次执行 = 校验一致性，无变化。
 - 旧 CLI/group 别名全部保留（service id 未变，`restart-group` 继续工作）。
 
@@ -196,6 +197,7 @@ V1 §1–§8 继续有效；与之冲突的地方以本节为准。变更必须�
   - 重新注册的 id 若存在内置模板（如 shicha）：**保留** removed.json 条目（持续遮蔽内置文件），
     但 `GET /api/removed` 列表只显示当前未登记（load_all 不含该 id）的条目；
   - 重新注册纯用户层 id：成功后删除 removed.json 条目；
+  - 编辑正在生效的内置清单：用户层副本与内置遮蔽条目一起提交。后续编辑同一服务继续更新用户层副本；
   - 迁移、升级、daemon 重启、reconcile 不复活 tombstone 服务（内置遮蔽持续生效）。
 
 ## V2.1 服务移除 v2 与预览

@@ -128,7 +128,8 @@ class RegistryAssignmentTest(MigBase):
                           "updated_at": "t", "revision": 1}]}), encoding="utf-8")
         res = self.reg.migrate_from_manifests()
         self.assertTrue(res["ok"], res)
-        self.assertEqual(tomllib.loads(solo.read_text(encoding="utf-8"))["project"], "solo")
+        self.assertNotIn("project", tomllib.loads(solo.read_text(encoding="utf-8")))
+        self.assertEqual(tomllib.loads((self.user_services / solo.name).read_text())["project"], "solo")
         self.assertEqual(self.services_of("solo"), {"solo"})
 
 

@@ -138,8 +138,9 @@ lsctl analyze <dir> --agent A [--project PID] ...                  # 带目标�
 
 ## 模型（服务生命周期，沿用 V0）
 
-- `services/<id>.toml` 是项目清单：组件（server / worker / generator）、命令、端口、就绪探针、
-  依赖、热更新与监视范围。端口固定写在清单里，用户不需要管理地址。
+- 本机服务清单保存在 `~/Library/Application Support/LocalServices/services/<id>.toml`，包含组件、
+  命令、端口、就绪探针、依赖、热更新与监视范围。编辑仓库随附的服务时，工作台会保存用户层副本。
+  凭据通过组件的 `env_files` 从仓库外的私有文件读取。
   清单加载时拒绝重复监听端口；运行时其他受管项目占用端口也会报告冲突。
 - 每次启动共用一个总预算（基线 30 秒，组件声明的 `start_timeout` 超出 30s 的部分会叠加，上限 300s；含安装、编译、就绪探测）；进程提前退出立即报错。
   超时后清理本轮拉起的组件，保留错误并释放操作状态；可以停止或重试，不自动循环启动。
@@ -163,8 +164,9 @@ lsctl analyze <dir> --agent A [--project PID] ...                  # 带目标�
   - generator 组件在输入变化后重新生成，失败保留上次有效输出。
 - 适配器（`localservices/adapters/`）：MediaScope、BrowserCapture、To2050 的忙碌/健康判断，
   orx-analytics 仅只读观察。
-- Climbo 模板编辑（`services/climbo.toml`）：从当前源码起管理端 `127.0.0.1:3001/admin/templates`
-  与本地 API `:8080`，数据库指向已有的 `climbo-postgres :5434`。Postgres/Redis 可按需恢复，
+- Climbo 模板编辑（本机注册）：从当前源码起管理端 `127.0.0.1:3001/admin/templates`
+  与本地 API `:8080`，数据库指向已有的 `climbo-postgres :5434`。API 清单通过 `env_files` 引用
+  本机的数据库密码和 JWT 密钥。Postgres/Redis 可按需恢复，
   Metadata 只观察；停止项目均不停止这些依赖，也不连接生产管理端。
 - 日志 `~/Library/Logs/LocalServices/`（0600，轮转，令牌与凭据脱敏）。
 
