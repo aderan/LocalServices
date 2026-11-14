@@ -11,9 +11,9 @@ struct StatusPanelSection {
 }
 
 final class StatusPanelModel: ObservableObject {
-    @Published var language = InterfaceLanguage.chinese
+    @Published var language = InterfaceLanguage.english
     @Published var sections: [StatusPanelSection] = []
-    @Published var connection = "连接中…"
+    @Published var connection = "Connecting…"
     @Published var connected = false
     @Published var warnings: [String] = []
 }

@@ -16,7 +16,8 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$APP/Contents/Resources/Locove.icns"
 cp "$iconset/icon_128x128.png" "$APP/Contents/Resources/LocoveStatus.png"
-swiftc -O -o "$APP/Contents/MacOS/Locove" main.swift MainWindow.swift StatusPanel.swift
+TARGET="$(uname -m)-apple-macos13.0"
+swiftc -target "$TARGET" -O -o "$APP/Contents/MacOS/Locove" main.swift MainWindow.swift StatusPanel.swift
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -34,5 +35,5 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
-swiftc -O -o build/fsevents-check fsevents_check.swift
+swiftc -target "$TARGET" -O -o build/fsevents-check fsevents_check.swift
 echo "built $APP"

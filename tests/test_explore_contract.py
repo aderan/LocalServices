@@ -7,7 +7,7 @@ from localservices import manifest
 
 class ExploreContractTest(unittest.TestCase):
     def setUp(self):
-        self.projects = manifest.load_all(Path(__file__).resolve().parents[1] / "services")
+        self.projects = manifest.load_all(Path(__file__).resolve().parent / "fixtures" / "service-manifests")
         self.project = self.projects["explore"]
 
     def test_entry_opens_the_explore_frontend(self):

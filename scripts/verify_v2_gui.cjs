@@ -51,6 +51,11 @@ for (let i = 0; i < 100; i++) {
 }
 if (!token) { console.error("FATAL: daemon 未就绪"); cleanup(); process.exit(2); }
 
+// Legacy copy assertions use Chinese; the real browser suite covers the English default.
+await realFetch(base + "/api/settings/language", {
+  method: "POST", headers: {"X-LocalServices-Token": token, "Content-Type": "application/json"},
+  body: JSON.stringify({language: "zh-CN"}),
+});
 const html = await (await realFetch(`${base}/`, {headers: {"X-LocalServices-Token": token}})).text();
 const script = html.match(/<script>([\s\S]*)<\/script>/)[1]
   .replace('const TOKEN = "__TOKEN__";', `var TOKEN = ${JSON.stringify(token)};`);
@@ -132,7 +137,7 @@ const dispatchKey = (key, target) => {
     fn({key, target: target || null, preventDefault() {}, stopPropagation() {}});
 };
 
-const runner = new Function(script + "\n; return {render, api, refresh, wizField, wizNewTask, wizSelectTask, wizardTarget, wizRegister, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
+const runner = new Function(script + "\n; return {render, api, refresh, wizField, wizNewTask, wizSelectTask, wizardTarget, wizRegister, wizPoll, applyAgentRepair, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
 const page = runner();
 const out = [];
 const SECTIONS = [];
@@ -794,6 +799,45 @@ section("verified registration");
     check("添加页可启用试启动后自动登记", initial.includes("试启动通过后自动登记"));
     check("未配置 Agent 时仍可获取外部提示词", initial.includes("复制外部 Agent 提示词"));
   } finally { page.setWiz(oldWizard); }
+}
+
+section("port repair confirmation");
+{
+  const oldWizard = page.wizGet();
+  const originalFetch = globalThis.fetch;
+  const oldPort = 48229, newPort = 48230;
+  const current = {id: "web", port: oldPort, cmd: ["npm", "run", "dev", "--", "--port", String(oldPort)]};
+  const proposed = {...current, port: newPort, cmd: [...current.cmd.slice(0, -1), String(newPort)]};
+  const sid = "repair-fixture";
+  const job = {state: "done", result: {services: [{id: sid, components: [proposed]}]}};
+  const calls = [];
+  const wizard = {
+    step: "job", name: "Repair fixture", dir: srcA, agent: "codex", project: {id: sid},
+    candidates: [], unresolved: [], repair: {sid, revision: 1, definition: {components: [current]}},
+  };
+  globalThis.fetch = async (url, options) => {
+    if (url === "/api/jobs/repair-fixture") return {ok: true, status: 200, json: async () => job};
+    if (url === "/api/services/repair-fixture/repair") {
+      calls.push(JSON.parse(options.body));
+      return {ok: true, status: 200, json: async () => ({ok: true})};
+    }
+    return originalFetch(url, options);
+  };
+  try {
+    page.setWiz(wizard);
+    await page.wizPoll(wizard, sid);
+    const preview = page.viewNewProject();
+    check("端口修复先展示差异，未确认不提交",
+          calls.length === 0 && preview.includes("确认并试启动") && preview.includes("48229 → 48230")
+          && preview.includes("当前命令") && preview.includes("建议命令"));
+    await page.applyAgentRepair(wizard);
+    check("确认后提交已展示的端口与命令",
+          calls.length === 1 && calls[0].revision === 1
+          && JSON.stringify(calls[0].component) === JSON.stringify(proposed));
+  } finally {
+    globalThis.fetch = originalFetch;
+    page.setWiz(oldWizard);
+  }
 }
 
 section("analysis activity");

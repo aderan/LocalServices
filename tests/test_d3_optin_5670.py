@@ -169,7 +169,7 @@ class EnableFlowTest(OptInEnv):
         self.assertFalse(Registry().locove_settings()["use_domains"])
 
     def test_port_conflict_aborts_before_installing(self):
-        res = self._enable_with(port_open=True)  # _listener_name 默认 None 但 port_open=True→conflict? 
+        res = self._enable_with(port_open=True)  # _listener_name 默认 None 但 port_open=True→conflict?
         # port_open=True + listener None → port_free False → conflict
         self.assertFalse(res["ok"])
         self.assertEqual(res["reason"], "port-conflict")

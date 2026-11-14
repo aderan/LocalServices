@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>洛湾</title>
+<title>Locove</title>
 <link rel="icon" type="image/png" href="/locove-logo.png">
 <style>
   :root { color-scheme: light dark;
@@ -492,7 +492,7 @@ function attentionServices() {
 
 // ------------------------------------------------------------ 渲染
 
-let language = "zh-CN";
+let language;
 let languageVersion = 0;
 const originalLabels = new WeakMap();
 const tr = (zh, en) => language === "en" ? en : zh;
@@ -502,7 +502,7 @@ const VIEW_TITLES = {all: ["服务", "Services"], attention: ["需要处理", "N
   agents: ["Agent 连接", "Agent connections"], settings: ["设置", "Settings"], "new-project": ["添加服务", "Add service"]};
 
 function applyLanguage(value) {
-  const next = value === "en" ? "en" : "zh-CN";
+  const next = value === "zh-CN" ? "zh-CN" : "en";
   if (language === next) return;
   language = next;
   if (document.documentElement) document.documentElement.lang = language;
@@ -976,7 +976,7 @@ function groupToolbar(gid, members) {
 function viewAll() {
   if (!snap) return connOk === false
       ? `<div class="empty">控制层不可用，服务状态未知——不代表项目已停止。</div>`
-      : `<div class="empty">加载中…</div>`;
+      : `<div class="empty">${tr("加载中…", "Loading…")}</div>`;
   const sys = (snap.system_warnings || []).map(w => `<p class="reason warn">⚠︎ ${esc(w)}</p>`).join("");
   const head = sys + (snap.manifest_error ? `<p class="reason">${esc(snap.manifest_error)}</p>` : "");
   const groups = projectGroups().filter(g => projectMatchesSearch(g.pj, g.members));
@@ -989,16 +989,19 @@ function viewAll() {
     const ghead = `<div class="group-head">
         ${orphan ? "" : `<button class="star${pj.favorite ? " on" : ""}" onclick="toggleFav('${pj.id}')" aria-label="收藏">${pj.favorite ? "★" : "☆"}</button>`}
         <h3>${esc(pj.name)}</h3>
-        <span class="note">${members.length} 个服务${pj.agent && pj.agent !== "none" ? " · Agent " + esc(pj.agent) : ""}</span>
-        ${orphan ? "" : `<div class="acts"><button class="ghost" onclick="setView('project:${esc(pj.id)}')">项目详情</button><button class="kebab" aria-haspopup="menu" aria-label="项目菜单（添加服务 / 重新识别 / 重命名 / 移除项目）" onclick="toggleMenu(event,'proj:${esc(pj.id)}')">⋯</button></div>`}
+        <span class="note">${tr(`${members.length} 个服务`, `Services: ${members.length}`)}${pj.agent && pj.agent !== "none" ? " · Agent " + esc(pj.agent) : ""}</span>
+        ${orphan ? "" : `<div class="acts"><button class="ghost" onclick="setView('project:${esc(pj.id)}')">${tr("项目详情", "Project details")}</button><button class="kebab" aria-haspopup="menu" aria-label="项目菜单（添加服务 / 重新识别 / 重命名 / 移除项目）" onclick="toggleMenu(event,'proj:${esc(pj.id)}')">⋯</button></div>`}
       </div>`;
     return `<section class="group" aria-label="项目 ${esc(pj.name)}">
       ${ghead}
       ${groupIds.map(gid => groupToolbar(gid, shown.filter(m => m.group === gid))).join("")}
-      ${shown.map(p => serviceRow(p, false)).join("") || `<div class="empty">无匹配服务</div>`}
+      ${shown.map(p => serviceRow(p, false)).join("") || `<div class="empty">${tr("无匹配服务", "No matching services")}</div>`}
     </section>`;
   }).join("");
-  return head + (body || `<div class="empty">没有匹配的项目或服务。${connOk === false ? "（控制层不可用）" : ""}</div>`);
+  if (!groups.length && !(snap.projects || []).length && !document.getElementById("globalSearch").value.trim())
+    return head + `<div class="empty"><p>${tr("还没有已登记的服务。", "No services registered yet.")}</p>
+      <button class="primary" onclick="setView('new-project')">${tr("添加服务", "Add service")}</button></div>`;
+  return head + (body || `<div class="empty">${tr("没有匹配的项目或服务。", "No matching projects or services.")}</div>`);
 }
 
 function viewProject(pid) {
@@ -1455,13 +1458,13 @@ function analysisActivity(job) {
 
 function recognitionTaskList() {
   return `<section class="card">
-    <div class="card-head"><h3>识别任务</h3><button id="wizNewTask" onclick="wizNewTask()">新建识别任务</button></div>
+    <div class="card-head"><h3>${tr("识别任务", "Discovery tasks")}</h3><button id="wizNewTask" onclick="wizNewTask()">${tr("新建识别任务", "New discovery task")}</button></div>
     ${recognitionTasks.map(task => {
       const status = task.verifying ? "试启动中" : task.registering || task.manualRegistering ? "登记中" : task.registered ? "已登记"
         : ({queued: "排队中", running: "识别中", done: task.candidates.length ? "待核对" : "无可用候选",
             failed: "识别失败"})[task.job?.state] || (task.step === "job" ? "提交中" : "待选择目录");
       return `<button class="recognition-task" onclick="wizSelectTask(${task.taskId})" aria-pressed="${task === wiz}">
-        <strong>${esc(task.name || "新任务")}</strong><span>${esc(status)}</span>
+        <strong>${esc(task.name || tr("新任务", "New task"))}</strong><span>${esc(status)}</span>
         ${task.dir ? `<small>${esc(task.dir)}${task.agent ? " · " + esc(task.agent) : ""}</small>` : ""}
       </button>`;
     }).join("")}
@@ -1504,26 +1507,26 @@ function viewNewProject() {
   const pageTop = recognitionTaskList() + draftCards();
   const dirStep = `
     <section class="card">
-      <div class="card-head"><h3>目录与项目</h3></div>
-      <div class="field"><label>项目目录</label>
-        <input id="wizDir" value="${esc(w.dir)}" placeholder="/绝对/路径" oninput="wizField('dir',this.value)" aria-label="项目目录" ${hasPresets ? "readonly" : ""}>
-        ${hasPresets ? "" : `<button onclick="chooseDirectory()">${bridge ? "选择目录…" : "手动输入路径"}</button>`}
-        ${bridge ? "" : `<span class="inline-note">浏览器环境：直接输入路径（原生窗口中可用系统目录选择器）</span>`}
+      <div class="card-head"><h3>${tr("目录与项目", "Project details")}</h3></div>
+      <div class="field"><label>${tr("项目目录", "Project directory")}</label>
+        <input id="wizDir" value="${esc(w.dir)}" placeholder="/绝对/路径" oninput="wizField('dir',this.value)" aria-label="${tr("项目目录", "Project directory")}" ${hasPresets ? "readonly" : ""}>
+        ${hasPresets ? "" : `<button onclick="chooseDirectory()">${bridge ? tr("选择目录…", "Choose directory…") : tr("手动输入路径", "Enter path")}</button>`}
+        ${bridge ? "" : `<span class="inline-note">${tr("浏览器中直接输入路径。", "Enter the path in the browser.")}</span>`}
       </div>
-      <div class="field"><label>项目名称</label><input id="wizName" aria-label="项目名称" value="${esc(w.name)}" placeholder="默认取目录名" oninput="wizField('name',this.value)" onblur="if (!this.value.trim()) wizField('dir', wiz.dir)"></div>
-      <div class="field"><label>识别 Agent</label>
-        <select oninput="wizField('agent',this.value)" aria-label="识别 Agent">
+      <div class="field"><label>${tr("项目名称", "Project name")}</label><input id="wizName" aria-label="${tr("项目名称", "Project name")}" value="${esc(w.name)}" placeholder="${tr("默认取目录名", "Defaults to the directory name")}" oninput="wizField('name',this.value)" onblur="if (!this.value.trim()) wizField('dir', wiz.dir)"></div>
+      <div class="field"><label>${tr("识别 Agent", "Discovery agent")}</label>
+        <select oninput="wizField('agent',this.value)" aria-label="${tr("识别 Agent", "Discovery agent")}">
           ${["codex", "claude"].map(a => `<option value="${a}" ${(w.agent || agentsData?.default || "codex") === a ? "selected" : ""}>${a}</option>`).join("")}
         </select>
         <span class="inline-note">当前默认：${esc(agentsData?.default || "codex")}</span></div>
       <div class="acts" style="justify-content:flex-start">
         ${hasPresets
           ? `<button class="primary" onclick="wizAnalyzePresetDirs()" ${w.step === "job" ? "disabled" : ""}>识别所选目录</button>
-             <button onclick="wizStartManual()">手动添加服务</button>
+             <button onclick="wizStartManual()">${tr("手动添加服务", "Add service manually")}</button>
              <span class="inline-note">已选用项目 ${esc(w.project.id)}（${(w.presetDirs || []).filter(d => d.sel).length}/${(w.presetDirs || []).length} 目录）</span>`
-          : `<button class="primary" onclick="wizStartAnalyze()" ${w.step === "job" ? "disabled" : ""}>开始识别</button>
-             <button onclick="wizStartManual()">跳过识别，手动添加服务</button>`}
-        <button onclick="externalAgentPrompt()">复制外部 Agent 提示词</button>
+          : `<button class="primary" onclick="wizStartAnalyze()" ${w.step === "job" ? "disabled" : ""}>${tr("开始识别", "Discover services")}</button>
+             <button onclick="wizStartManual()">${tr("跳过识别，手动添加服务", "Add manually")}</button>`}
+        <button onclick="externalAgentPrompt()">${tr("复制外部 Agent 提示词", "Copy prompt for external agent")}</button>
       </div>
       <div class="field">
         <label><input type="checkbox" style="min-width:0;flex:none" ${w.autoRegister ? "checked" : ""}
@@ -1568,14 +1571,21 @@ function viewNewProject() {
 
   if (w.repair) {
     const result = w.repairResult;
-    return pageTop + `<section class="card"><div class="card-head"><h3>Agent 修复 · ${esc(w.name)}</h3></div>
+    const proposal = agentRepairProposal(w);
+    return pageTop + `<section class="card"><div class="card-head"><h3>${tr("Agent 端口修复", "Agent port repair")} · ${esc(w.name)}</h3></div>
       ${projNote}${analysisActivity(w.job || {})}
-      ${w.verifying ? '<p role="status">正在试启动修复后的服务…</p>' : ""}
-      ${result ? `<div class="result-box ${result.ok ? "ok" : "bad"}">${esc(result.ok ? "已验证并保存端口修复" : result.error)}</div>
+      ${proposal && !result?.ok ? `<p class="note">${tr("洛湾会试启动服务，验证通过后更新登记中的命令、端口及相关地址。",
+        "Locove will test the service, then update its registered command, port and related URLs if the test passes.")}</p>
+        <p>${esc(proposal.id)} · ${esc(proposal.previous.port ?? "—")} → ${esc(proposal.port)}</p>
+        <dl><dt>${tr("当前命令", "Current command")}</dt><dd><pre>${esc(JSON.stringify(proposal.previous.cmd))}</pre></dd>
+        <dt>${tr("建议命令", "Proposed command")}</dt><dd><pre>${esc(JSON.stringify(proposal.cmd))}</pre></dd></dl>
+        <button class="primary" onclick="applyAgentRepair(wiz)" ${w.verifying ? "disabled" : ""}>${tr("确认并试启动", "Confirm and test")}</button>` : ""}
+      ${w.verifying ? `<p role="status">${tr("正在试启动修复后的服务…", "Testing the proposed change…")}</p>` : ""}
+      ${result ? `<div class="result-box ${result.ok ? "ok" : "bad"}">${esc(result.ok ? tr("已验证并保存端口修复", "Port change verified and saved") : result.error)}</div>` : ""}
       ${trialDetails(result)}
-      ${result.ok ? "" : `<button onclick="wizStartAnalyze(null, wiz.jobDir)">重新识别修复方案</button>`}
-      ${!result.ok && w.candidates.length ? `<details><summary>Agent 候选</summary><pre>${esc(JSON.stringify(w.candidates.map(({id, open, components, unresolved}) => ({id, open, components, unresolved})), null, 2))}</pre></details>` : ""}
-      ${result.ok ? `<button onclick="wizStartService('${esc(w.repair.sid)}')">启动并打开</button>` : ""}` : ""}
+      ${!proposal && !result ? `<p class="note">${tr("未找到明确的单组件端口修复。", "No port change was found for a single component.")}</p>` : ""}
+      ${!result?.ok ? `<button onclick="wizStartAnalyze(null, wiz.jobDir)" ${w.verifying ? "disabled" : ""}>${tr("重新识别修复方案", "Look for another fix")}</button>` : ""}
+      ${result?.ok ? `<button onclick="wizStartService('${esc(w.repair.sid)}')">${tr("启动并打开", "Start and open")}</button>` : ""}
     </section>`;
   }
 
@@ -1610,7 +1620,7 @@ function viewNewProject() {
       ? (r.res?.action === "draft" ? `<div class="result-box">已保存为草稿</div>`
         : r.code === 200 && r.res?.service_id
           ? `<div class="result-box ok">已注册（${esc(r.res.action)}，服务 ${esc(r.res.service_id)}）${(r.res.validation?.warnings || []).length ? `<div class="warnlist">警告：${r.res.validation.warnings.map(esc).join("；")}</div>` : ""}
-             <button class="primary" onclick="wizStartService('${esc(r.res.service_id)}')" ${busy("wiz-start-" + r.res.service_id) ? "disabled" : ""}>${busy("wiz-start-" + r.res.service_id) ? "启动中…" : "启动并打开"}</button></div>`
+             <button class="primary" onclick="wizStartService('${esc(r.res.service_id)}')" ${busy("wiz-start-" + r.res.service_id) ? "disabled" : ""}>${busy("wiz-start-" + r.res.service_id) ? "启动中…" : tr("启动并打开", "Start and open")}</button></div>`
           : `<div class="result-box bad">注册失败：${esc(r.res?.error || r.code)}${(r.res?.details || []).length ? `<div class="warnlist">${r.res.details.map(esc).join("；")}</div>` : ""}
              ${r.code === 409 ? "<br>版本冲突：已刷新修订号，可重试注册。" : ""}<button onclick="wizRegister()">重试注册</button></div>`)
       : "";
@@ -1621,9 +1631,9 @@ function viewNewProject() {
         <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" ${c._sel !== false ? "checked" : ""} onchange="wizToggleCand(${i})"> 选择</label>
         <div class="name">${esc(c.name || c.id)}<small>${esc(c.description || "")}</small></div>
       </div>
-      <div class="field"><label>服务 id</label><input value="${esc(c.id)}" oninput="wizCandField(${i},'id',this.value)"></div>
-      <div class="field"><label>名称</label><input value="${esc(c.name)}" oninput="wizCandField(${i},'name',this.value)"></div>
-      <div class="field"><label>入口 URL</label><input value="${esc(c.open || "")}" placeholder="http://127.0.0.1:<端口>/" oninput="wizCandField(${i},'open',this.value)"></div>
+      <div class="field"><label>${tr("服务 id", "Service ID")}</label><input value="${esc(c.id)}" oninput="wizCandField(${i},'id',this.value)"></div>
+      <div class="field"><label>${tr("名称", "Name")}</label><input value="${esc(c.name)}" oninput="wizCandField(${i},'name',this.value)"></div>
+      <div class="field"><label>${tr("入口 URL", "Open URL")}</label><input value="${esc(c.open || "")}" placeholder="http://127.0.0.1:<端口>/" oninput="wizCandField(${i},'open',this.value)"></div>
       ${(c.components || []).map((k, ci) => compIsCompose(k, c) ? `<div class="comp-edit">
         <div class="field"><label>组件 ${esc(k.id)}（compose）</label>
           <span class="inline-note">compose 组件无需命令；字段可编辑，其余随注册保留</span></div>
@@ -1636,13 +1646,13 @@ function viewNewProject() {
             <option value="up" ${(k.provision || c.provision) === "up" ? "selected" : ""}>up（允许 compose up 创建/拉取）</option>
           </select></div>
         <div class="field"><label></label>
-          <input style="min-width:80px;max-width:110px" placeholder="端口" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)">
-          <input placeholder="探针 URL" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)"></div>
+          <input style="min-width:80px;max-width:110px" placeholder="${tr("端口", "Port")}" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)">
+          <input placeholder="${tr("探针 URL", "Health check URL")}" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)"></div>
       </div>` : `<div class="comp-edit">
-        <div class="field"><label>组件 ${esc(k.id)}</label>
-          <input placeholder="命令（空格分隔 argv）" value="${esc((k.cmd || []).join(" "))}" oninput="wizCompField(${i},${ci},'cmd',this.value)">
-          <input style="min-width:80px;max-width:110px" placeholder="端口" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)">
-          <input placeholder="探针 URL" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)"></div>
+        <div class="field"><label>${tr("组件", "Component")} ${esc(k.id)}</label>
+          <input placeholder="${tr("命令（空格分隔 argv）", "Command (space-separated arguments)")}" value="${esc((k.cmd || []).join(" "))}" oninput="wizCompField(${i},${ci},'cmd',this.value)">
+          <input style="min-width:80px;max-width:110px" placeholder="${tr("端口", "Port")}" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)">
+          <input placeholder="${tr("探针 URL", "Health check URL")}" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)"></div>
       </div>`).join("")}
       ${isComposeCand(c) ? `<div class="field"><label>创建/拉取确认</label>
         <label class="radio"><input type="checkbox" ${c._confirmed_provision ? "checked" : ""} onchange="wizConfirmProvision(${i}, this.checked)"> 允许创建容器/拉镜像——由我确认</label>
@@ -1668,52 +1678,52 @@ function viewNewProject() {
   }).join("");
 
   const manualForm = w.manual ? `
-    <section class="card"><div class="card-head"><h3>手动添加服务</h3></div>
-      <p class="note">不经过 agent 识别，直接登记。命令为 argv（空格分隔）；目录必须真实存在。</p>
+    <section class="card"><div class="card-head"><h3>${tr("手动添加服务", "Add service manually")}</h3></div>
+      <p class="note">${tr("填写服务的启动命令及端口。", "Enter the service’s startup command and port.")}</p>
       ${compEditorHtml("man", w.manualService)}
       <div class="acts" style="justify-content:flex-start">
-        <button onclick="wizManualAddComp()">＋ 添加组件</button>
-        <button class="primary" onclick="wizManualRegister()" ${w.manualRegistering ? "disabled" : ""}>${w.manualRegistering ? "注册中…" : "注册服务"}</button>
+        <button onclick="wizManualAddComp()">${tr("＋ 添加组件", "+ Add component")}</button>
+        <button class="primary" onclick="wizManualRegister()" ${w.manualRegistering ? "disabled" : ""}>${w.manualRegistering ? tr("注册中…", "Registering…") : tr("注册服务", "Register service")}</button>
       </div>
       ${w.manualError ? `<div class="msg bad">${esc(w.manualError)}</div>` : ""}
       ${w.manualResult ? (w.manualResult.res?.action === "draft" ? `<div class="result-box">已保存为草稿</div>`
         : w.manualResult.code === 200 && w.manualResult.res?.service_id
-        ? `<div class="result-box ok">已注册（${esc(w.manualResult.res.action)}，服务 ${esc(w.manualResult.res.service_id)}）
-           <button class="primary" onclick="wizStartService('${esc(w.manualResult.res.service_id)}')">启动并打开</button></div>`
+        ? `<div class="result-box ok">${tr("已注册", "Registered")} · ${esc(w.manualResult.res.service_id)}
+           <button class="primary" onclick="wizStartService('${esc(w.manualResult.res.service_id)}')">${tr("启动并打开", "Start and open")}</button></div>`
         : `<div class="result-box bad">注册失败：${esc(w.manualResult.res?.error || w.manualResult.code)}${(w.manualResult.res?.details || []).length ? `<div class="warnlist">${w.manualResult.res.details.map(esc).join("；")}</div>` : ""}</div>`) : ""}
     </section>` : "";
 
   return `
     ${pageTop}
-    <section class="card"><div class="card-head"><h3>目录与项目</h3>
-      <div class="acts"><button onclick="wizNewTask()">另开任务</button></div></div>
+    <section class="card"><div class="card-head"><h3>${tr("目录与项目", "Project details")}</h3>
+      <div class="acts"><button onclick="wizNewTask()">${tr("另开任务", "New task")}</button></div></div>
       ${projNote}
       ${w.job?.state === "done" ? analysisActivity(w.job) : ""}
-      <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()" ${w.registering ? "disabled" : ""}>重新识别</button></div>
+      <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()" ${w.registering ? "disabled" : ""}>${tr("重新识别", "Discover again")}</button></div>
     </section>
     ${w.candidates.length ? `<section class="card"><div class="card-head"><h3>候选服务（${w.candidates.length}）</h3>
-      <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || !w.candidates.some((c, i) => c._sel !== false && !(w.results[i]?.res?.service_id || w.results[i]?.res?.draft_id)) ? "disabled" : ""}>${w.verifying ? "试启动中…" : w.registering ? "注册中…" : "注册所选"}</button></div></div>
+      <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || !w.candidates.some((c, i) => c._sel !== false && !(w.results[i]?.res?.service_id || w.results[i]?.res?.draft_id)) ? "disabled" : ""}>${w.verifying ? tr("试启动中…", "Verifying…") : w.registering ? tr("注册中…", "Registering…") : tr("注册所选", "Register selected")}</button></div></div>
       ${(w.unresolved || []).length ? `<p class="reason warn">未解决项（不会静默丢弃）：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}
       ${w.dupIds ? `<p class="inline-note">多目录同名服务已分配稳定 ID，可修改</p>` : ""}
       ${candCards}
     </section>` : w.job?.state !== "done" ? "" : `<section class="card"><p class="note">识别完成，但没有可用的候选。可重试、换 agent，或手动添加。</p>
       <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()">重试识别</button>
-      <button onclick="wizStartManual()">手动添加服务</button></div>
+      <button onclick="wizStartManual()">${tr("手动添加服务", "Add service manually")}</button></div>
       ${(w.unresolved || []).length ? `<p class="reason warn">未解决项：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}</section>`}
     ${manualForm}`;
 }
 
 function compEditorHtml(prefix, svc) {
   return `
-    <div class="field"><label>服务 id</label><input value="${esc(svc.id)}" oninput="wizManualField('id',this.value)"></div>
-    <div class="field"><label>名称</label><input value="${esc(svc.name)}" oninput="wizManualField('name',this.value)"></div>
-    <div class="field"><label>源码目录</label><input value="${esc(svc.source)}" oninput="wizManualField('source',this.value)"></div>
-    <div class="field"><label>入口 URL</label><input value="${esc(svc.open || "")}" placeholder="http://127.0.0.1:<端口>/" oninput="wizManualField('open',this.value)"></div>
+    <div class="field"><label>${tr("服务 id", "Service ID")}</label><input value="${esc(svc.id)}" oninput="wizManualField('id',this.value)"></div>
+    <div class="field"><label>${tr("名称", "Name")}</label><input value="${esc(svc.name)}" oninput="wizManualField('name',this.value)"></div>
+    <div class="field"><label>${tr("源码目录", "Source directory")}</label><input value="${esc(svc.source)}" oninput="wizManualField('source',this.value)"></div>
+    <div class="field"><label>${tr("入口 URL", "Open URL")}</label><input value="${esc(svc.open || "")}" placeholder="http://127.0.0.1:<端口>/" oninput="wizManualField('open',this.value)"></div>
     ${(svc.components || []).map((k, i) => `<div class="comp-edit">
-      <div class="field"><label>组件 ${esc(k.id)}</label>
-        <input placeholder="命令（空格分隔 argv）" value="${esc((k.cmd || []).join(" "))}" oninput="wizManualComp(${i},'cmd',this.value)">
-        <input style="min-width:80px;max-width:110px" placeholder="端口" value="${k.port ?? ""}" oninput="wizManualComp(${i},'port',this.value)">
-        <input placeholder="探针 URL" value="${esc(k.ready?.http || "")}" oninput="wizManualComp(${i},'ready',this.value)"></div>
+      <div class="field"><label>${tr("组件", "Component")} ${esc(k.id)}</label>
+        <input placeholder="${tr("命令（空格分隔 argv）", "Command (space-separated arguments)")}" value="${esc((k.cmd || []).join(" "))}" oninput="wizManualComp(${i},'cmd',this.value)">
+        <input style="min-width:80px;max-width:110px" placeholder="${tr("端口", "Port")}" value="${k.port ?? ""}" oninput="wizManualComp(${i},'port',this.value)">
+        <input placeholder="${tr("探针 URL", "Health check URL")}" value="${esc(k.ready?.http || "")}" oninput="wizManualComp(${i},'ready',this.value)"></div>
     </div>`).join("")}`;
 }
 
@@ -2645,7 +2655,7 @@ ${Object.values(logsData?.logs || {}).join("\n").slice(-1600)}`;
   finally { delete pending["repair-" + sid]; render(); }
 }
 
-async function applyAgentRepair(w) {
+function agentRepairProposal(w) {
   const repair = w.repair;
   const candidate = w.candidates.find(c => c.id === repair.sid);
   const changed = (candidate?.components || []).filter(c => {
@@ -2653,11 +2663,17 @@ async function applyAgentRepair(w) {
     return previous && (!repair.component || repair.component === c.id)
       && c.port && (c.port !== previous.port || JSON.stringify(c.cmd) !== JSON.stringify(previous.cmd));
   });
-  if (changed.length !== 1) {
-    w.repairResult = {error: "未找到明确的单组件端口修复，请查看候选与识别记录。"};
-    return;
-  }
+  if (changed.length !== 1) return null;
   const {id, port, cmd} = changed[0];
+  return {id, port, cmd, previous: repair.definition.components.find(c => c.id === id)};
+}
+
+async function applyAgentRepair(w) {
+  if (w.verifying || w.repairResult?.ok || w.job?.state !== "done") return;
+  const proposal = agentRepairProposal(w);
+  if (!proposal) return;
+  const {id, port, cmd} = proposal;
+  const repair = w.repair;
   w.verifying = true; render();
   try {
     const [, result] = await api("POST", `/api/services/${repair.sid}/repair`,
@@ -2730,12 +2746,9 @@ async function wizPoll(w, jobId) {
         }
         await refresh();
         w.target = wizardTarget(w, true);
-        if (w.repair) {
-          w.step = "review";
-          await applyAgentRepair(w);
-        } else {
+        w.step = "review";
+        if (!w.repair) {
           w.dupIds = disambiguateIds(w.candidates, w);
-          w.step = "review";
           if (w.autoRegister && w.candidates.length) await wizRegister(w, true);
         }
       }
@@ -3234,6 +3247,7 @@ document.addEventListener("keydown", e => {
 });
 // W1/W2 深链：#p-<id> 载入即展开定位该服务（浏览器书签 / 原生 / Agent 同一事实源）
 { const m = location.hash.match(/^#p-(.+)$/); if (m) open[m[1]] = true; }
+applyLanguage();
 try {
   const saved = window.sessionStorage.getItem("locove-dashboard-reload");
   if (saved) {

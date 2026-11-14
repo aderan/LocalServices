@@ -181,7 +181,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if code2 == 200, let reg = obj2?["registry"] as? [String: Any],
                    let list = reg["projects"] as? [[String: Any]] {
                     let settings = reg["settings"] as? [String: Any]
-                    let language = InterfaceLanguage(rawValue: settings?["language"] as? String ?? "") ?? .chinese
+                    let language = InterfaceLanguage(rawValue: settings?["language"] as? String ?? "") ?? .english
                     if self.panelModel.language != language {
                         self.panelModel.language = language
                         self.mainWindow.setLanguage(language)

@@ -22,10 +22,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 TMP = Path(tempfile.mkdtemp(prefix="lstest-"))
+LABEL_PREFIX = f"com.mybrain.{TMP.name}"
 os.environ.update({
     "LOCALSERVICES_HOME": str(TMP / "home"),
     "LOCALSERVICES_SERVICES": str(TMP / "services"),
-    "LOCALSERVICES_LABEL_PREFIX": "com.mybrain.lstest",
+    "LOCALSERVICES_LABEL_PREFIX": LABEL_PREFIX,
     "LOCALSERVICES_THROTTLE": "1",
     "LOCALSERVICES_BACKOFF_SCALE": "0.25",
     "LOCALSERVICES_HEALTHY_AFTER": "4",
@@ -397,7 +398,7 @@ class HttpAuthTest(unittest.TestCase):
 def tearDownModule():
     out = subprocess.run(["launchctl", "list"], capture_output=True, text=True).stdout
     for line in out.splitlines():
-        if "com.mybrain.lstest." in line:
+        if line.split() and line.split()[-1].startswith(f"{LABEL_PREFIX}."):
             subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{line.split()[-1]}"])
     shutil.rmtree(TMP, ignore_errors=True)
 

@@ -1,0 +1,25 @@
+id = "explore"
+name = "Explore"
+adapter = "explore"
+options = { api = "http://127.0.0.1:8787" }
+source = "/example/workspace"
+open = "http://127.0.0.1:5178/explore/#/capture?mode=agent"
+
+[[components]]
+id = "api"
+cmd = ["node", "server.mjs"]
+env_files = [".env", ".env.local"]
+env = { EXPLORE_HOST = "127.0.0.1", EXPLORE_PORT = "8787" }
+port = 8787
+ready = { http = "http://127.0.0.1:8787/api/health", json_ok = "ok" }
+auto_update = false
+external_cwd_exact = true
+
+[[components]]
+id = "web"
+cwd = "apps/explore"
+cmd = ["vite", "--host", "127.0.0.1", "--port", "5178"]
+port = 5178
+ready = { http = "http://127.0.0.1:5178/explore/" }
+after = ["api"]
+external_cwd_exact = true

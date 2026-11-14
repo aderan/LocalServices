@@ -295,7 +295,7 @@ component = "web"
 class BrandingTest(unittest.TestCase):
     def test_dashboard_presents_locove(self):
         html = (REPO / "localservices" / "web" / "dashboard.html").read_text(encoding="utf-8")
-        self.assertIn("<title>洛湾</title>", html)
+        self.assertIn("<title>Locove</title>", html)
         self.assertNotIn("MyBrain Services", html)
 
 

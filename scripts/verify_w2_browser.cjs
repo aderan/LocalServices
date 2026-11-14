@@ -20,6 +20,7 @@ const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const REPO = path.resolve(__dirname, "..");
 const OUT = process.argv[2] || "artifacts/acceptance-LOCOVE-WORKBENCH-UI";
 const PORT = 9340;
+const captureRelease = process.argv.includes("--release-screenshots");
 const UID_ = require("os").userInfo().uid;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -37,8 +38,8 @@ async function main() {
   fs.mkdirSync(OUT, {recursive: true});
   // ---------- 隔离 daemon + 夹具 ----------
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ls-w2-"));
-  const home = path.join(tmp, "home"), servicesDir = path.join(tmp, "services"), src = path.join(tmp, "src");
-  for (const d of [home, servicesDir, src]) fs.mkdirSync(d, {recursive: true});
+  const home = path.join(tmp, "home"), src = path.join(tmp, "src");
+  for (const d of [home, src]) fs.mkdirSync(d, {recursive: true});
   fs.writeFileSync(path.join(src, "VERSION"), "w2\n");
   const crashFile = path.join(tmp, "crash");
   fs.writeFileSync(crashFile, "1\n");
@@ -46,15 +47,15 @@ async function main() {
   const base = `http://127.0.0.1:${dPort}`;
   const prefix = `localservices.w2verify.${Date.now()}`;
   const daemon = spawn("python3", ["-m", "localservices.daemon"], {
-    cwd: REPO, env: {...process.env, LOCALSERVICES_HOME: home, LOCALSERVICES_SERVICES: servicesDir,
+    cwd: REPO, env: {...process.env, LOCALSERVICES_HOME: home, LOCALSERVICES_SERVICES: "", LOCALSERVICES_USER_SERVICES: "",
                           LOCALSERVICES_PORT: String(dPort), LOCALSERVICES_LABEL_PREFIX: prefix,
                           LOCOVE_ADMIN_PORT: String(await freePort()), LOCOVE_PROXY_PORT: "47899",
                           LOCOVE_FORCE_REAPPLY: "3600"},
     stdio: ["ignore", "ignore", "ignore"],
   });
   // 外部进程占住 foreignPort（非本工具启动）→ w2-conflict 启动后判冲突
-  const foreign = spawn("python3", [path.join(REPO, "tests/fixture_server.py"), String(foreignPort)],
-    {cwd: REPO, stdio: ["ignore", "ignore", "ignore"]});
+  const foreign = spawn("python3", ["-m", "http.server", String(foreignPort), "--bind", "127.0.0.1", "--directory", "."],
+    {cwd: tmp, stdio: ["ignore", "ignore", "ignore"]});
   const cleanupAll = () => {
     try { daemon.kill("SIGTERM"); } catch (e) {}
     try { foreign.kill("SIGTERM"); } catch (e) {}
@@ -84,13 +85,22 @@ async function main() {
     return [r.status, d];
   };
 
+  const [, initial] = await api("GET", "/api/status");
+  check("Fresh source checkout starts without bundled services", initial?.projects?.length === 0);
   const comp = (port, extra) => ({id: "web", kind: "server", name: "web",
     cmd: ["python3", path.join(REPO, "tests/fixture_server.py"), String(port), ...(extra || [])],
     cwd: ".", ...(port ? {port, ready: {http: `http://127.0.0.1:${port}/`}} : {})});
+  const examples = {
+    "w2-ok": ["Notes Web", "Local development server for the notes workspace"],
+    "w2-crash": ["Search Worker", "Indexes notes for local search"],
+    "w2-conflict": ["Preview API", "Serves previews on the local machine"],
+    "w2-stopped": ["Docs Preview", "Starts on demand for documentation changes"],
+  };
   const regBody = (sid, components) => ({schemaVersion: 1, revision: 0,
-    project: {id: "w2fix", name: "W2 诊断夹具", agent: "none"},
+    project: {id: "w2fix", name: captureRelease ? "Example workspace" : "W2 诊断夹具", agent: "none"},
     directories: [{path: src, role: "source"}], by: "verify",
-    service: {id: sid, name: sid, description: "W2 夹具", source: src,
+    service: {id: sid, name: captureRelease ? examples[sid][0] : sid,
+              description: captureRelease ? examples[sid][1] : "W2 夹具", source: src,
               open: `http://127.0.0.1:${okPort}/`, evidence: {agent: "none", summary: "verify"},
               components}});
   let rev = 0;
@@ -156,6 +166,19 @@ async function main() {
     if (r.exceptionDetails) throw new Error("eval: " + JSON.stringify(r.exceptionDetails).slice(0, 400));
     return r.result?.value;
   };
+  const navigate = async url => {
+    let loaded;
+    const done = new Promise(resolve => { loaded = resolve; });
+    const receive = event => {
+      if (JSON.parse(event.data).method === "Page.loadEventFired") loaded();
+    };
+    ws.addEventListener("message", receive);
+    try {
+      await send("Page.navigate", {url});
+      await Promise.race([done, sleep(6000)]);
+      await sleep(500);
+    } finally { ws.removeEventListener("message", receive); }
+  };
   const shot = async name => {
     const r = await send("Page.captureScreenshot", {format: "png"});
     fs.writeFileSync(path.join(OUT, name), Buffer.from(r.data, "base64"));
@@ -163,35 +186,37 @@ async function main() {
   };
   await send("Page.enable");
   await send("Runtime.enable");
-  await send("Page.navigate", {url: `${base}/#p-w2-ok`});
-  await sleep(3500);
+  await navigate(`${base}/#p-w2-ok`);
 
-  const english = await ev(`(async () => {
-    setView("settings");
-    const root = document.documentElement;
-    const initiallyChinese = root.lang === "zh-CN" && document.title === "洛湾";
-    document.querySelector("button[lang='en']").click();
-    for (let i = 0; i < 30 && root.lang !== "en"; i++)
-      await new Promise(resolve => setTimeout(resolve, 100));
-    return initiallyChinese && root.lang === "en" && document.title === "Locove"
-      && document.querySelector(".brand h1").textContent === "Locove"
-      && document.getElementById("viewTitle").textContent === "Settings";
-  })()`, true);
-  check("设置切换英文并更新产品名与页面标题", english);
-  await send("Page.reload");
-  await sleep(1500);
+  if (captureRelease) {
+    await ev('open["w2-ok"] = false; setView("all"); window.scrollTo(0, 0)');
+    await shot("workbench.png");
+    await ev(`(() => {
+      const preview = snap.projects.find(p => p.id === "w2-conflict");
+      const original = preview.source;
+      preview.source = "/Users/example/Projects/notes";
+      showServiceReason(preview.id);
+      preview.source = original;
+      window.scrollTo(0, 0);
+    })()`);
+    await shot("diagnosis.png");
+    await ev('setView("settings"); window.scrollTo(0, 0)');
+    await shot("settings.png");
+  }
+  check("Fresh install defaults to English", await ev(`document.documentElement.lang === "en"
+    && document.title === "Locove" && document.querySelector(".brand h1").textContent === "Locove"`));
+  await ev(`(async () => { setView("settings"); await saveLanguage("zh-CN"); })()`, true);
+  await navigate(`${base}/?check=language`);
   const persisted = await ev(`(async () => {
-    for (let i = 0; i < 30 && document.documentElement.lang !== "en"; i++)
+    for (let i = 0; i < 30 && document.documentElement.lang !== "zh-CN"; i++)
       await new Promise(resolve => setTimeout(resolve, 100));
-    const saved = document.documentElement.lang === "en" && document.title === "Locove";
+    const saved = document.documentElement.lang === "zh-CN" && document.title === "洛湾";
     setView("settings");
-    const pressed = document.querySelector("button[lang='en']")?.getAttribute("aria-pressed");
-    await saveLanguage("zh-CN");
-    return saved && pressed === "true" && document.title === "洛湾";
+    const pressed = document.querySelector("button[lang='zh-CN']")?.getAttribute("aria-pressed");
+    return saved && pressed === "true";
   })()`, true);
-  check("重新加载保留语言，切回中文恢复洛湾", persisted);
-  await send("Page.navigate", {url: `${base}/?check=deep-link#p-w2-ok`});
-  await sleep(1500);
+  check("Saved Chinese choice survives reload", persisted);
+  await navigate(`${base}/?check=deep-link#p-w2-ok`);
 
   // 深链：#p-w2-ok 载入即展开定位
   const deep = await ev(`(() => {
@@ -237,7 +262,7 @@ async function main() {
 
   // 「需要处理」→ 同一服务诊断（reason 是运行事实：诊断行展示 snap 当前 reason）
   const attnEv = `(() => {
-    const nav = [...document.querySelectorAll("nav .navitem")].find(b => b.textContent.includes("需要处理"));
+    const nav = document.getElementById("nav-attention");
     const badge = document.getElementById("attentionBadge");
     const n = badge && !badge.hidden ? Number(badge.textContent) : 0;
     nav.click();

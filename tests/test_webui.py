@@ -314,8 +314,9 @@ class MenubarBuildTest(unittest.TestCase):
         self.assertTrue(exe.exists(), f"缺少可执行文件 {exe}")
         self.assertTrue((app / "Contents" / "Info.plist").exists())
         plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
-        self.assertIn("0.2.0", plist)
         metadata = plistlib.loads(plist.encode())
+        self.assertEqual(metadata["CFBundleShortVersionString"], "0.2.0")
+        self.assertEqual(metadata["LSMinimumSystemVersion"], "13.0")
         for key in ("CFBundleName", "CFBundleDisplayName", "CFBundleExecutable"):
             self.assertEqual(metadata[key], "Locove", key)
         icon_name = metadata["CFBundleIconFile"]

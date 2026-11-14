@@ -13,8 +13,7 @@ description: 把本地项目/服务注册或更新到 LocalServices 工作台（
 
 1. `~/.local/bin/lsctl`
 2. PATH 上的 `lsctl`
-3. 退回仓库入口：`cd "$LOCALSERVICES_REPO" && python3 -m localservices.cli`（子命令用法相同）。
-   `LOCALSERVICES_REPO` 未设时按已知安装机常见位置探测：`~/Sources/Tools/LocalServices`；都不存在则如实报告找不到仓库入口。
+3. 若用户已提供 Locove 源码目录或设置了 `LOCALSERVICES_REPO`，从该目录运行 `python3 -m localservices.cli`。子命令用法相同。
 
 用 `lsctl projects --json` 探测一次。全部不可达（如退出码 3：控制服务不可达）时，如实报告不可用并建议运行仓库 `scripts/install.sh`，到此结束。
 

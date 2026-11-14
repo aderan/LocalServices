@@ -165,7 +165,7 @@ class ExploreBusyTest(unittest.TestCase):
     def adapter(self):
         from localservices.adapters.explore import Adapter
         from localservices.manifest import load_all
-        project = load_all(Path(__file__).resolve().parents[1] / "services")["explore"]
+        project = load_all(Path(__file__).resolve().parent / "fixtures" / "service-manifests")["explore"]
         return Adapter(project)
 
     def test_running_capture_blocks_restart(self):
@@ -198,7 +198,7 @@ class LargeHistoryTest(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            project = load_all(Path(__file__).resolve().parents[1] / "services")["explore"]
+            project = load_all(Path(__file__).resolve().parent / "fixtures" / "service-manifests")["explore"]
             project.options["api"] = f"http://127.0.0.1:{server.server_port}"
             self.assertIsNone(Adapter(project).busy())
         finally:

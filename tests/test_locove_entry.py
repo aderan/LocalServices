@@ -72,7 +72,8 @@ class EntryForwarderTest(unittest.TestCase):
         def upstream_side():
             result["req"] = self._serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
 
-        threading.Thread(target=upstream_side, daemon=True).start()
+        upstream = threading.Thread(target=upstream_side, daemon=True)
+        upstream.start()
         with socket.create_connection(("127.0.0.1", self.listen_port), timeout=5) as c:
             c.sendall(b"GET /zh HTTP/1.1\r\nHost: buildbase.locove\r\n\r\n")
             c.settimeout(5)
@@ -82,6 +83,8 @@ class EntryForwarderTest(unittest.TestCase):
                 if not chunk:
                     break
                 body += chunk
+        upstream.join(timeout=5)
+        self.assertFalse(upstream.is_alive(), "upstream did not record the request")
         self.assertIn(b"Host: buildbase.locove", result["req"])
         self.assertTrue(body.endswith(b"ok"))
 
@@ -92,7 +95,8 @@ class EntryForwarderTest(unittest.TestCase):
             result["req"] = self._serve_once(
                 b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n")
 
-        threading.Thread(target=upstream_side, daemon=True).start()
+        upstream = threading.Thread(target=upstream_side, daemon=True)
+        upstream.start()
         with socket.create_connection(("127.0.0.1", self.listen_port), timeout=5) as c:
             c.sendall(b"GET /_next/webpack-hmr HTTP/1.1\r\nHost: x.locove\r\n"
                       b"Upgrade: websocket\r\nConnection: Upgrade\r\n"
@@ -104,6 +108,8 @@ class EntryForwarderTest(unittest.TestCase):
                 if not chunk:
                     break
                 data += chunk
+        upstream.join(timeout=5)
+        self.assertFalse(upstream.is_alive(), "upstream did not record the request")
         self.assertIn(b"Upgrade: websocket", result["req"])
         self.assertIn(b"101", data)
 

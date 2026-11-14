@@ -38,12 +38,12 @@ V2 compose 字段（V2.7）：组件可带 `run = "compose"`（此时无 `cmd`�
   "schemaVersion": 1,
   "revision": 0,
   "project": {"id": "demonotes", "name": "DemoNotes", "agent": "codex"},
-  "directories": [{"path": "/Users/flb/Sources/Products/DemoNotes", "role": "source"}],
+  "directories": [{"path": "/Users/example/Projects/DemoNotes", "role": "source"}],
   "service": {
     "id": "demonotes-admin",
     "name": "DemoNotes Admin",
     "description": "Makefile 驱动的本地管理端：make serve-api / make serve-admin",
-    "source": "/Users/flb/Sources/Products/DemoNotes",
+    "source": "/Users/example/Projects/DemoNotes",
     "open": "http://127.0.0.1:4928/",
     "components": [
       {

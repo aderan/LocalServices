@@ -16,7 +16,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
     let base: URL
     let portString: String
     var onLanguageChanged: (() -> Void)?
-    private var language = InterfaceLanguage.chinese
+    private var language = InterfaceLanguage.english
     var reachable = true
     private var dashboardLoaded = false
     private var pendingNavigation: String?
@@ -33,7 +33,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 760),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = InterfaceLanguage.chinese.productName
+        window.title = InterfaceLanguage.english.productName
         window.minSize = NSSize(width: 960, height: 600)
         window.isReleasedWhenClosed = false // 关闭窗口只是隐藏；菜单栏仍在
         window.center()

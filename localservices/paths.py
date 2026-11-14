@@ -24,7 +24,7 @@ def logs_dir() -> Path:
 
 def services_dir() -> Path:
     env = os.environ.get("LOCALSERVICES_SERVICES")
-    return Path(env) if env else REPO_ROOT / "services"
+    return Path(env) if env else home() / "builtin-services"
 
 
 def user_services_dir() -> Path:

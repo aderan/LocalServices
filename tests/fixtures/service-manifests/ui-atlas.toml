@@ -1,0 +1,9 @@
+id = "ui-atlas"
+name = "UI Atlas"
+source = "/example/workspace"
+
+[[components]]
+id = "web"
+cmd = ["vite", "--host", "127.0.0.1", "--port", "5175"]
+port = 5175
+external_cwd_exact = true
