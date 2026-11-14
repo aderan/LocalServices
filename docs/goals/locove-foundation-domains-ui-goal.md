@@ -38,9 +38,9 @@
 ### 阅读顺序
 
 1. **本文件**：本轮目标、权限边界、设计、D1–D5 及验收的权威来源。
-2. **[最新 review](../../artifacts/acceptance-LOCOVE-FOUNDATION-DOMAINS-UI/REVIEW-2026-11-05.md)**：S1/S2/S3/UX1/UX2 的复现和定位。其 §5“全面归档”的建议是讨论背景，按本文件更新为可选高端口路线。
+2. **2026-11-05 review**（`git show 6b701c13ff05:artifacts/acceptance-LOCOVE-FOUNDATION-DOMAINS-UI/REVIEW-2026-11-05.md`）：S1/S2/S3/UX1/UX2 的复现和定位。其 §5“全面归档”的建议是讨论背景，按本文件更新为可选高端口路线。
 3. **[现有接口契约](../CONTRACTS.md)**：保留 V2 数据/生命周期保护，理解 V3.5/V3.6 当前实现。同步修改 UI、CLI、Skill、schemas 和契约中被本轮替代的网络/开关/URL 语义。
-4. 按需读 **[架构与 UI 评估](../ARCHITECTURE_DOMAIN_UI_REVIEW_2026-11-04.md) §2、§4** 与 **[参考截图说明](../research/assets/locove-ui-references/README.md)**。已有新 UI 和截图见 [修复记录](../../artifacts/acceptance-LOCOVE-FOUNDATION-DOMAINS-UI/REVIEW-FIXES.md)，避免重复设计。
+4. 按需读 **[架构与 UI 评估](../ARCHITECTURE_DOMAIN_UI_REVIEW_2026-11-04.md) §2、§4** 与 **[参考截图说明](../research/assets/locove-ui-references/README.md)**。历史 UI 修复记录可用 `git show 6b701c13ff05:artifacts/acceptance-LOCOVE-FOUNDATION-DOMAINS-UI/REVIEW-FIXES.md` 查看。
 5. 网络实现时读 **[外部一手研究](../research/2026-11-04-local-domains-ui-references.md) §8**；复用 RFC、Apple resolver 与浏览器兼容证据，仅复核与实际实施有关的动态事实。
 
 冲突优先级：用户最新修订 → 本 Goal → 本轮更新后的契约 → 旧契约 → 历史记录/实现建议。设计建议不能自动升级为用户要求。

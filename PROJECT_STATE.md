@@ -13,8 +13,8 @@
 ## 2. 当前目标
 
 D1–D5（LOCOVE-FOUNDATION-DOMAINS-UI）2026-11-06 交付；W1–W4
-（LOCOVE-WORKBENCH-UI-REFACTOR）2026-11-12/13 交付，验收证据
-`artifacts/acceptance-LOCOVE-WORKBENCH-UI/`（提交 1871364 → 5e84af6 → 87d384c → W4 收尾）：
+（LOCOVE-WORKBENCH-UI-REFACTOR）2026-11-12/13 交付。历史验收证据见
+`6b701c13ff05:artifacts/acceptance-LOCOVE-WORKBENCH-UI/`：
 
 - W1 共享工作台：960 最小窗布局（四列服务行/设置容器查询单列）+ 轮询稳定性
   （未变跳过重建/焦点/滚动/展开态保持）+ data-act 稳定标识 + #p-<id> 深链展开。
@@ -61,10 +61,10 @@ DIAGAX=0，窗口在屏；页面内容级验证经浏览器证据覆盖同一 ls
 - `scripts/`：install/uninstall（幂等）、locove 域名件、retire-locove-80、verify_* 验证脚本。
 - `tests/`：430 项 + `fixtures/`（vite/fastapi/go/next/compose 代表工程）。
 - `docs/`：`CONTRACTS.md`（接口唯一权威）、`goals/`（每轮 Goal 文档）、`research/`。
-- `artifacts/`：`acceptance-*`（逐 AC 验收证据，flb 的验收标准要求证据归档）、`incidents/`。
+- `artifacts/`：本地验收报告、截图和日志，由 Git 忽略。
 
-治理：仓库无 AGENTS.md/CLAUDE.md；每轮以 `docs/goals/<goal>.md` 为权威边界 +
-`artifacts/acceptance-*` 为验收证据。MyBrain/Products 下无本产品目录（无外部认知层）。
+治理：开发约定见 [AGENTS.md](AGENTS.md)，每轮边界见 `docs/goals/<goal>.md`。
+MyBrain/Products 下无本产品目录（无外部认知层）。
 
 ## 5. 关键决策（勿无故重开）
 
@@ -90,7 +90,7 @@ DIAGAX=0，窗口在屏；页面内容级验证经浏览器证据覆盖同一 ls
   "无法访问"（链路本身正常）；临时修 `scripts/locove-proxy-bypass.sh`，永久修在
   Clash Verge 设置加 `*.locove`。`lsctl endpoints` 如实显示该层。
 - Vite 类 dev server 需项目显式 `server.allowedHosts: ["xxx.locove"]`（勿设 true）。
-- 验收纪律：失败=无变化；证据必须归档到 `artifacts/`；独立审查线可重开 Delivered。
+- 验收证据保存在本地 `artifacts/`。独立审查线可重开 Delivered。
 - 实机异常待处理 [confirmed]：orx-analytics failed、mediascope partial——属本轮
   范围外，接手时先看诊断再决定是否开新线。
 - 测试与 launchd 纪律：生命周期测试用隔离 label 前缀与临时目录，不碰真实实例；

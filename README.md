@@ -125,8 +125,7 @@ lsctl analyze <dir> --agent A [--project PID] ...                  # 带目标�
   `LOCALSERVICES_DOCKER_CONTEXT` 覆盖），绝不改全局 context、不自动操作远程 engine。
 - **外部实例**：端口/PID/cwd/命令+监督父链（npm/make/go run/uvicorn reload 等）识别；docker 宿主
   代理端口归因为容器而非进程冲突；未知归属不接管不强停；显式接管收尾整棵监督树。
-- **测试夹具**：`tests/fixtures/`（vite/fastapi/go/next/compose 最小代表工程 + 环境结论 README），
-  N04 真实验证记录在 `artifacts/acceptance-MB-LOCAL-SERVICES-LIFECYCLE-V2/n04/modes/`。
+- **测试夹具**：`tests/fixtures/`（vite/fastapi/go/next/compose 最小代表工程 + 环境结论 README）。
 
 ### ShiCha 用户操作步骤（真实闭环样例）
 
@@ -179,9 +178,9 @@ python3 tests/verify_next_clone.py         # Next.js 热更新：在 Buildbase �
 ```
 
 生命周期类测试使用真实 launchd 但隔离 label 前缀与临时目录，不触碰真实项目实例与数据。
-MB-LOCAL-SERVICES-PROJECTS-V1 的逐 AC 验收证据在 `artifacts/acceptance-MB-LOCAL-SERVICES-PROJECTS-V1/`；
-V2（增删恢复/运行模式/资源复用/ShiCha 真实闭环）的逐 AC 证据与独立复核在
-`artifacts/acceptance-MB-LOCAL-SERVICES-LIFECYCLE-V2/AC-CHECKLIST.md`。接口契约以 `docs/CONTRACTS.md`（含 V2 节）为准。
+验收脚本生成的报告保存在本地 `artifacts/`。V1/V2 的历史验收记录可用
+`git ls-tree -r --name-only 6b701c13ff05 -- artifacts/` 查看目录，再用 `git show 6b701c13ff05:<path>` 读取文件。
+接口契约见 [docs/CONTRACTS.md](docs/CONTRACTS.md)。
 
 ### ShiCha 开发启动契约
 
