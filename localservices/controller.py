@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import adapters, compose, dockerctx, launchd, manifest, paths, procs, runner, sourcewatch
 from .manifest import Component, Project
-from .infrastructure import DependencyError, Infrastructure
+from .infrastructure import DependencyError, Infrastructure, RuntimeUnavailable
 
 # gave_up 组件的慢速自愈周期（秒）：放弃自动恢复 ≠ 永久放弃。端口被占、依赖不可用等
 # 外部原因可能在放弃后自行消失，reconcile 在此周期上重试收敛（防崩溃热循环的兜底由
@@ -186,8 +186,8 @@ class Controller:
         # component_state 与容器名解析的短缓存（刷新周期内复用，同探针缓存）。
         self._compose_started: dict[str, float] = {}  # "pid.cid" -> ensure 成功时刻
         self._compose_probe_used: set[str] = set()
-        self._compose_state_cache: dict[str, tuple[float, dict]] = {}
-        self._compose_name_cache: dict[str, tuple[float, str | None]] = {}
+        self._compose_state_cache: dict[tuple, tuple[float, dict]] = {}
+        self._compose_name_cache: dict[tuple, tuple[float, str | None]] = {}
         self.fsevents: dict = {"ok": None, "at": 0.0, "detail": ""}
         self._refresh_lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="probe")
@@ -301,7 +301,7 @@ class Controller:
     def _docker_container_for_port(self, port: int) -> str | None:
         """哪个容器发布了该宿主端口（dockerctx，只读）；任何失败 → None（保持进程语义）。"""
         try:
-            r = dockerctx.run(["ps", "-a", "--filter", f"publish={port}", "--format", "{{json .}}"], timeout=6)
+            r = dockerctx.run(["ps", "--filter", f"publish={port}", "--format", "{{json .}}"], timeout=6)
             if r.returncode != 0:
                 return None
             for line in r.stdout.splitlines():
@@ -318,8 +318,8 @@ class Controller:
 
     def _compose_container_cached(self, p: Project, c: Component) -> str | None:
         """compose.container_name 的短缓存版（归属判定会反复调用）。"""
-        key = f"{p.id}.{c.id}"
-        hit = self._compose_name_cache.get(key)
+        cache_key = (p.id, c.id, (p.docker or {}).get("endpoint"))
+        hit = self._compose_name_cache.get(cache_key)
         now = time.monotonic()
         if hit and now - hit[0] < COMPOSE_NAME_TTL:
             return hit[1]
@@ -327,13 +327,13 @@ class Controller:
             name = compose.container_name(p, c)
         except Exception:  # noqa: BLE001
             name = None
-        self._compose_name_cache[key] = (now, name)
+        self._compose_name_cache[cache_key] = (now, name)
         return name
 
-    def _container_owner(self, name: str, exclude_pid: str) -> str | None:
+    def _container_owner(self, name: str, p: Project) -> str | None:
         """容器属于哪个已登记项目（dependencies[].container 或 compose 组件的容器）。"""
         for other in self.projects.values():
-            if other.id == exclude_pid:
+            if other.id == p.id or not dockerctx.same_environment(p.docker, other.docker):
                 continue
             if any(d.container == name for d in other.dependencies):
                 return other.id
@@ -349,7 +349,11 @@ class Controller:
         {"skip": True} = 本项目自己的依赖/自己的 compose 容器在运行（不是外部实例，不是冲突）；
         否则为一条 docker-container 外部记录（unknown 或归属其他受管项目）。
         """
-        name = self._docker_container_for_port(port)
+        try:
+            with dockerctx.bound(p.docker):
+                name = self._docker_container_for_port(port)
+        except dockerctx.BindingError:
+            return None
         if not name:
             return None
         if any(d.container == name for d in p.dependencies):
@@ -359,7 +363,7 @@ class Controller:
         return {"component": c.id, "name": c.name or c.id, "kind": "docker-container",
                 "container": name, "pid": holder_pid, "tree": [], "ports": [port], "why": "docker",
                 "cmd": f"容器 {name}（docker 端口代理 pid {holder_pid}）", "same_project": False,
-                "managed_project": self._container_owner(name, p.id)}
+                "managed_project": self._container_owner(name, p)}
 
     def external_instances(self, p: Project, ps: dict | None = None, fresh: bool = True) -> list[dict]:
         """Instances of p's components not started by us. `same_project` = runs from p's own source
@@ -634,7 +638,7 @@ class Controller:
 
     def _compose_state(self, p: Project, c: Component) -> dict:
         """compose.component_state 的短缓存版（状态刷新周期内复用，同探针缓存思路）。"""
-        key = f"{p.id}.{c.id}"
+        key = (p.id, c.id, (p.docker or {}).get("endpoint"))
         now = time.monotonic()
         hit = self._compose_state_cache.get(key)
         if hit and now - hit[0] < COMPOSE_STATE_TTL:
@@ -763,8 +767,9 @@ class Controller:
         with self.lock:
             self.ops.pop(pid, None)
 
-    def _prepare_dependencies(self, p: Project) -> None:
-        if not any(d.required for d in p.dependencies):
+    def _prepare_dependencies(self, p: Project, components: list[Component] | None = None) -> None:
+        docker_required = any(c.run == "compose" for c in (p.managed_components() if components is None else components))
+        if not docker_required and not any(d.required for d in p.dependencies):
             return
 
         def progress(detail):
@@ -773,7 +778,10 @@ class Controller:
                 self.ops[p.id].pop("deadline", None)
 
         progress("检查必要依赖")
-        self.infrastructure.ensure(p.dependencies, progress)
+        if docker_required or (p.docker and any(d.required and d.container for d in p.dependencies)):
+            self.infrastructure.ensure(p.dependencies, progress, docker_required=docker_required, binding=p.docker)
+        else:
+            self.infrastructure.ensure(p.dependencies, progress)
         with self.lock:
             self.ops[p.id].update(kind="starting", detail="",
                                   budget=self._startup_budget(p),
@@ -876,8 +884,11 @@ class Controller:
             success = True
             if open_after:
                 self.open(p.id)
+        except RuntimeUnavailable as e:
+            self._set_error(p.id, "", "Docker 运行环境未就绪：" + redact(str(e))[:1200])
+            self.errors[p.id]["docker_environment"] = (p.docker or {}).get("context") or dockerctx.name()
         except DependencyError as e:
-            self._set_error(p.id, "", "必要依赖未就绪：" + str(e))
+            self._set_error(p.id, "", "必要依赖未就绪：" + redact(str(e))[:1200])
         except TimeoutError as e:
             self._set_error(p.id, "", str(e))
         except Exception as e:  # noqa: BLE001
@@ -994,7 +1005,11 @@ class Controller:
             return {"ok": False, "error": "不可停止"}
         if self.store.proj(pid).pop("takeover_pending", None):
             self.store.save()
-        if not any(launchd.info(self.label(p, c)).loaded for c in p.managed_components()) and self.external_instances(p):
+        owns_component = any(
+            f"{p.id}.{c.id}" in self._compose_started if c.run == "compose" else launchd.info(self.label(p, c)).loaded
+            for c in p.managed_components()
+        )
+        if not owns_component and self.external_instances(p):
             self.store.set_intent(pid, "stopped")
             return {"ok": True, "accepted": False, "message": "运行中的是外部实例，本工具不停止它；已取消待接管"}
         busy = self.adapters[pid].busy()
@@ -1094,8 +1109,8 @@ class Controller:
 
     def _do_restart(self, p: Project, components: list[str] | None, by_user: bool = False) -> None:
         try:
-            self._prepare_dependencies(p)
             comps = [c for c in self._order(p) if not components or c.id in components]
+            self._prepare_dependencies(p, comps)
             # Compile first so a broken/slow build never takes down the running instance.
             for c in comps:
                 if c.run == "compose":
@@ -1121,7 +1136,9 @@ class Controller:
                     raise RuntimeError(f"{c.name or c.id} 停止失败：{err}")
             self._do_start(p, False, only=[c.id for c in comps], skip_build=True, by_user=by_user)
         except Exception as e:  # a preparation timeout must not leave a stuck operation
-            self._set_error(p.id, "", f"重启失败：{e}")
+            self._set_error(p.id, "", "重启失败：" + redact(str(e))[:1200])
+            if isinstance(e, RuntimeUnavailable):
+                self.errors[p.id]["docker_environment"] = (p.docker or {}).get("context") or dockerctx.name()
             self._end(p.id)
 
     def open(self, pid: str) -> dict:
@@ -1622,6 +1639,9 @@ class Controller:
             "external_ports": ext_ports,
             "managed_by": "localservices",
         })
+        if p.uses_docker():
+            base["docker_context"] = (p.docker or {}).get("context") or dockerctx.name()
+            base["docker_endpoint"] = (p.docker or {}).get("endpoint")
         return base
 
     def refresh_snapshot(self, wait: float | None = None) -> dict:

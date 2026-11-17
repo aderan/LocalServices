@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from localservices import dockerctx, resources  # noqa: E402
+from localservices import dockerctx, manifest, resources  # noqa: E402
 
 
 def ns(rc=0, stdout="", stderr=""):
@@ -82,6 +82,34 @@ class ResourcesV2Base(unittest.TestCase):
 
 
 class InventoryV2Test(ResourcesV2Base):
+    def test_environment_inventory_keeps_offline_bindings_and_groups_aliases(self):
+        endpoint = dockerctx.colima_endpoint("sandbox")
+        online = dockerctx.colima_endpoint("default")
+        dep = manifest.Dependency("Postgres", manifest.Probe(tcp="127.0.0.1:5432"), container="app-pg")
+        project = manifest.Project("api", "API", Path("."), dependencies=[dep],
+                                   docker={"context": "colima-sandbox", "endpoint": endpoint})
+        contexts = [{"Name": name, "DockerEndpoint": online} for name in ("colima", "alias")]
+
+        def docker(args, **kwargs):
+            if args[0] == "context":
+                return ns(stdout="\n".join(map(json.dumps, contexts)))
+            return ns(stdout="28.4.0")
+
+        profiles = [{"name": "sandbox", "runtime": "docker", "status": "Stopped"},
+                    {"name": "default", "runtime": "docker", "status": "Running"}]
+        with patch.object(dockerctx, "run", side_effect=docker), \
+                patch.object(dockerctx, "list_colima_profiles", return_value=profiles), \
+                patch.object(dockerctx, "inspect_context", return_value=online):
+            result = resources.environments([project], [{"id": "api", "state": "stopped", "label": "已停止"}])
+        by_profile = {row["profile"]: row for row in result["environments"]}
+        self.assertEqual(by_profile["default"]["contexts"], ["colima", "alias"])
+        self.assertEqual(by_profile["default"]["state"], "ready")
+        self.assertEqual(by_profile["sandbox"]["state"], "stopped")
+        self.assertEqual(by_profile["sandbox"]["services"], [{
+            "id": "api", "name": "API", "context": "colima-sandbox", "state": "stopped", "label": "已停止",
+            "binding_changed": False,
+        }])
+
     def test_uses_ps_all_and_reports_pinned_context(self):
         inv = resources.inventory()
         self.assertTrue(inv["ok"], inv)

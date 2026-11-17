@@ -32,7 +32,7 @@ class InfrastructureTest(unittest.TestCase):
         code, output = 0, ""
         if executable == "colima":
             if args[0] == "list":
-                output = json.dumps({"name": self.profile, "status": "Stopped"})
+                output = json.dumps({"name": self.profile, "status": "Stopped", "runtime": "docker"})
             elif args[0] == "start":
                 self.runtime = True
             else:
@@ -67,6 +67,21 @@ class InfrastructureTest(unittest.TestCase):
         self.assertTrue(any(Path(c[0]).name == "colima" and "start" in c for c in self.commands))
         self.assertTrue(any(Path(c[0]).name == "docker" and "start" in c for c in self.commands))
         self.assertFalse(any(word in c for c in self.commands for word in ("create", "rm", "pull", "stop")))
+
+    def test_restores_the_profile_that_owns_the_bound_socket(self):
+        self.profile = "locove-test"
+        self.endpoint = f"unix://{Path.home()}/.colima/{self.profile}/docker.sock"
+        self.recover()
+        starts = [c[1:] for c in self.commands if Path(c[0]).name == "colima" and c[1] == "start"]
+        self.assertEqual(starts, [["start", self.profile, "--activate=false"]])
+
+    def test_bound_compose_does_not_start_colima_without_permission(self):
+        binding = {"context": "colima", "endpoint": self.endpoint, "autostart": False}
+        with patch("localservices.infrastructure.subprocess.run", side_effect=self.command), \
+                patch("localservices.infrastructure.shutil.which", side_effect=lambda name, **kwargs: name):
+            with self.assertRaisesRegex(DependencyError, "请先启动运行环境"):
+                Infrastructure().ensure([], lambda _: None, docker_required=True, binding=binding)
+        self.assertFalse(any(c[0] == "colima" and c[1] == "start" for c in self.commands))
 
     def test_healthy_existing_services_are_not_restarted(self):
         self.runtime = self.running = True

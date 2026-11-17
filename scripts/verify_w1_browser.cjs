@@ -428,8 +428,9 @@ async function main() {
           const navButtons = navIds.map(id => document.getElementById('nav-' + id));
           const navLabels = navButtons.map(button => button.querySelector('span').textContent);
           const navFits = navButtons.every(button => button.scrollWidth <= button.clientWidth + 1);
-          const resources = {ok: true, docker_context: 'local', resources: [
-            {name: 'example-db', image: 'postgres', state: 'exited'}
+          const resources = {ok: true, environments: [
+            {context: 'local', contexts: ['local'], state: 'ready', services: [],
+             containers: [{name: 'example-db', image: 'postgres', state: 'exited'}]}
           ]};
           const savedPages = {resourcesData, agentsData, agentCandidates, removedData, expanded: open.three};
           let pageCopy;
@@ -494,9 +495,9 @@ async function main() {
     check(`${width} 英文侧栏保留简短名称`,
           en.navLabels.join(',') === 'Issues,Resources,Agents,Removed,Settings', JSON.stringify(en.navLabels));
     check(`${width} 管理页面按所选语言显示正文`,
-          ['Run intent', 'Port mappings', 'Test connection', 'Restore'].every((label, i) => en.pageCopy[i].includes(label))
+          ['Run intent', 'Volumes and mounts', 'Test connection', 'Restore'].every((label, i) => en.pageCopy[i].includes(label))
           && !en.pageCopy.some(copy => /[\u4e00-\u9fff]/.test(copy))
-          && ['运行意图', '端口映射', '最小调用验证', '恢复'].every((label, i) => zh.pageCopy[i].includes(label)));
+          && ['运行意图', '数据卷与挂载', '最小调用验证', '恢复'].every((label, i) => zh.pageCopy[i].includes(label)));
     check(`${width} 中英文侧栏选项不被裁切`, en.navFits && zh.navFits);
     check(`${width} 设置无横向溢出`, en.fits && zh.fits);
   }

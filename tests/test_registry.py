@@ -124,6 +124,21 @@ class ProjectTest(RegBase):
 
 
 class RegisterTest(RegBase):
+    def test_register_pins_docker_endpoint_and_preserves_binding_on_edit(self):
+        payload = self.payload()
+        payload["service"]["docker"] = {"context": "other-engine"}
+        endpoint = "unix:///tmp/other-engine.sock"
+        with patch("localservices.dockerctx.inspect_context", return_value=endpoint):
+            result = self.reg.register_service(payload)
+        self.assertTrue(result["ok"], result)
+        changed = self.payload(revision=result["revision"])
+        changed["service"]["name"] = "Updated"
+        result = self.reg.register_service(changed)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(manifest.load_all()["demo-web"].docker, {
+            "context": "other-engine", "endpoint": endpoint, "autostart": False,
+        })
+
     def test_register_creates_project_and_toml(self):
         res = self.reg.register_service(self.payload())
         self.assertTrue(res["ok"], res)

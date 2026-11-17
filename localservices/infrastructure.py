@@ -2,11 +2,11 @@
 
 Docker 语义与 dockerctx 同源（V2.6）：显式 `--context <dockerctx.name()>`、子进程环境清除
 DOCKER_HOST/DOCKER_CONTEXT/DOCKER_CONFIG、endpoint 非本机 unix socket 一律拒绝操作。
-Colima default profile 的恢复行为保持 V1 不变（仅在 endpoint 确属本机 Colima 时）。
+Compose 组件和容器依赖共用同一套运行环境准备流程。
 """
 
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 import json
-from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -24,10 +24,15 @@ class DependencyError(RuntimeError):
     pass
 
 
+class RuntimeUnavailable(DependencyError):
+    pass
+
+
 class Infrastructure:
     def __init__(self):
-        # One daemon serves all projects; serialize shared runtime/container recovery.
         self.lock = threading.Lock()
+        self.recoveries: dict[str, Future] = {}
+        self.containers: dict[tuple[str, str], threading.Lock] = {}
 
     def _remaining(self, deadline):
         remaining = deadline - time.monotonic()
@@ -53,39 +58,74 @@ class Infrastructure:
         return self._command(dockerctx.argv(args), deadline)
 
     def _endpoint(self, deadline):
+        if dockerctx.active_binding():
+            return dockerctx.endpoint()
         result = self._docker(
             ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}", dockerctx.name()],
             deadline)
         if result.returncode:
-            raise DependencyError(f"无法解析 Docker 上下文 {dockerctx.name()} 的 endpoint，拒绝操作")
-        return result.stdout.strip()
+            endpoint = dockerctx.stopped_colima_endpoint(dockerctx.name())
+            if not endpoint:
+                raise DependencyError(f"无法解析 Docker 上下文 {dockerctx.name()} 的 endpoint，拒绝操作")
+            return endpoint
+        return dockerctx.canonical_endpoint(result.stdout.strip())
 
-    def _runtime(self, deadline, progress):
-        endpoint = self._endpoint(deadline)
-        if not dockerctx.is_local(endpoint):
-            # V2.6: 远程 engine 只允许只读盘点，恢复/接管一律拒绝。
-            raise DependencyError(
-                f"Docker {dockerctx.name()} 上下文未指向本机默认环境（{endpoint or 'endpoint 未知'}），"
-                f"{dockerctx.REMOTE_REFUSAL}，拒绝接管其他 Docker 环境")
+    def _restore_runtime(self, endpoint, deadline, progress):
         if self._docker(["info", "--format", "{{.ServerVersion}}"], deadline).returncode == 0:
             return
-        colima_root = f"unix://{Path.home()}/.colima/"
-        if not endpoint.startswith(colima_root):
-            raise DependencyError("本机 Docker 引擎不可达且该上下文非 Colima 管理，未自动恢复")
+        if not endpoint.startswith(f"unix://{dockerctx.colima_root()}/"):
+            raise RuntimeUnavailable(f"Docker {dockerctx.name()} 不可达，请启动对应的运行环境后重试")
         profiles = self._command(["colima", "list", "--json"], deadline)
         try:
-            records = [json.loads(line) for line in profiles.stdout.splitlines() if line.strip()]
-            records = [item for record in records for item in (record if isinstance(record, list) else [record])]
-        except (ValueError, TypeError) as exc:
-            raise DependencyError("无法确认已有 Colima 环境，未创建新环境") from exc
-        if profiles.returncode or not any(p.get("name") == "default" for p in records):
-            raise DependencyError("已有 Colima default 环境不存在，未自动创建新环境")
-        progress("正在恢复 Colima 环境（最多 120 秒），应用尚未启动")
-        result = self._command(["colima", "start", "default", "--activate=false"], deadline, ENVIRONMENT_TIMEOUT)
+            profile = dockerctx.colima_profile(endpoint, dockerctx.colima_profiles(profiles.stdout))
+        except ValueError as exc:
+            raise RuntimeUnavailable("无法确认已有 Colima 环境，未自动创建新环境") from exc
+        if profiles.returncode or not profile:
+            raise RuntimeUnavailable(f"Docker {dockerctx.name()} 的 Colima 实例无法确认，未自动创建新环境")
+        progress(f"正在启动 Colima {profile}，应用尚未启动")
+        result = self._command(["colima", "start", profile, "--activate=false"], deadline, ENVIRONMENT_TIMEOUT)
         if result.returncode:
-            raise DependencyError("Colima 恢复失败，原环境保留；检查 Colima 日志后重试")
-        while self._docker(["info", "--format", "{{.ServerVersion}}"], deadline).returncode:
-            time.sleep(min(0.5, self._remaining(deadline)))
+            detail = (result.stderr or result.stdout).strip()
+            raise RuntimeUnavailable(f"Colima {profile} 启动失败（退出码 {result.returncode}）"
+                                     + (f"：{detail}" if detail else ""))
+        progress(f"等待 Colima {profile} 的 Docker Engine 就绪")
+        try:
+            while self._docker(["info", "--format", "{{.ServerVersion}}"], deadline).returncode:
+                time.sleep(min(0.5, self._remaining(deadline)))
+        except DependencyError as exc:
+            raise RuntimeUnavailable(f"Colima {profile} 已启动，Docker {dockerctx.name()} 仍不可达：{exc}") from exc
+
+    def _runtime(self, deadline, progress, allow_start):
+        endpoint = self._endpoint(deadline)
+        if not endpoint or not dockerctx.is_local(endpoint):
+            raise RuntimeUnavailable(f"Docker {dockerctx.name()} 未指向本机默认环境，{dockerctx.REMOTE_REFUSAL}")
+        with self.lock:
+            future = self.recoveries.get(endpoint)
+            owner = future is None and allow_start
+            if owner:
+                future = self.recoveries[endpoint] = Future()
+        if future is None:
+            if self._docker(["info", "--format", "{{.ServerVersion}}"], deadline).returncode:
+                raise RuntimeUnavailable(f"Docker {dockerctx.name()} 不可达，请先启动运行环境")
+            return endpoint
+        if owner:
+            try:
+                self._restore_runtime(endpoint, deadline, progress)
+            except BaseException as exc:
+                future.set_exception(exc)
+                raise
+            else:
+                future.set_result(None)
+            finally:
+                with self.lock:
+                    del self.recoveries[endpoint]
+        else:
+            progress(f"等待共享 Docker 环境 {dockerctx.name()} 就绪")
+            try:
+                future.result(timeout=self._remaining(deadline))
+            except FutureTimeout as exc:
+                raise RuntimeUnavailable(f"等待 Docker {dockerctx.name()} 就绪超时") from exc
+        return endpoint
 
     def _inspect(self, dependency, deadline):
         result = self._docker(["container", "inspect", "--format", INSPECT, dependency.container], deadline)
@@ -123,7 +163,15 @@ class Infrastructure:
                 return
             time.sleep(min(0.5, self._remaining(deadline)))
 
-    def ensure(self, dependencies, progress):
+    def ensure(self, dependencies, progress, *, docker_required=False, binding=None, start_environment=False):
+        try:
+            with dockerctx.bound(binding, allow_stopped_colima=True):
+                self._ensure(dependencies, progress, docker_required,
+                             start_environment or not binding or binding.get("autostart", False))
+        except dockerctx.BindingError as exc:
+            raise RuntimeUnavailable(str(exc)) from exc
+
+    def _ensure(self, dependencies, progress, docker_required, allow_start):
         required = [d for d in dependencies if d.required]
         deadline = time.monotonic() + ENVIRONMENT_TIMEOUT
         for dependency in required:
@@ -136,14 +184,19 @@ class Infrastructure:
             if not ok:
                 raise DependencyError(f"{dependency.name} 未就绪：{detail}")
         containers = [d for d in required if d.container]
-        if not containers:
+        if not containers and not docker_required:
             return
         progress("等待共享容器环境准备")
-        if not self.lock.acquire(timeout=self._remaining(deadline)):
-            raise DependencyError("等待共享容器环境准备超时")
         try:
-            self._runtime(deadline, progress)
-            for dependency in containers:
+            endpoint = self._runtime(deadline, progress, allow_start)
+        except DependencyError as exc:
+            raise RuntimeUnavailable(str(exc)) from exc
+        for dependency in containers:
+            with self.lock:
+                lock = self.containers.setdefault((endpoint, dependency.container), threading.Lock())
+            if not lock.acquire(timeout=self._remaining(deadline)):
+                raise DependencyError(f"等待容器 {dependency.container} 就绪超时")
+            try:
                 self._container(dependency, deadline, progress)
-        finally:
-            self.lock.release()
+            finally:
+                lock.release()

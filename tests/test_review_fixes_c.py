@@ -135,11 +135,9 @@ class ReviewFixCStaticTest(unittest.TestCase):
 
     def test_r08_resources_columns(self):
         res = self.html.split("function viewResources()", 1)[1].split("function draftSummary(", 1)[0]
-        for anchor in ("消费者", "bind_mounts", "归属", "共享（多项目引用）", "已停止"):
+        for anchor in ("引用服务", "bind_mounts", "跨项目共享", "已停止", "已绑定服务", "容器状态无法验证"):
             self.assertIn(anchor, res)
-        # 消费者行形状：service（via …）[运行中|未运行]
-        self.assertIn("via", res)
-        self.assertIn("运行中", res)
+        self.assertIn("stateLabel(s)", res)
 
     def test_r08_wizard_reuse_binding(self):
         # 候选审核依赖行：复用选择下拉（/api/resources），不要求手填 container/volume

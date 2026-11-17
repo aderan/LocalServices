@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 # Docker 宿主侧端口转发进程（V2.8）：它们持有端口是替容器发布，不是普通进程冲突。
-DOCKER_PROXY_RE = re.compile(r"gvproxy|com\.docker\.backend|docker-proxy|vpnkit")
+DOCKER_PROXY_RE = re.compile(r"gvproxy|com\.docker\.backend|docker-proxy|vpnkit|^ssh: .*/_lima/[^/]+/ssh\.sock \[mux\]")
 
 
 @dataclass

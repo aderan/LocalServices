@@ -26,7 +26,7 @@ import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import manifest, overrides, paths, resources, tombstones
+from . import dockerctx, manifest, overrides, paths, resources, tombstones
 
 SCHEMA_VERSION = 1
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -42,7 +42,7 @@ SERVICE_KEYS = {"id", "name", "description", "source", "open", "autostart", "ada
                 # V3 公开入口（进 TOML）
                 "endpoints",
                 # V2.3 覆盖层 / V2.7 compose 确认（payload-only，不进 TOML）
-                "edited", "accept_new", "confirmed_provision"}
+                "edited", "accept_new", "confirmed_provision", "docker"}
 COMP_KEYS = {"id", "kind", "name", "cmd", "shell_script", "cwd", "env", "env_files", "port", "ready",
              "required", "start_timeout", "after", "hot", "watch", "restart_on", "ignore", "build",
              "install", "install_when", "install_marker", "auto_update", "external_cmd",
@@ -276,7 +276,7 @@ def _file_lock():
 def _diff_definitions(old: dict, new: dict) -> list[dict]:
     """字段级差异（dry_run 用）：顶层标量 + 按组件 id / 依赖 name 对齐的明细，old/new 原样呈现。"""
     out: list[dict] = []
-    for k in ("name", "description", "source", "open", "autostart", "observe_only", "adapter", "options"):
+    for k in ("name", "description", "source", "open", "autostart", "observe_only", "adapter", "options", "docker"):
         if old.get(k) != new.get(k) and not (old.get(k) is None and new.get(k) is None):
             out.append({"field": k, "old": old.get(k), "new": new.get(k)})
     oldc = {c.get("id"): c for c in old.get("components", []) if isinstance(c, dict)}
@@ -391,7 +391,7 @@ def _service_key(source: Path, d: dict) -> tuple:
     return (
         d.get("name", ""), d.get("description", ""), str(_resolved(d.get("source", "."))),
         d.get("open") or "", bool(d.get("autostart", False)), bool(d.get("observe_only", False)),
-        d.get("adapter") or "",
+        d.get("adapter") or "", d.get("docker"),
         tuple(sorted(_comp_key(c, source) for c in comps)),
         tuple(sorted(_dep_key(x) for x in deps)),
         # V3：endpoints 变化是真实内容变化（域名/落点/组件引用），不能被判为 unchanged
@@ -951,7 +951,7 @@ class Registry:
                 "name": existing.name, "description": existing.description,
                 "source": str(existing.source), "open": existing.open,
                 "autostart": existing.autostart, "observe_only": existing.observe_only,
-                "adapter": existing.adapter,
+                "adapter": existing.adapter, "docker": existing.docker,
                 "components": [dataclass_to_comp_dict(c) for c in existing.components],
                 "dependencies": [dep_to_dict(d) for d in existing.dependencies],
                 "endpoints": [{"id": e.id, "host": e.host, "component": e.component,
@@ -2066,11 +2066,29 @@ class Registry:
             comps.append(nc)
         _raise_details(details)
 
+        binding = svc.get("docker")
+        if binding is not None:
+            if (not isinstance(binding, dict) or set(binding) - {"context", "endpoint", "autostart"}
+                    or not isinstance(binding.get("context"), str)
+                    or not isinstance(binding.get("autostart", False), bool)):
+                raise RegistryError("service.docker 必须包含 context，可选 endpoint 和 autostart")
+            context = binding["context"]
+            endpoint = dockerctx.inspect_context(context) or dockerctx.stopped_colima_endpoint(context)
+            if not endpoint.startswith("unix:///"):
+                raise RegistryError(f"Docker 连接 {context} 不可解析为本机 Unix socket")
+            if "endpoint" in binding and binding["endpoint"] != endpoint:
+                raise RegistryError(f"Docker 连接 {context} 已变化，请重新选择运行环境", status=409)
+            binding = {"context": context, "endpoint": endpoint, "autostart": binding.get("autostart", False)}
+
         deps: list[dict] = []
-        for d in svc.get("dependencies") or []:
-            nd = _norm_dependency(d, details, warnings)
-            if nd is not None:
-                deps.append(nd)
+        try:
+            with dockerctx.bound(binding, allow_stopped_colima=True):
+                for d in svc.get("dependencies") or []:
+                    nd = _norm_dependency(d, details, warnings)
+                    if nd is not None:
+                        deps.append(nd)
+        except dockerctx.BindingError as exc:
+            raise RegistryError(str(exc), status=409) from exc
         _raise_details(details)
 
         comp_objs = [manifest._component(dict(c)) for c in comps]
@@ -2087,6 +2105,8 @@ class Registry:
         _raise_details(details)
 
         toml = {"id": sid, "name": svc["name"], "source": str(src)}
+        if binding:
+            toml["docker"] = binding
         for key in ("description", "open", "adapter"):
             v = svc.get(key)
             # 空 description 视为"未提供"：更新时经 merge 保留用户手写的旧描述

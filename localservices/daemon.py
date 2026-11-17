@@ -22,8 +22,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__, paths
-from . import agent_api, locove, locove_optin, register_api, resources
-from .controller import Controller
+from . import agent_api, dockerctx, locove, locove_optin, register_api, resources
+from .controller import Controller, redact
+from .infrastructure import DependencyError
 
 WEB = Path(__file__).resolve().parent / "web"
 STARTED = time.time()
@@ -146,6 +147,13 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/resources":
                 self._send(200, resources.inventory())
                 return
+            if u.path == "/api/resources/environments":
+                data = resources.environments(list(self.ctl.projects.values()), self.ctl.snapshot().get("projects", []))
+                data["error"] = redact(data["error"])[:600]
+                for environment in data["environments"]:
+                    environment["error"] = redact(environment["error"])[:600]
+                self._send(200, data)
+                return
             if u.path == "/api/locove":
                 settings = _locove_settings()
                 st = locove.module_status(settings)
@@ -244,6 +252,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if u.path == "/api/refresh":
                 self._send(200, self.ctl.refresh_snapshot(wait=6))
+                return
+            if u.path == "/api/resources/environments/start":
+                context = body.get("context") if isinstance(body, dict) else None
+                endpoint = body.get("endpoint") if isinstance(body, dict) else None
+                if not isinstance(context, str) or not isinstance(endpoint, str) or not dockerctx.is_local(endpoint):
+                    self._send(400, {"ok": False, "error": "请选择本机 Docker 连接"})
+                    return
+                try:
+                    self.ctl.infrastructure.ensure([], lambda detail: None, docker_required=True,
+                                                   binding={"context": context, "endpoint": endpoint},
+                                                   start_environment=True)
+                except DependencyError as exc:
+                    self._send(409, {"ok": False, "error": redact(str(exc))[:1200]})
+                    return
+                self._send(200, {"ok": True})
                 return
             if u.path == "/api/register":
                 res = register_api.handle_register(body, self.ctl)

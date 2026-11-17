@@ -6,7 +6,7 @@ Locove manages the repeatable steps between a local project and a running develo
 | --- | --- |
 | Project directories, service registration, start, stop, open, status and logs | Remote machines, cloud deployment, public hosting, shared control planes and cloud sync |
 | Local process ownership, port-conflict diagnosis, and an Agent-assisted repair for the port of a stopped service | Automatic port assignment, source-code edits to resolve conflicts, and stopping unrelated listeners |
-| Configured local Compose services and read-only inventory of shared resources | Installing or upgrading runtimes and changing shared volumes |
+| Configured local Compose services, Docker environment discovery and binding, and starting existing Colima profiles | Installing or upgrading runtimes, stopping shared Docker environments, and changing shared volumes |
 | Optional Agent discovery, trial startup before registration, and local domain routing | General-purpose code repair, public DNS and TLS |
 | Source installation on macOS | Prebuilt installer, iOS or Android installation, app signing and store distribution |
 

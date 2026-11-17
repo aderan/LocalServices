@@ -153,6 +153,10 @@ class Project:
     endpoints: list[Endpoint] = field(default_factory=list)
     file: Path | None = None
     options: dict = field(default_factory=dict)
+    docker: dict | None = None
+
+    def uses_docker(self) -> bool:
+        return any(c.run == "compose" for c in self.components) or any(d.container for d in self.dependencies)
 
     def component(self, cid: str) -> Component:
         for c in self.components:
@@ -289,6 +293,13 @@ def load_file(path: Path) -> Project:
     raw_endpoints = d.pop("endpoints", [])
     d["source"] = Path(os.path.expanduser(d["source"]))
     p = Project(**d, components=comps, dependencies=deps, file=path)
+    if p.docker is not None and (
+            not isinstance(p.docker, dict)
+            or not isinstance(p.docker.get("context"), str)
+            or not isinstance(p.docker.get("endpoint"), str)
+            or not p.docker["endpoint"].startswith("unix:///")
+            or not isinstance(p.docker.get("autostart", False), bool)):
+        raise ValueError(f"{path}: Docker 绑定必须包含 context 和本机 Unix socket endpoint")
     seen = set()
     for c in p.components:
         if c.id in seen:

@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
-from . import dockerctx
+from . import compose, dockerctx, manifest
 
 TIMEOUT = 10.0  # 每条 docker 命令的超时上限
 
@@ -34,7 +36,7 @@ def inventory() -> dict:
     return inventory_v2()
 
 
-def inventory_v2() -> dict:
+def inventory_v2(*, include_consumers=True) -> dict:
     try:
         context = dockerctx.name()
         ps = _run(["docker", "ps", "-a", "--format", "{{json .}}"])
@@ -69,13 +71,126 @@ def inventory_v2() -> dict:
         resources = [by_name[n] for n in names if n in by_name]
         return {"ok": True, "docker_context": context,
                 "resources": resources,
-                "consumers": _consumers(resources, by_name)}
+                "consumers": _consumers(resources, by_name) if include_consumers else {}}
     except FileNotFoundError:
         return {"ok": False, "error": "docker 未安装或不在 PATH"}
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": f"docker 超时（>{TIMEOUT:g}s）"}
     except Exception as e:  # 盘点永不向上抛
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def environments(projects: list[manifest.Project], statuses: list[dict]) -> dict:
+    """Project saved bindings and interrogate each distinct local Docker endpoint."""
+    try:
+        listed = dockerctx.run(["context", "ls", "--format", "{{json .}}"], timeout=4, check=True)
+        contexts = [json.loads(line) for line in listed.stdout.splitlines() if line.strip()]
+        discovery_error = ""
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        contexts = []
+        discovery_error = str(exc)
+    profiles = dockerctx.list_colima_profiles()
+
+    groups: dict[str, dict] = {}
+    context_endpoints: dict[str, str] = {}
+    for row in contexts:
+        context = row.get("Name", "")
+        if not dockerctx.CONTEXT_NAME.fullmatch(context):
+            continue
+        endpoint = dockerctx.canonical_endpoint(row.get("DockerEndpoint") or "")
+        context_endpoints[context] = endpoint
+        group = groups.setdefault(endpoint or context, _environment(context, endpoint, profiles))
+        group["contexts"].append(context)
+        group["context_present"] = True
+
+    # Colima removes its generated context on stop. Keep the profile discoverable.
+    for record in profiles:
+        profile = record.get("name")
+        if not isinstance(profile, str) or not dockerctx.CONTEXT_NAME.fullmatch(profile):
+            continue
+        endpoint = dockerctx.colima_endpoint(profile)
+        if dockerctx.colima_profile(endpoint, profiles) != profile:
+            continue
+        context = dockerctx.colima_context(profile)
+        group = groups.setdefault(endpoint, _environment(context, endpoint, profiles))
+        if context not in context_endpoints:
+            group["contexts"].append(context)
+            context_endpoints[context] = endpoint
+        group["profile_stopped"] = record.get("status") == "Stopped"
+
+    observed = {p["id"]: p for p in statuses}
+    for project in projects:
+        if not project.uses_docker():
+            continue
+        binding = project.docker or {}
+        context = binding.get("context") or dockerctx.name()
+        endpoint = binding.get("endpoint") or context_endpoints.get(context, "")
+        group = groups.setdefault(endpoint or context, _environment(context, endpoint, profiles))
+        status = observed.get(project.id, {})
+        group["services"].append({
+            "id": project.id, "name": project.name, "context": context, "state": status.get("state", "unknown"),
+            "label": status.get("label") or "未知",
+            "binding_changed": bool(binding) and context_endpoints.get(context) != endpoint,
+        })
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        rows = list(pool.map(_inspect_environment, groups.values()))
+    by_service = {p.id: p for p in projects}
+    for row in rows:
+        for container in row["containers"]:
+            container["consumers"] = []
+            for service in row["services"]:
+                if service["binding_changed"]:
+                    continue
+                project = by_service[service["id"]]
+                dependency = any(d.container == container["name"] for d in project.dependencies)
+                component = any(c.run == "compose" and c.compose_service == container["compose_service"]
+                                and compose.project_name(project, c) == container["compose_project"]
+                                for c in project.components)
+                if dependency or component:
+                    container["consumers"].append({"id": project.id, "name": project.name,
+                                                   "project": project.project or project.id,
+                                                   "state": service["state"],
+                                                   "label": service["label"],
+                                                   "via": "dependency" if dependency else "compose"})
+    return {"ok": True, "default_context": dockerctx.name(), "environments": rows, "error": discovery_error}
+
+
+def _environment(context: str, endpoint: str, profiles: list[dict]) -> dict:
+    profile = dockerctx.colima_profile(endpoint, profiles)
+    provider = "colima" if profile else "docker"
+    if endpoint == f"unix://{Path.home() / '.docker/run/docker.sock'}":
+        provider = "docker-desktop"
+    elif endpoint.startswith("unix:///") and "podman" in Path(endpoint).name:
+        provider = "podman"
+    return {"context": context, "endpoint": endpoint, "contexts": [], "provider": provider,
+            "profile": profile, "services": [], "context_present": False}
+
+
+def _inspect_environment(group: dict) -> dict:
+    endpoint = group["endpoint"]
+    group.update(state="unknown", containers=[], error="")
+    if not group["context_present"] or not endpoint:
+        if group.get("profile_stopped"):
+            group["state"] = "stopped"
+        return group
+    if not dockerctx.is_local(endpoint):
+        group["state"] = "remote"
+        return group
+    context = group["context"]
+    try:
+        with dockerctx.bound({"context": context, "endpoint": endpoint}):
+            result = dockerctx.run(["info", "--format", "{{.ServerVersion}}"], timeout=4)
+            if result.returncode:
+                group.update(state="unreachable", error=(result.stderr or result.stdout).strip())
+                return group
+            group["state"] = "ready"
+            inv = inventory_v2(include_consumers=False)
+            group["containers"] = inv.get("resources", [])
+            group["error"] = inv.get("error", "")
+    except (OSError, dockerctx.BindingError, subprocess.SubprocessError) as exc:
+        group["error"] = str(exc)
+    return group
 
 
 def container_state(container: str) -> str | None:
@@ -98,7 +213,6 @@ def _consumers(resources: list[dict], by_name: dict[str, dict]) -> dict[str, lis
     清单加载失败（损坏/权限等）→ 空 consumers，绝不让盘点整体失败。
     """
     try:
-        from . import manifest
         projects = manifest.load_all()
     except Exception:
         return {}
@@ -108,6 +222,8 @@ def _consumers(resources: list[dict], by_name: dict[str, dict]) -> dict[str, lis
         return by_name.get(name, {}).get("state") == "running"
 
     for p in projects.values():
+        if p.docker and p.docker["context"] != dockerctx.name():
+            continue
         for dep in p.dependencies:
             if dep.container and dep.container in by_name:
                 out.setdefault(f"container:{dep.container}", []).append(

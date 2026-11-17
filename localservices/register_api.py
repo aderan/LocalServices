@@ -17,7 +17,7 @@ import tomllib
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 
-from . import manifest, paths, trial
+from . import dockerctx, manifest, paths, trial
 from .controller import redact
 from .registry import ID_RE, Registry, RegistryError, dumps_toml
 
@@ -186,6 +186,20 @@ def handle_register(body: dict, ctl) -> tuple[int, dict]:
             return 400, {"ok": False, "error": "body 必须是对象"}
         if "verify_start" in body and not isinstance(body["verify_start"], bool):
             return 400, {"ok": False, "error": "verify_start 必须是布尔值"}
+        definition = body.get("service")
+        binding = definition.get("docker") if isinstance(definition, dict) else None
+        if isinstance(binding, dict) and isinstance(binding.get("context"), str):
+            sid = definition.get("id")
+            current = getattr(ctl, "projects", {}).get(sid) if isinstance(sid, str) else None
+            if current and current.uses_docker():
+                context = binding["context"]
+                target = dockerctx.inspect_context(context) or dockerctx.stopped_colima_endpoint(context)
+                previous = (current.docker or {}).get("endpoint") or dockerctx.inspect_context(dockerctx.default_name())
+                if target and target != previous:
+                    status = ctl.project_status(current)
+                    if (status.get("op") or status.get("intent") == "running"
+                            or any(c.get("running") for c in status.get("components", []))):
+                        return 409, {"ok": False, "error": "请先停止服务，再更换 Docker 运行环境"}
         if body.get("verify_start") is True and not body.get("dry_run"):
             return _verified_register(body, ctl)
         return _register_status(_registry.register_service(body, dry_run=bool(body.get("dry_run"))))
@@ -439,6 +453,8 @@ def handle_service_definition(sid: str) -> tuple[int, dict]:
             svc["observe_only"] = True
         if p.adapter:
             svc["adapter"] = p.adapter
+        if p.docker:
+            svc["docker"] = p.docker
         svc["components"] = [comp_dict(c) for c in p.components]
         svc["dependencies"] = [dep_dict(x) for x in p.dependencies]
         return 200, {"ok": True, "service_id": sid, "definition": svc,

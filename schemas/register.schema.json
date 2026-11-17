@@ -184,6 +184,16 @@
           },
           "description": "V2.3 显式接受新识别值、清除对应覆盖的路径（'*'=全部）"
         },
+        "docker": {
+          "type": "object",
+          "required": ["context"],
+          "additionalProperties": false,
+          "properties": {
+            "context": {"type": "string"},
+            "endpoint": {"type": "string"},
+            "autostart": {"type": "boolean"}
+          }
+        },
         "confirmed_provision": {
           "type": "boolean",
           "description": "V2.7 用户确认允许 compose up 创建容器/拉镜像（provision=up 时必填 true）"

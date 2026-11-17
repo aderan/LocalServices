@@ -575,8 +575,21 @@ try {
     consumers: {"container:pg-stack": [
       {service: "dup-app", via: "dependency", running: true},
       {service: "share-svc", via: "compose", running: false}]}};
+  const endpoint = "unix:///tmp/locove-verifier.sock";
+  const discovered = {ok: true, environments: [
+    {context: "stub", contexts: ["stub"], endpoint, provider: "docker", state: "ready", services: [],
+     containers: [{...resStub.resources[0], consumers: [
+       {id: "dup-app", name: "Dup App", via: "dependency", state: "available", label: "可用", project: "dupproj"},
+       {id: "share-svc", name: "Share", via: "compose", state: "stopped", label: "已停止", project: "shareproj"},
+     ]}, resStub.resources[1]]},
+    {context: "colima-sandbox", contexts: ["colima-sandbox"], endpoint: "unix:///tmp/sandbox.sock",
+     profile: "sandbox", provider: "colima", state: "stopped", containers: [],
+     services: [{id: "sandbox", name: "Sandbox service", state: "stopped", label: "已停止"}]},
+  ]};
   const pageFetch14 = globalThis.fetch;
   globalThis.fetch = async (p, opts) => {
+    if (String(p).endsWith("/api/resources/environments"))
+      return {ok: true, status: 200, json: async () => discovered, text: async () => JSON.stringify(discovered)};
     if (String(p).includes("/api/resources"))
       return {ok: true, status: 200, json: async () => resStub, text: async () => JSON.stringify(resStub)};
     return pageFetch14(p, opts);
@@ -585,19 +598,23 @@ try {
   page.setViewRaw("resources");
   page.render();
   const rh = documentStub.getElementById("main").innerHTML;
-  check("资源表新增 消费者/挂载/归属 列", rh.includes("消费者") && rh.includes("bind_mounts") && rh.includes("归属"));
-  check("消费者渲染 service（via）[运行状态]",
-        rh.includes("dup-app（via dependency）[运行中]") && rh.includes("share-svc（via compose）[未运行]"));
-  check("跨项目引用 → 共享（多项目引用）", rh.includes("共享（多项目引用）"));
-  check("bind_mounts 渲染 source→target", rh.includes("/Users/x/data→/var/lib/postgresql/data"));
+  check("资源表显示引用服务、数据卷与挂载", rh.includes("引用服务") && rh.includes("数据卷与挂载"));
+  check("引用服务显示各自的状态和引用方式", rh.includes("Dup App · 可用 · 依赖") && rh.includes("Share · 已停止 · Compose"));
+  check("跨项目引用可见", rh.includes("跨项目共享"));
+  check("挂载渲染 source → target", rh.includes("/Users/x/data → /var/lib/postgresql/data"));
   check("已停止容器带「已停止」徽标", rh.includes("已停止"));
+  check("离线 Colima 保留服务绑定并提供启动入口",
+        rh.includes("Colima sandbox") && rh.includes("Sandbox service")
+        && rh.includes("容器状态无法验证") && rh.includes("启动环境"));
   // 向导复用绑定
   await page.wizLoadResources();
   const wres = page.wizGet().resources;
   check("向导取得资源清单（含已停止容器）", Array.isArray(wres) && wres.length === 2);
   page.setWiz({step: "review", _diffFetched: true, _resFetched: true, dirs: [], presetDirs: [], unresolved: [],
     project: {id: "dupproj", name: "DupProj", revision: 3}, agent: "codex", dir: srcA, resources: wres,
+    dockerEnvironments: discovered.environments,
     candidates: [{id: "app3", name: "App3",
+      _docker: {context: "stub", endpoint, autostart: false},
       _orig: {id: "app3", name: "App3", components: [{id: "m", cmd: ["make", "r"], cwd: "."}]},
       components: [{id: "m", kind: "server", name: "m", cmd: ["make", "r"], cwd: ".", port: 18261}],
       dependencies: [{name: "postgres", probe: {tcp: "127.0.0.1:5432"}, container: "", volume: "demo_pgdata"}]}],
@@ -614,7 +631,8 @@ try {
         dep.container === "pg-stack" && dep.volume === "demo_pgdata", JSON.stringify(dep));
   const pl14 = page.candPayload(page.wizGet().candidates[0], page.wizGet().project);
   check("绑定随注册 payload 依赖提交",
-        pl14.service.dependencies[0].container === "pg-stack" && pl14.service.dependencies[0].volume === "demo_pgdata");
+        pl14.service.dependencies[0].container === "pg-stack" && pl14.service.dependencies[0].volume === "demo_pgdata"
+        && pl14.service.docker.endpoint === endpoint);
   page.wizBindDependency(0, 0, "");
   const dep2 = page.wizGet().candidates[0].dependencies[0];
   check("「不绑定」恢复识别原值", dep2.container === "" && dep2.volume === "demo_pgdata", JSON.stringify(dep2));

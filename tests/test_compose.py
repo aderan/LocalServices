@@ -163,8 +163,28 @@ class EnsureStartedTest(ComposeBase):
         self.assertEqual(self.docker_calls, [])
         self.assertEqual(self.compose_calls, [])
 
+    def test_retargeted_context_refuses_container_lifecycle_operations(self):
+        self.project.docker = {"context": "selected", "endpoint": "unix:///tmp/original-docker.sock"}
+        with patch.object(dockerctx, "inspect_context", return_value="unix:///tmp/different-docker.sock"):
+            for operation in (compose.ensure_started, compose.stop_component):
+                with self.assertRaisesRegex(ComposeError, "已变化"):
+                    operation(self.project, self.component)
+        self.assertEqual(self.docker_calls, [])
+
 
 class StopComponentTest(ComposeBase):
+    def test_stop_preserves_compose_container_used_by_another_service(self):
+        from localservices import manifest
+
+        self.add_container("demo-web-1", state="running")
+        consumer = Project("consumer", "Other project", self.cwd,
+                           dependencies=[manifest.Dependency("web", manifest.Probe(tcp="127.0.0.1:8000"),
+                                                             container="demo-web-1")])
+        with patch.object(manifest, "load_all", return_value={consumer.id: consumer}):
+            with self.assertRaisesRegex(ComposeError, "Other project"):
+                compose.stop_component(self.project, self.component)
+        self.assertEqual(self.compose_calls, [])
+
     def test_running_container_stopped_via_compose_stop_never_down(self):
         self.add_container("demo-web-1", state="running")
         result = compose.stop_component(self.project, self.component)
@@ -325,6 +345,7 @@ class ControllerComposeTest(unittest.TestCase):
             patch.object(compose, "stop_component", side_effect=stop_component),
             patch.object(compose, "component_state", side_effect=component_state),
             patch.object(compose, "logs", side_effect=compose_logs),
+            patch.object(self.ctl.infrastructure, "ensure"),
             patch.object(procs, "snapshot", return_value={}),
             patch.object(procs, "listeners", return_value={}),
             patch.object(procs, "all_cwds", return_value={}),
@@ -344,6 +365,7 @@ class ControllerComposeTest(unittest.TestCase):
         self.assertTrue(self.ctl.start("mixed")["accepted"])
         self.assertTrue(self.wait_finished(), self.ctl.errors)
         self.assertEqual(self.order[:2], ["compose-up:db", "bootstrap:web"])
+        self.assertTrue(self.ctl.infrastructure.ensure.call_args.kwargs["docker_required"])
         st = self.ctl.project_status(self.p)
         self.assertEqual(st["state"], "available", st)
         db = next(c for c in st["components"] if c["id"] == "db")

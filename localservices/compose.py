@@ -17,9 +17,11 @@ scrubbed env; docker-compose gets DOCKER_HOST=<context endpoint>).
 from __future__ import annotations
 
 import json
+from functools import wraps
 from pathlib import Path
+from subprocess import SubprocessError
 
-from . import dockerctx
+from . import dockerctx, manifest
 from .manifest import Component, Project
 
 
@@ -32,6 +34,19 @@ COMPOSE_TIMEOUT = 120.0
 UP_TIMEOUT = 300.0  # up may pull/build; the caller's deadline still applies at controller level
 _FORBIDDEN_VERBS = {"down", "rm", "kill"}  # compose 适配器绝不执行（不删容器/网络/卷）
 _BASE_FILES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
+
+
+def _bound(fn):
+    @wraps(fn)
+    def call(p, *args, **kwargs):
+        try:
+            with dockerctx.bound(getattr(p, "docker", None)):
+                return fn(p, *args, **kwargs)
+        except dockerctx.BindingError as exc:
+            raise ComposeError(str(exc)) from exc
+        except (OSError, SubprocessError) as exc:
+            raise ComposeError(f"Docker {dockerctx.name()} 命令失败：{exc}") from exc
+    return call
 
 
 def _run(args: list[str], timeout: float = TIMEOUT):
@@ -97,6 +112,7 @@ def _ps_labels(row: dict) -> dict:
     return labels if isinstance(labels, dict) else {}
 
 
+@_bound
 def container_name(p: Project, c: Component) -> str | None:
     """声明服务实际对应的容器名（docker ps -a，**只按 compose project+service 标签**解析）。
 
@@ -130,6 +146,7 @@ def _inspect_state(container: str) -> dict | None:
         raise ComposeError(f"无法解析容器 {container} 的状态：{e}") from e
 
 
+@_bound
 def ensure_started(p: Project, c: Component) -> dict:
     """把声明的 compose 服务带起来（幂等）。
 
@@ -163,6 +180,7 @@ def ensure_started(p: Project, c: Component) -> dict:
     return {"ok": True, "action": "up", "container": container_name(p, c) or f"{proj}-{c.compose_service}-1"}
 
 
+@_bound
 def stop_component(p: Project, c: Component) -> dict:
     """停止声明的 compose 服务（只 stop，绝不 down/rm/删卷）；容器缺失 → no-op。"""
     _require_local()
@@ -173,6 +191,18 @@ def stop_component(p: Project, c: Component) -> dict:
     state = _inspect_state(name) or {}
     if not state.get("Running"):
         return {"ok": True, "action": "already-stopped", "container": name}
+    try:
+        registered = manifest.load_all()
+    except (OSError, ValueError) as exc:
+        raise ComposeError(f"无法核对容器 {name} 的共享引用：{exc}") from exc
+    for other in registered.values():
+        if other.id == p.id:
+            continue
+        uses_container = any(d.container == name for d in other.dependencies)
+        same_workload = any(oc.run == "compose" and oc.compose_service == c.compose_service
+                            and project_name(other, oc) == proj for oc in other.components)
+        if (uses_container or same_workload) and dockerctx.same_environment(p.docker, other.docker):
+            raise ComposeError(f"容器 {name} 也被 {other.name} 引用，请保留共享容器")
     files = compose_files(p, c)
     args = ["-p", proj]
     for f in files:
@@ -184,6 +214,7 @@ def stop_component(p: Project, c: Component) -> dict:
     return {"ok": True, "action": "stopped", "container": name}
 
 
+@_bound
 def component_state(p: Project, c: Component) -> dict:
     """inspect → {"state": running|<Status>|missing|unknown, "health": healthy/…|None, "container": …}。"""
     name = container_name(p, c)
@@ -198,6 +229,7 @@ def component_state(p: Project, c: Component) -> dict:
     return {"state": state.get("Status") or "exited", "health": health, "container": name}
 
 
+@_bound
 def logs(p: Project, c: Component, lines: int = 200) -> str:
     """`docker logs --tail N <container>`（只读）。"""
     name = container_name(p, c)
