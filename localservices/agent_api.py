@@ -452,15 +452,18 @@ def handle_diagnose(body: dict, ctl) -> tuple[int, dict]:
             endpoint = (error.get("docker_target") or {}).get("endpoint")
             if not endpoint:
                 logs = ctl.logs(service, error.get("component"), 15).get("logs", {})
+                external = status.get("observe_only", False)
                 evidence = {
-                    "operation": "start or check service",
+                    "operation": "check external service health" if external else "start or check service",
                     "name": status.get("name"), "state": status.get("state"),
-                    "reason": status.get("reason"), "error": error,
+                    "reason": status.get("reason") or status.get("detail"), "error": error,
                     "components": [{key: component.get(key) for key in ("id", "name", "port", "state", "detail")}
                                    for component in status.get("components", [])[:12]],
                     "dependencies": status.get("dependencies", []),
                     "logs": {key: value[-1500:] for key, value in list(logs.items())[:6]},
                 }
+                if external:
+                    evidence["actions"] = [action["label"] for action in status.get("actions", [])]
         if endpoint is not None:
             if not isinstance(endpoint, str) or not endpoint:
                 return 400, {"ok": False, "error": "运行环境无效"}

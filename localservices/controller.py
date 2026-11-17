@@ -1257,6 +1257,11 @@ class Controller:
         p = self.projects.get(pid)
         if not p:
             return {"ok": False, "error": "未知项目"}
+        if p.observe_only:
+            return {"ok": True, "logs": {
+                name: tail(path, lines) for name, path in self.adapters[pid].log_paths().items()
+                if not comp or comp == name
+            }}
         out = {}
         for c in p.components:
             if comp and c.id != comp:

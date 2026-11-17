@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 
 from ..manifest import Component, Project
 
@@ -41,6 +42,10 @@ class Adapter:
     def observe(self) -> dict:
         """observe_only projects: {'state','label','detail','actions':[...]}."""
         return {"state": "unknown", "label": "未知", "detail": ""}
+
+    def log_paths(self) -> dict[str, Path]:
+        """Named logs owned by an externally managed service."""
+        return {}
 
     def action(self, name: str) -> tuple[bool, str]:
         return False, f"不支持的操作 {name}"

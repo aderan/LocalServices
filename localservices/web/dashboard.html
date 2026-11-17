@@ -898,10 +898,15 @@ function detailsHtml(p) {
   const canRecover = target && p.error.docker_profile;
   const canRepair = canRetry && p.intent === "stopped";
   const diagnosisTarget = serviceDiagnosisTarget(p);
+  const externalActions = p.observe_only && problem ? p.actions || [] : [];
   const diagnosis = p.reason || problem ? `<section class="diagnosis${p.state === "partial" || !problem ? " warning" : ""}" id="reason-${esc(p.id)}" tabindex="-1">
     <strong>${esc(p.reason ? p.reason.split("\n", 1)[0] : stateLabel(p) || tr("诊断", "Diagnosis"))}</strong>
-    ${p.reason?.includes("\n") ? `<p>${esc(p.reason.slice(p.reason.indexOf("\n") + 1))}</p>` : ""}
+    ${p.reason?.includes("\n") ? `<p>${esc(p.reason.slice(p.reason.indexOf("\n") + 1))}</p>` :
+      p.observe_only && p.detail ? `<p>${esc(p.detail)}</p>` : ""}
     <div class="acts">
+      ${externalActions.map(action => `<button data-service="${esc(p.id)}" data-action="${esc(action.id)}"
+        onclick="act(this.dataset.service, 'action', {name: this.dataset.action})"
+        ${retryDisabled ? "disabled" : ""}>${esc(action.label || action.id)}</button>`).join("")}
       ${canRecover ? dockerRecoveryAction(target, {
         service: p.id, remember: p.docker_autostart === false, label: tr("启动 Colima 并继续", "Start Colima and continue")
       }) : ""}
@@ -966,7 +971,7 @@ function toggleReason(id) {
 function copyDiagnosis(id) {
   const p = servicesById()[id];
   if (!p) return;
-  const report = [p.name + " · " + stateLabel(p), p.reason,
+  const report = [p.name + " · " + stateLabel(p), p.reason || p.detail,
     ...(p.components || []).map(c => c.name + " · " + componentLabel(c)),
     ...(p.dependencies || []).map(d => d.name + " · " + (d.ok ? tr("可用", "Available") : tr("不可用", "Unavailable")))
   ].filter(Boolean).join("\n");

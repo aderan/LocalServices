@@ -107,12 +107,17 @@ class Adapter(Base):
                                 "label": "运行中", "detail": detail, "pid": eng.get("pid"),
                                 "started_at": None}]}
 
+    def log_paths(self) -> dict[str, Path]:
+        return {"engine": self._home() / "logs" / "engine-launch.log"}
+
     def action(self, name: str) -> tuple[bool, str]:
         if name == "open-app":
-            subprocess.Popen(["/usr/bin/open", self._app()])
-            return True, "已打开 App"
+            result = subprocess.run(["/usr/bin/open", self._app()], capture_output=True, text=True, timeout=10)
+            if result.returncode:
+                return False, result.stderr.strip() or "无法打开 App"
+            return True, "已请求打开 App，等待引擎健康检查"
         if name == "open-log":
-            log = self._home() / "logs" / "engine-launch.log"
+            log = self.log_paths()["engine"]
             if not log.exists():
                 return False, "日志不存在"
             subprocess.Popen(["/usr/bin/open", "-a", "Console", str(log)])

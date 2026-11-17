@@ -30,6 +30,30 @@ class AgentDiagnosisTests(unittest.TestCase):
             self.assertNotIn("secret-value", str(run.call_args))
             self.assertEqual(agent_api.handle_diagnoses_get()[1]["jobs"][0]["id"], job["id"])
 
+    def test_external_failure_passes_probe_detail_and_available_action(self):
+        ctl = Mock()
+        ctl.snapshot.return_value = {"projects": [
+            {"id": "orx-analytics", "state": "failed", "observe_only": True,
+             "detail": "[Errno 61] Connection refused；App 未运行",
+             "actions": [{"id": "open-app", "label": "打开 App"}]},
+        ]}
+        ctl.logs.return_value = {"logs": {"engine": "engine startup log"}}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"LOCALSERVICES_HOME": tmp}), \
+                patch.object(agent_api.diagnose, "run", return_value={"summary": "Engine offline", "steps": []}) as run:
+            code, result = agent_api.handle_diagnose({"service": "orx-analytics"}, ctl)
+            self.assertEqual(code, 202, result)
+            for _ in range(100):
+                _, job = agent_api.handle_job_get(result["job_id"])
+                if job.get("state") == "done":
+                    break
+                time.sleep(0.02)
+            self.assertEqual(job["state"], "done", job)
+            evidence = run.call_args.args[1]
+            self.assertEqual(evidence["operation"], "check external service health")
+            self.assertIn("Connection refused", evidence["reason"])
+            self.assertEqual(evidence["actions"], ["打开 App"])
+            self.assertEqual(evidence["logs"], {"engine": "engine startup log"})
+
     def test_rejects_healthy_service(self):
         ctl = Mock()
         ctl.snapshot.return_value = {"projects": [{"id": "shicha", "state": "available"}]}
