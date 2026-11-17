@@ -8,8 +8,8 @@
 - 失败：报告具体原因（端口被占/caddy 缺失/resolver 他人所有/验证失败），不保存
   启用成功；既有安装件保持可诊断。
 - 绝不保存管理员密码或长期权限：osascript 每次弹窗，用户可以拒绝。
-- 系统件只经 scripts/install-locove-system.sh --resolver / uninstall 脚本触碰，
-  且只处理带本工具管理标记的文件（locove_resolver 归属守卫，S2/S3）。
+- 解析配置安装/卸载只处理带本工具管理标记的文件（locove_resolver 归属守卫，S2/S3）。
+- 代理绕过由用户单独选择，仅向当前网络服务的例外列表追加本地域名后缀。
 
 disable：关设置 + 停止 DNS/代理 agent（plists 与 resolver 保留，状态如实展示）。
 uninstall：经授权只删确认归属的配置；业务进程、数据、登记一律不动。"""
@@ -20,6 +20,7 @@ import os
 import shlex
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -68,6 +69,40 @@ def admin_run(script_args: list[str], prompt: str, timeout: float = 600.0) -> di
     if "User canceled" in err or "-128" in err or "用户取消" in err:
         return {"ok": False, "reason": "cancelled", "error": err}
     return {"ok": False, "reason": "auth-failed", "error": err[:600]}
+
+
+_bypass_lock = threading.Lock()
+
+
+def bypass() -> dict:
+    """Append the domain exception and check the effective system proxy settings."""
+    if not _bypass_lock.acquire(blocking=False):
+        return {"ok": False, "reason": "busy", "error": "正在添加系统代理绕过，请稍候"}
+    try:
+        status = locove.proxy_bypass_status()
+        if status["enabled"] is None or status.get("automatic"):
+            return {"ok": False, "reason": "proxy-configuration", "error": status["detail"]}
+        if status["ok"]:
+            return {"ok": True, "enabled": status["enabled"], "message": status["detail"]}
+
+        suffix = locove.suffix()
+        auth = admin_run(["/bin/bash", str(REPO / "scripts" / "locove-proxy-bypass.sh"), suffix],
+                         prompt=f"Locove／洛湾：为当前网络添加 *.{suffix} 系统代理绕过", timeout=120)
+        if not auth["ok"]:
+            if auth["reason"] == "cancelled":
+                return {"ok": False, "reason": "cancelled", "error": "已取消系统代理绕过授权"}
+            return {**auth, "error": auth.get("error") or "无法写入当前网络的系统代理绕过规则"}
+
+        for attempt in range(10):
+            if attempt:
+                time.sleep(0.25)
+            effective = locove.proxy_bypass_status()
+            if effective["enabled"] and effective["ok"]:
+                return {"ok": True, "enabled": True, "message": effective["detail"]}
+        return {"ok": False, "reason": "verification-failed",
+                "error": f"未在生效的系统代理配置中看到 *.{suffix}。请检查网络是否切换或代理客户端是否覆盖了规则。"}
+    finally:
+        _bypass_lock.release()
 
 
 # ---------- 预检（零副作用） ----------
@@ -158,14 +193,14 @@ def _probe_host() -> str | None:
 
 # ---------- enable / disable / uninstall ----------
 
-def enable(port: int | None = None) -> dict:
+def enable(port: int | None = None, *, add_bypass: bool = False) -> dict:
     """按需启用。成功条件：用户级件运行 + resolver 就绪 + 系统解析 + 代理监听。"""
     if _progress.get("active"):
         return {"ok": False, "reason": "busy", "error": "域名模块操作进行中，请稍候"}
-    _progress.update({"active": True, "op": "enable", "step": None, "steps": [],
+    _progress.update({"active": True, "op": "enable", "step": None, "steps": [], "warning": None,
                       "error": None, "ok": None, "finished_at": None})
     try:
-        res = _enable_inner(port)
+        res = _enable_inner(port, add_bypass)
         _progress["ok"] = bool(res.get("ok"))
         return res
     except Exception as e:  # noqa: BLE001 — 任何意外都如实报告；设置只在成功末尾写入，
@@ -179,7 +214,7 @@ def enable(port: int | None = None) -> dict:
         _progress.update({"active": False, "finished_at": time.time()})
 
 
-def _enable_inner(port: int | None) -> dict:
+def _enable_inner(port: int | None, add_bypass: bool) -> dict:
     from .registry import Registry
     _step("preflight")
     pre = preflight(port)
@@ -240,6 +275,12 @@ def _enable_inner(port: int | None) -> dict:
         # 不回滚：安装件均健康，仅系统解析尚未生效——如实报告失败，允许重试
         return {"ok": False, "reason": "resolution-failed", "error": detail,
                 "progress": progress()}
+
+    if add_bypass:
+        _step("proxy-bypass")
+        result = bypass()
+        if not result["ok"]:
+            _progress["warning"] = result["error"]
 
     _step("enable-settings")
     st = Registry().locove_settings_update({"use_domains": True, "domain_port": port,
@@ -336,4 +377,4 @@ def uninstall(keep_resolver: bool = True) -> dict:
 
 # ---------- 兼容导入（owned 供外部核对归属语义时使用） ----------
 
-__all__ = ["progress", "preflight", "enable", "disable", "uninstall", "admin_run", "owned"]
+__all__ = ["progress", "preflight", "enable", "disable", "uninstall", "bypass", "admin_run", "owned"]

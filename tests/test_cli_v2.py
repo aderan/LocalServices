@@ -32,6 +32,21 @@ def run_cli(argv, responder=None):
     return rc, fake.calls, buf.getvalue()
 
 
+class LocoveBypassTest(unittest.TestCase):
+    def test_applies_bypass_through_daemon(self):
+        rc, calls, out = run_cli(["locove-bypass", "--json"],
+                                 lambda m, p, b: (200, {"ok": True, "message": "configured"}))
+        self.assertEqual(calls, [{"method": "POST", "path": "/api/locove/bypass", "body": {}}])
+        self.assertEqual(rc, 0)
+        self.assertTrue(json.loads(out)["ok"])
+
+    def test_verification_failure_has_nonzero_exit_code(self):
+        rc, _, out = run_cli(["locove-bypass"],
+                             lambda m, p, b: (200, {"ok": False, "error": "not applied"}))
+        self.assertEqual(rc, 1)
+        self.assertIn("not applied", out)
+
+
 class ProjectRemoveTest(unittest.TestCase):
 
     def test_default_disposition_keep_external(self):

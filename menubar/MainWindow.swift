@@ -1,14 +1,16 @@
 // 主窗口：WKWebView 承载 daemon 的工作台 Dashboard。
 // 只信任 http://127.0.0.1:<port> 这一个 origin；其余链接交给系统浏览器；
 // 控制层不可达（ping 失败）时显示原生错误页；已加载的页面恢复后继续轮询。
-// 原生桥（仅此受控页面）：lsbridge 消息 {action:"pickDirectory"|"openExternally"}。
+// 原生桥 lsbridge 仅向受控工作台开放。
 
 import AppKit
+import SwiftUI
 import WebKit
 
 final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     let window: NSWindow
     let webView: WKWebView
+    let shortcuts = ShortcutAction.allCases.map { GlobalShortcut(action: $0) }
     let overlay: NSView
     let overlayTitle = NSTextField(labelWithString: "控制层不可用")
     let overlayDetail: NSTextField
@@ -20,6 +22,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
     var reachable = true
     private var dashboardLoaded = false
     private var pendingNavigation: String?
+    private weak var shortcutRecording: ShortcutRecording?
     let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.connectionProxyDictionary = [:]
@@ -90,9 +93,11 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
             "服务状态暂时未知。控制服务恢复后会自动更新。",
             "Service status is unknown. The workbench updates automatically when the daemon recovers.")
         retryButton.title = language.text("立即重试", "Retry now")
+        if dashboardLoaded { publishShortcut() }
     }
 
     func show() {
+        if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true) // 重复打开聚焦已有窗口
     }
@@ -157,6 +162,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         dashboardLoaded = true
+        publishShortcut()
         if let pendingNavigation {
             self.pendingNavigation = nil
             evaluate(pendingNavigation)
@@ -187,9 +193,49 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
               let action = body["action"] as? String else { return }
         if action == "languageChanged" { onLanguageChanged?() }
         if action == "pickDirectory" { pickDirectory() }
+        if action == "editShortcut", let id = body["id"] as? String,
+           let shortcut = shortcuts.first(where: { $0.action.rawValue == id }) {
+            editShortcut(shortcut)
+        }
         if action == "openExternally", let s = body["url"] as? String, let url = URL(string: s) {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private func publishShortcut() {
+        let state = shortcuts.map { shortcut in
+            [
+                "id": shortcut.action.rawValue,
+                "title": shortcut.action.title(in: language),
+                "label": shortcut.saved?.label ?? "",
+                "error": shortcut.startupConflict?.message(in: language) ?? "",
+            ]
+        }
+        webView.callAsyncJavaScript("window.lsShortcuts?.(state)", arguments: ["state": state],
+                                    in: nil, in: .page, completionHandler: nil)
+    }
+
+    private func editShortcut(_ shortcut: GlobalShortcut) {
+        guard window.isKeyWindow && window.attachedSheet == nil else { return }
+        let sheet = NSWindow()
+        sheet.styleMask = [.titled]
+        let recording = ShortcutRecording(shortcut: shortcut) { [weak self, weak sheet] in
+            guard let self, let sheet else { return }
+            shortcutRecording = nil
+            window.endSheet(sheet)
+            publishShortcut()
+        }
+        shortcutRecording = recording
+        sheet.contentViewController = NSHostingController(rootView: ShortcutEditor(recording: recording,
+                                                                                   language: language))
+        recording.start(in: sheet)
+        window.beginSheet(sheet)
+    }
+
+    func recordShortcutIfEditing(_ key: ShortcutKey) -> Bool {
+        guard let shortcutRecording, window.attachedSheet?.isKeyWindow == true else { return false }
+        shortcutRecording.record(key)
+        return true
     }
 
     private func pickDirectory() {

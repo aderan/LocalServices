@@ -459,8 +459,7 @@ class ProxyBypassObservationTest(Env):
         st = self._status(self.SCUTIL_ON_NO_SUFFIX)
         self.assertFalse(st["ok"])
         self.assertTrue(st["enabled"])
-        self.assertIn("locove-proxy-bypass.sh", st["detail"])
-        self.assertIn("Clash Verge", st["detail"])
+        self.assertIn("lsctl locove-bypass", st["detail"])
 
     def test_proxy_on_with_suffix_ok(self):
         st = self._status(self.SCUTIL_ON_WITH_SUFFIX)

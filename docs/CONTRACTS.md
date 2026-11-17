@@ -465,8 +465,10 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
   `LOCALSERVICES_HOME=<目标用户状态根>`，agent plist 归目标用户（R4）。**
 - 转发器顺序契约：root 绑定 80 → 降权 nobody → 用预绑定套接字服务（先降权后绑定会
   EACCES；升级 root 属主副本用 `scripts/refresh-locove-entry.sh`）。
-- 代理兼容：系统代理环境需在绕行表加 `*.locove`（`scripts/locove-proxy-bypass.sh`，加法式），
-  否则网关按公网域名上游解析而 502；`lsctl endpoints` 的 dns/入口层会如实呈现。
+- 代理兼容：系统代理启用时，工作台设置的「添加系统代理绕过」和 `lsctl locove-bypass` 共用操作。
+  经当次管理员授权，仅向当前主网络服务追加 `*.locove`。保留已有例外，写完通过
+  `scutil --proxy` 验证实际生效的列表。启用域名的页面可一并选择添加绕过；取消此项
+  授权或写入未生效会提示，域名模块仍可启用。自动代理配置由代理客户端管理。
 
 ## V3.5 域名跳转为可选能力（用户修订 2026-11-04：默认本地 IP 直连）
 

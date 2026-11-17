@@ -242,6 +242,9 @@ def main(argv=None) -> int:
     sp = sub.add_parser("locove-disable", help="关闭域名（回直连；停止 DNS/代理，安装件保留）")
     sp.add_argument("--json", action="store_true")
 
+    sp = sub.add_parser("locove-bypass", help="为当前网络添加并验证系统代理绕过（可能需要管理员授权）")
+    sp.add_argument("--json", action="store_true")
+
     sp = sub.add_parser("locove-uninstall", help="卸载域名件（用户级必删；resolver 默认保留）")
     mg2 = sp.add_mutually_exclusive_group()
     mg2.add_argument("--remove-resolver", dest="keep_resolver", action="store_false",
@@ -481,6 +484,10 @@ def main(argv=None) -> int:
             print(f"域名跳转：{'开' if st.get('use_domains') else '关（默认，本地 IP 直连）'} · 形式：{form_label}"
                   + f" · 端口：{st.get('domain_port') or 5670}")
             return 0 if res.get("ok") else 1
+        if a.cmd == "locove-bypass":
+            code, res = call("POST", "/api/locove/bypass", {}, timeout=165)
+            _emit(res, a.json)
+            return _exit_code(code, res)
         if a.cmd in ("locove-enable", "locove-disable", "locove-uninstall"):
             op = a.cmd.removeprefix("locove-")
             body = {}

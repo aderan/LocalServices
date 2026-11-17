@@ -16,13 +16,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from localservices import manifest, overrides, register_api  # noqa: E402
+from localservices import locove, manifest, overrides, register_api  # noqa: E402
 from localservices.controller import Controller  # noqa: E402
 from localservices.registry import Registry, RegistryError  # noqa: E402
 
@@ -221,13 +222,60 @@ open_path = "/zh"
         return res, sub_mock
 
     def _patch_open_path(self):
-        from types import SimpleNamespace
         ji = SimpleNamespace(running=False, loaded=False, pid=None, last_exit=None)
         return [patch("localservices.controller.launchd.info", return_value=ji),
                 patch("localservices.controller.procs.snapshot", return_value={}),
                 patch("localservices.controller.procs.listeners", return_value={}),
                 patch("localservices.controller.procs.probe", return_value=(False, "")),
                 patch("localservices.controller.procs.all_cwds", return_value={})]
+
+    def test_start_and_open_activates_domain_route_before_opening_browser(self):
+        self._start_and_open(expected="http://snap.locove:5670/zh")
+
+    def test_start_and_open_falls_back_to_direct_when_route_activation_fails(self):
+        self._start_and_open(expected="http://localhost:48801/zh",
+                             reload_error=locove.ActivationError("reload failed"))
+
+    def _start_and_open(self, expected, reload_error=None):
+        ctl = self._controller_with_service()
+        project = ctl.projects["snap"]
+        ctl._snapshot = {"projects": [{"id": "snap", "state": "stopped"}]}
+        ctl.store.set_intent(project.id, "running")
+        self.assertTrue(ctl._begin(project.id, "starting"))
+        job = SimpleNamespace(running=False, loaded=False, pid=None, last_exit=None)
+        settings = {"use_domains": True, "domain_form": "suffix", "domain_port": 5670}
+        activated_state = []
+
+        def bootstrap(*_):
+            job.running = job.loaded = True
+            job.pid = 123
+            return True, ""
+
+        def reload_proxy():
+            activated_state.append(locove.read_routes()["routes"]["snap.locove"]["state"])
+            if reload_error:
+                raise reload_error
+
+        def open_browser(_argv):
+            self.assertEqual(activated_state, ["proxy"])
+
+        with (
+            patch.object(ctl, "domain_settings", return_value=settings),
+            patch.object(ctl, "conflicts", return_value=[]),
+            patch.object(ctl, "_bootstrap", side_effect=bootstrap),
+            patch("localservices.controller.launchd.info", return_value=job),
+            patch("localservices.controller.procs.snapshot", return_value={}),
+            patch("localservices.controller.procs.listeners", return_value={}),
+            patch("localservices.locove.module_status", return_value={"state": "available"}),
+            patch("localservices.locove._caddy_control_enabled", return_value=True),
+            patch("localservices.locove._port_open", return_value=True),
+            patch("localservices.locove._validate"),
+            patch("localservices.locove._reload", side_effect=reload_proxy),
+            patch("localservices.controller.subprocess.Popen", side_effect=open_browser) as browser,
+        ):
+            ctl._do_start(project, open_after=True)
+
+        browser.assert_called_once_with(["/usr/bin/open", expected])
 
     def test_open_prefers_public_url_when_entry_healthy(self):
         res, sub_patch = self._open_with_patches(entry_ok=True)

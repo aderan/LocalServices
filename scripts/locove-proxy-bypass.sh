@@ -1,28 +1,58 @@
 #!/bin/bash
-# 把 *.locove 追加到所有网络服务的系统代理绕行表（加法式：保留既有条目；幂等；可反复执行）。
-# 需要管理员权限：由管理员授权对话框/sudo 调用。
-# 背景：本机系统代理(127.0.0.1:7897)会拦截 .locove 并按公网域名上游解析 → 502；
-# 加入绕行表后浏览器对 *.locove 直连本地入口（与 127.0.0.1 等私有网段既有绕行同法）。
-# 回退：networksetup -setproxybypassdomains <service> <原条目...>（脚本打印修改前快照）。
+# Run with administrator privileges. Change only the current primary network service.
 set -euo pipefail
-SUFFIX="${1:-locove}"
-while IFS= read -r raw; do
-  svc="${raw#\*}"           # 剥离禁用服务的前导 *
-  [ -z "$svc" ] && continue
-  # 读取失败 = 该服务无代理配置（rc=8 "proxies = nil"）：没有绕行表需要改
-  if ! cur="$(networksetup -getproxybypassdomains "$svc" 2>/dev/null)"; then
-    echo "[$svc] 无代理配置，跳过"
-    continue
-  fi
-  # 只认合法的绕行条目行（防错误/提示文本混入）；已包含则跳过（幂等）
-  entries="$(printf '%s\n' "$cur" | grep -Ev '^(\*\* Error|Error:|There|aren|any|bypass|domains|set|on\.|$)' || true)"
-  case "$cur" in *"aren't any bypass domains"*) entries="";; esac
-  if printf '%s\n' "$entries" | grep -Fxq "*.${SUFFIX}"; then
-    echo "[$svc] 已包含 *.${SUFFIX}，跳过"
-    continue
-  fi
-  echo "[$svc] 修改前绕行表：$(printf '%s ' $entries)"
-  # shellcheck disable=SC2086
-  networksetup -setproxybypassdomains "$svc" ${entries} "*.${SUFFIX}" 2>/dev/null     || networksetup -setproxybypassdomains "$svc" "*.${SUFFIX}"
-  echo "[$svc] 已追加 *.${SUFFIX}"
-done < <(networksetup -listallnetworkservices 2>/dev/null | tail -n +2)
+export LC_ALL=C
+
+suffix="${1:-locove}"
+if [[ ! "$suffix" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+  echo "Invalid local domain suffix." >&2
+  exit 1
+fi
+rule="*.$suffix"
+
+primary_service() {
+  local family service
+  for family in IPv4 IPv6; do
+    service="$(printf 'show State:/Network/Global/%s\n' "$family" | /usr/sbin/scutil |
+      /usr/bin/awk '$1 == "PrimaryService" && $2 == ":" { print $3 }')"
+    if [[ "$service" =~ ^[[:xdigit:]-]{36}$ ]]; then
+      printf '%s\n' "$service"
+      return
+    fi
+  done
+  return 1
+}
+
+if ! service_id="$(primary_service)"; then
+  echo "No active primary network service." >&2
+  exit 1
+fi
+service="$(printf 'show Setup:/Network/Service/%s\n' "$service_id" | /usr/sbin/scutil |
+  /usr/bin/sed -n 's/^[[:space:]]*UserDefinedName : //p')"
+if [[ -z "$service" || "$service" == *$'\n'* ]]; then
+  echo "Could not identify the active network service." >&2
+  exit 1
+fi
+if ! current="$(/usr/sbin/networksetup -getproxybypassdomains "$service")"; then
+  echo "Could not read proxy exceptions for $service: $current" >&2
+  exit 1
+fi
+
+entries=()
+if [[ "$current" != "There aren't any bypass domains set on $service." ]]; then
+  while IFS= read -r entry; do
+    if [[ "$entry" == "$rule" ]]; then
+      exit 0
+    fi
+    if [[ -n "$entry" ]]; then
+      entries+=("$entry")
+    fi
+  done <<< "$current"
+fi
+entries+=("$rule")
+if [[ "$(primary_service)" != "$service_id" ]]; then
+  echo "The active network changed. Try again on the current network." >&2
+  exit 1
+fi
+
+/usr/sbin/networksetup -setproxybypassdomains "$service" "${entries[@]}"

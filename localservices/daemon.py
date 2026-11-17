@@ -247,6 +247,10 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/locove/endpoint-compatibility":
                 self._send(*self._set_endpoint_compatibility(body))
                 return
+            if u.path == "/api/locove/bypass":
+                result = locove_optin.bypass()
+                self._send(409 if result.get("reason") == "busy" else 200, result)
+                return
             if u.path in ("/api/locove/enable", "/api/locove/disable", "/api/locove/uninstall"):
                 # D3：域名模块生命周期操作。enable 可能等待管理员当次授权（osascript
                 # 弹窗），一律后台执行；进度经 GET /api/locove 的 optin 面轮询。
@@ -255,8 +259,9 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 op = u.path.rsplit("/", 1)[-1]
                 if op == "enable":
-                    port = body.get("port")
-                    fn = lambda: locove_optin.enable(int(port) if port is not None else None)  # noqa: E731
+                    port = int(body["port"]) if body.get("port") is not None else None
+                    add_bypass = body.get("add_bypass") is True
+                    fn = lambda: locove_optin.enable(port, add_bypass=add_bypass)  # noqa: E731
                 elif op == "disable":
                     fn = locove_optin.disable
                 else:
@@ -517,9 +522,7 @@ def main() -> int:
     # Locove 可选域名模块（D2/D3）：仅在用户开启域名时收敛路由（routes.json/Caddyfile
     # → Caddy 热加载）。默认（未开启/未安装）不运行任何网络收敛、不写任何 locove 文件；
     # 启用/关闭/卸载流程见 locove_optin（enable/disable/uninstall 端点）。
-    def _locove_sync():
-        locove.gated_sync(ctl.domain_settings(), ctl.projects, ctl.snapshot())
-    loop(_locove_sync, float(os.environ.get("LOCALSERVICES_LOCOVE_SYNC", "5")), "locove")
+    loop(ctl.sync_domain_routes, float(os.environ.get("LOCALSERVICES_LOCOVE_SYNC", "5")), "locove")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

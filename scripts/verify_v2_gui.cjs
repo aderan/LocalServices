@@ -137,7 +137,7 @@ const dispatchKey = (key, target) => {
     fn({key, target: target || null, preventDefault() {}, stopPropagation() {}});
 };
 
-const runner = new Function(script + "\n; return {render, api, refresh, wizField, wizNewTask, wizSelectTask, wizardTarget, wizRegister, wizPoll, applyAgentRepair, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
+const runner = new Function(script + "\n; return {render, api, refresh, removeDir, viewProject, wizField, wizNewTask, wizSelectTask, wizardTarget, wizRegister, wizPoll, applyAgentRepair, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
 const page = runner();
 const out = [];
 const SECTIONS = [];
@@ -712,6 +712,16 @@ try {
   const settingsHtml = page.viewSettings();
   check("D3: 启用入口与诊断完整收进设置视图（不再引导 sudo 命令安装）",
         settingsHtml.includes('onclick="askEnableDomain()">启用…') && settingsHtml.includes("域名诊断") && !settingsHtml.includes("sudo "), "");
+  check("浏览器设置不显示桌面快捷键", !settingsHtml.includes("editShortcut"), "");
+  window.lsShortcuts([
+    {id: "mainWindowShortcut", title: "打开主窗口", label: "⌃⇧L", error: ""},
+    {id: "quickServicesShortcut", title: "快速打开运行中的服务", label: "⌃⇧Space", error: ""}
+  ]);
+  const shortcutSettings = page.viewSettings();
+  check("桌面设置可分别编辑两个快捷键",
+        shortcutSettings.includes("<kbd>⌃⇧L</kbd>") && shortcutSettings.includes("<kbd>⌃⇧Space</kbd>") &&
+        shortcutSettings.includes('data-shortcut="mainWindowShortcut"') &&
+        shortcutSettings.includes('data-shortcut="quickServicesShortcut"'), "");
   page.setLocoveData({state: "available", dns: {ok: true}, proxy: {ok: true}, resolver: {ok: true}, routes: {},
                       settings: {use_domains: true, domain_form: "suffix"}});
   page.renderHealth();
@@ -909,6 +919,58 @@ try {
   check("W1: domPath/findByDomPath 往返定位（焦点恢复基础）",
         JSON.stringify(path) === "[1,0]" && page.findByDomPath(root, path, "SECTION") === g, JSON.stringify(path));
 } catch (e) { check("W1 workbench", false, e.message); }
+
+section("unlink directory");
+{
+  const id = "unlink-fixture";
+  const dir = path.join(tmp, "unlink & verify");
+  fs.mkdirSync(dir);
+  const file = path.join(dir, "keep.txt");
+  fs.writeFileSync(file, "keep this file");
+  const [code, response] = await page.api("POST", "/api/register", {
+    schemaVersion: 1, revision: 0, project: {id, name: "Unlink fixture"},
+    directories: [{path: dir, role: "source"}],
+    service: {id, name: "Unlink fixture", source: dir,
+              components: [{id: "main", kind: "worker", cmd: ["/usr/bin/true"]}]},
+  });
+  if (code !== 200 || !response.ok) throw new Error("Could not link fixture directory");
+  await page.refresh();
+  const project = () => page.regGet().registry.projects.find(p => p.id === id);
+  const dirId = project().directories[0].id;
+  const endpoint = `/api/projects/${id}/directories/${dirId}`;
+  const deletes = () => requests.filter(r => r.method === "DELETE" && r.path === endpoint).length;
+  const button = page.viewProject(id).match(/onclick="(removeDir\([^"]+\))"/);
+  if (!button) throw new Error("Unlink button is missing");
+  const clickUnlink = new Function("removeDir", "return " + button[1]).bind(null, page.removeDir);
+
+  let unlink = clickUnlink();
+  const modal = page.getModalState();
+  check("解除关联显示工作台确认框并转义目录路径",
+        modal?.dialog.children[1].innerHTML.includes("unlink &amp; verify"), "missing in-page confirmation");
+  if (modal) dispatchKey("Escape");
+  await unlink;
+  check("取消解除关联不发送删除请求", deletes() === 0);
+
+  unlink = clickUnlink();
+  const confirm = page.getModalState();
+  if (confirm) await confirm.okBtn.onclick();
+  await unlink;
+  check("确认解除关联后移除列表条目并保留目录内容",
+        deletes() === 1 && project().directories.length === 0 &&
+        !page.viewProject(id).includes(dirId) && fs.readFileSync(file, "utf8") === "keep this file");
+
+  await page.api("POST", `/api/projects/${id}/directories`, {path: dir});
+  await page.refresh();
+  const relinked = project().directories[0].id;
+  unlink = page.removeDir(id, relinked);
+  await page.api("DELETE", `/api/projects/${id}/directories/${relinked}`);
+  await page.getModalState()?.okBtn.onclick();
+  const failed = page.getModalState();
+  check("解除关联失败时在确认框显示接口错误",
+        failed?.dialog.children[1].innerHTML.includes("未知目录"));
+  if (failed) dispatchKey("Escape");
+  await unlink;
+}
 
 console.log(out.join("\n"));
 const fails = out.filter(l => l.startsWith("FAIL")).length;

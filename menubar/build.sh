@@ -17,7 +17,7 @@ done
 iconutil -c icns "$iconset" -o "$APP/Contents/Resources/Locove.icns"
 cp "$iconset/icon_128x128.png" "$APP/Contents/Resources/LocoveStatus.png"
 TARGET="$(uname -m)-apple-macos13.0"
-swiftc -target "$TARGET" -O -o "$APP/Contents/MacOS/Locove" main.swift MainWindow.swift StatusPanel.swift
+swiftc -target "$TARGET" -O -o "$APP/Contents/MacOS/Locove" main.swift MainWindow.swift StatusPanel.swift GlobalShortcut.swift ShortcutEditor.swift QuickServices.swift
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

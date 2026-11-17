@@ -57,7 +57,7 @@ class OptInEnv(unittest.TestCase):
         return (self.la / "com.mybrain.ls.locove.dns.plist").exists()
 
     def _enable_with(self, *, port_open=False, wait_port=True, resolves=True,
-                     admin=None, script_rc=0, installed_before=False):
+                     admin=None, script_rc=0, installed_before=False, add_bypass=False):
         if installed_before:
             for job in ("dns", "proxy"):
                 (self.la / f"com.mybrain.ls.locove.{job}.plist").write_text("<plist/>")
@@ -94,7 +94,7 @@ class OptInEnv(unittest.TestCase):
                 patch.object(locove, "_port_open", return_value=port_open), \
                 patch.object(locove, "module_status", return_value={"caddy_available": True}), \
                 patch.object(locove_optin, "_probe_host", return_value="snap.locove"):
-            res = locove_optin.enable()
+            res = locove_optin.enable(add_bypass=True) if add_bypass else locove_optin.enable()
         res["_calls"] = calls
         return res
 
@@ -139,6 +139,21 @@ class PreflightTest(OptInEnv):
 
 
 class EnableFlowTest(OptInEnv):
+    def test_enable_can_add_proxy_bypass_as_part_of_setup(self):
+        self._resolver_ours()
+        with patch.object(locove_optin, "bypass", return_value={"ok": True, "message": "configured"}) as bypass:
+            result = self._enable_with(add_bypass=True)
+        self.assertTrue(result["ok"])
+        bypass.assert_called_once()
+
+    def test_bypass_failure_is_reported_without_failing_domain_setup(self):
+        self._resolver_ours()
+        with patch.object(locove_optin, "bypass", return_value={"ok": False, "error": "not applied"}):
+            result = self._enable_with(add_bypass=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(locove_optin.progress()["warning"], "not applied")
+        self.assertTrue(Registry().locove_settings()["use_domains"])
+
     def test_success_requires_all_steps_and_writes_settings(self):
         self._resolver_ours()  # resolver 已装（归属本工具）→ 全程无需授权
         res = self._enable_with(wait_port=True, resolves=True)

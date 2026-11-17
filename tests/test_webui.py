@@ -176,6 +176,11 @@ class DaemonEndToEndTest(unittest.TestCase):
 
     # ---- GET / 的 token 注入 ----
 
+    def test_proxy_bypass_requires_token_and_loopback_origin(self):
+        path = "/api/locove/bypass"
+        self.assertEqual(self.call("POST", path, {}, token=None)[0], 401)
+        self.assertEqual(self.call("POST", path, {}, origin="https://example.test")[0], 403)
+
     def test_index_serves_dashboard_with_injected_token(self):
         with urllib.request.urlopen(f"{self.base}/", timeout=10) as r:
             self.assertEqual(r.status, 200)

@@ -248,6 +248,12 @@
   /* 设置视图（R6：设置与草稿分离；域名诊断完整内容归设置上下文） */
   .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
   .language-card { padding-bottom: 14px; }
+  .shortcut-setting + .shortcut-setting { border-top: 1px solid var(--line); }
+  button.shortcut-row { display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; width: 100%; padding: 8px 6px; text-align: left; background: transparent; border-color: transparent; }
+  button.shortcut-row:hover { background: var(--soft); }
+  .shortcut-value { color: var(--mute); white-space: nowrap; }
+  .shortcut-value kbd { font: inherit; border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; }
   .language-card .card-head { margin-bottom: 0; }
   .language-card .seg { margin-left: auto; flex-shrink: 0; }
   .language-card .seg button { width: 66px; }
@@ -1549,7 +1555,9 @@ function locoveSettingsCard() {
   const opt = d.optin || {};
   const port = d.domain_port || 5670;
   const running = opt.active || busy("locove-op");
-  const progressText = opt.step === "install-resolver" && d.resolver_state === "absent"
+  const progressText = opt.step === "proxy-bypass" || pending["locove-op"] === "bypass"
+    ? tr("正在添加系统代理绕过，可能需要管理员授权。", "Adding the system proxy bypass. Administrator approval may be required.")
+    : opt.step === "install-resolver" && d.resolver_state === "absent"
     ? tr("正在安装解析配置，可能需要管理员授权。", "Installing the resolver. Administrator approval may be required.")
     : tr("正在更新域名访问…", "Updating domain access…");
   const stepLine = running || opt.error
@@ -1577,6 +1585,7 @@ function locoveSettingsCard() {
       </span>
       <span class="inline-note">${tr("自动模式使用登记的域名，或按服务 ID 生成域名。自定义模式只使用登记的域名。", "Automatic uses registered domains or generates them from service IDs. Custom uses only registered domains.")}</span></div>` : ""}
     ${stepLine}
+    ${opt.op === "enable" && opt.warning && d.proxy_bypass?.ok === false ? `<p class="reason warn" role="status">${esc(opt.warning)}</p>` : ""}
     <p class="note">${tr(`首次安装 .${esc(d.suffix)} 解析配置需要管理员授权。取消后继续直连。停用会停止 DNS 和代理，并恢复直连。`, `Installing the .${esc(d.suffix)} resolver requires administrator approval. Cancel to keep using direct access. Disabling stops DNS and the proxy and restores direct access.`)}</p>
     ${msgs["locove-settings"] ? `<p class="msg" role="status">${esc(msgs["locove-settings"])}</p>` : ""}
   </div>`;
@@ -1597,10 +1606,18 @@ async function locovePort(v) {
 async function askEnableDomain() {
   const d = locoveData || {};
   const port = d.domain_port || 5670;
+  const pb = d.proxy_bypass;
+  const offerBypass = pb?.enabled && !pb.ok && !pb.automatic;
   await showModal({title: tr("启用域名访问", "Enable domain access"), okText: tr("安装并启用", "Install and enable"), bodyHtml: `
     <p class="modal-line">${tr("地址示例", "Example URL")} <code class="mono">${esc(domainPreviewUrl(d))}</code></p>
-    <p class="modal-line">${tr(`首次安装 .${esc(d.suffix)} 解析配置需要管理员授权。DNS 和代理仅在本机运行，代理端口为 ${port}。取消后继续直连。`, `Installing the .${esc(d.suffix)} resolver requires administrator approval. DNS and the proxy run locally, with the proxy on port ${port}. Cancel to keep using direct access.`)}</p>`,
-    onOk: async () => { await locoveOp("enable"); return true; }});
+    <p class="modal-line">${tr(`首次安装 .${esc(d.suffix)} 解析配置需要管理员授权。DNS 和代理仅在本机运行，代理端口为 ${port}。`, `Installing the .${esc(d.suffix)} resolver requires administrator approval. DNS and the proxy run locally, with the proxy on port ${port}.`)}</p>
+    ${offerBypass ? `<label><input id="locove-bypass-on-enable" type="checkbox" checked>
+      ${tr("为当前网络添加系统代理绕过（可能需要管理员授权）", "Add a system proxy bypass for the current network (administrator approval may be required)")}</label>` : ""}`,
+    onOk: async body => {
+      const addBypass = Boolean(body.querySelector("#locove-bypass-on-enable")?.checked);
+      await locoveOp("enable", {add_bypass: addBypass});
+      return true;
+    }});
 }
 
 async function askUninstallDomain() {
@@ -1612,11 +1629,15 @@ async function askUninstallDomain() {
 
 async function locoveOp(op, body = {}) {
   if (busy("locove-op")) return;
-  pending["locove-op"] = true; delete msgs["locove-settings"]; render();
+  pending["locove-op"] = op; delete msgs["locove-settings"]; render();
   try {
     const [code, res] = await api("POST", `/api/locove/${op}`, body);
     if (code !== 200 || !res?.ok) {
       msgs["locove-settings"] = `${tr("无法更新域名访问。", "Could not update domain access.")} ${res?.error || code}`;
+    } else if (op === "bypass") {
+      msgs["locove-settings"] = res.enabled
+        ? tr("系统代理绕过已生效。", "System proxy bypass is active.")
+        : tr("系统代理未启用，无需添加绕过。", "The system proxy is off. No bypass is needed.");
     }
   } catch (e) {
     msgs["locove-settings"] = tr("无法连接控制服务。", "Could not connect to the daemon.");
@@ -1643,9 +1664,11 @@ function locoveDiagnosticsCard() {
     absent: notInstalled,
   };
   const pb = d.proxy_bypass;
+  const running = d.optin?.active || busy("locove-op");
   const pbRow = pb && d.state !== "not_installed" ? row(
-    pb.enabled == null ? null : pb.ok, tr("浏览器代理绕过", "Browser proxy bypass"),
+    pb.enabled == null ? null : pb.ok, tr("系统代理绕过", "System proxy bypass"),
     pb.enabled == null ? tr("无法读取系统代理设置。", "Could not read system proxy settings.")
+      : pb.automatic ? tr("系统使用自动代理配置。请在代理客户端中配置本地域名直连。", "The system uses automatic proxy configuration. Set local domains to connect directly in your proxy client.")
       : !pb.enabled ? tr("系统代理未启用。", "System proxy is off.")
       : pb.ok ? tr(`系统代理已绕过 *.${d.suffix}。`, `The system proxy bypasses *.${d.suffix}.`)
       : tr(`代理绕过列表缺少 *.${d.suffix}。`, `*.${d.suffix} is missing from the proxy bypass list.`)) : "";
@@ -1657,15 +1680,15 @@ function locoveDiagnosticsCard() {
     <div class="table-scroll"><table>
       ${row(off && d.dns?.ok === false ? null : d.dns?.ok, tr("本地 DNS", "Local DNS"),
         d.dns?.ok == null ? notInstalled : d.dns.ok ? listening : off ? stopped : tr("未监听本机端口。", "Not listening on the local port."))}
-      ${row(off && d.proxy?.ok === false ? null : d.proxy?.ok, tr("代理", "Proxy"),
+      ${row(off && d.proxy?.ok === false ? null : d.proxy?.ok, tr("Locove 本地域名入口", "Locove local domain entry"),
         d.proxy?.ok == null ? notInstalled : d.proxy.ok ? `${listening} · 127.0.0.1:${d.domain_port}`
           : off ? stopped : tr(`Caddy 未监听 127.0.0.1:${d.domain_port}。`, `Caddy is not listening on 127.0.0.1:${d.domain_port}.`))}
       ${row(d.resolver?.ok, tr("域名解析配置", "Local resolver"), resolverDetail[d.resolver_state] || (d.resolver?.ok ? tr("已配置", "Configured") : notInstalled))}
       ${pbRow}${legacy}
     </table></div>
-    ${pb?.ok === false && d.state !== "not_installed" ? `<p class="note">${tr(`在代理客户端的绕过列表中添加 *.${esc(d.suffix)}（例如 Clash Verge 的「系统设置 → 代理绕过」）。`, `Add *.${esc(d.suffix)} to the bypass list in your proxy client. In Clash Verge, look under System Settings → Proxy Bypass.`)}</p>
-      <p class="note">${tr("也可更新当前系统代理设置", "To update the current system proxy settings")}
-        <code class="mono">sudo scripts/locove-proxy-bypass.sh ${esc(d.suffix)}</code></p>` : ""}
+    ${pb?.enabled && !pb.ok && !pb.automatic && d.state !== "not_installed" ? `
+      <p class="note">${tr(`仅向当前网络追加 *.${esc(d.suffix)}。代理客户端重新应用系统配置时可能覆盖这条规则。`, `Adds *.${esc(d.suffix)} to the current network. Your proxy client may overwrite it when it reapplies system settings.`)}</p>
+      <button id="locove-bypass" ${running ? "disabled" : ""} onclick="locoveOp('bypass')">${tr("添加系统代理绕过", "Add system proxy bypass")}</button>` : ""}
     ${hosts ? `<details><summary>${tr(`全部 ${Object.keys(d.routes || {}).length} 条路由`, `Routes: ${Object.keys(d.routes || {}).length}`)}</summary><div class="table-scroll"><table>${hosts}</table></div></details>` : `<p class="note">${tr("暂无登记公开入口的服务。", "No registered domain endpoints.")}</p>`}
     </section>`;
 }
@@ -1705,9 +1728,37 @@ function languageCard() {
   </section>`;
 }
 
+let desktopShortcuts = null;
+window.lsShortcuts = function(state) {
+  if (JSON.stringify(desktopShortcuts) === JSON.stringify(state)) return;
+  desktopShortcuts = state;
+  if (view === "settings") render();
+};
+
+function editShortcut(id) {
+  nativeBridge()?.postMessage({action: "editShortcut", id});
+}
+
+function shortcutCard() {
+  if (!desktopShortcuts) return "";
+  const rows = desktopShortcuts.map(({id, title, label, error}) => `
+    <div class="shortcut-setting">
+      <button class="shortcut-row" data-shortcut="${esc(id)}" onclick="editShortcut(this.dataset.shortcut)"
+              aria-label="${esc(tr(`更改${title}快捷键`, `Change shortcut for ${title}`))}"
+              aria-describedby="shortcut-value-${esc(id)}">
+        <span>${esc(title)}</span>
+        <span id="shortcut-value-${esc(id)}" class="shortcut-value">${label ? `<kbd>${esc(label)}</kbd>` : tr("未设置", "Off")}</span>
+      </button>
+      ${error ? `<p class="msg bad" role="status">${esc(error)}</p>` : ""}
+    </div>`).join("");
+  return `<section class="card"><div class="card-head">
+      <h3>${tr("快捷键", "Keyboard shortcuts")}</h3>
+    </div>${rows}</section>`;
+}
+
 function viewSettings() {
   return `<div class="settings-grid">
-    <div>${languageCard()}${locoveSettingsCard()}
+    <div>${languageCard()}${shortcutCard()}${locoveSettingsCard()}
       <section class="card"><div class="card-head"><h3>${tr("关于", "About")}</h3></div>
         <table>
           <tr><td class="k">${tr("产品", "Product")}</td><td>${productName()} · ${tr("本地服务工作台", "Local services workbench")}</td></tr>
@@ -2858,9 +2909,39 @@ async function addDir(pid, pickedPath) {
 }
 
 async function removeDir(pid, dirId) {
-  if (!confirm("解除目录关联？只解除关联，不删除文件。")) return;
-  try { await api("DELETE", `/api/projects/${pid}/directories/${dirId}`); } catch (e) { setConn(false); }
-  await refresh();
+  const project = projectGroups().find(group => group.pj.id === pid)?.pj;
+  const directory = project?.directories?.find(dir => dir.id === dirId);
+  if (!directory) return;
+  const bodyHtml = `<p class="modal-line"><code class="mono">${esc(directory.path)}</code></p>
+    <p class="modal-line">${tr("解除关联会保留目录和文件。", "Unlinking keeps the directory and its files.")}</p>`;
+  let saving = false;
+  await showModal({
+    title: tr("解除目录关联？", "Unlink this directory?"),
+    okText: tr("解除关联", "Unlink"),
+    cancelText: tr("取消", "Cancel"),
+    danger: true,
+    bodyHtml,
+    onOk: async (_body, modal) => {
+      if (saving) return "keep";
+      saving = true;
+      let error;
+      try {
+        const [code, res] = await api("DELETE", `/api/projects/${pid}/directories/${dirId}`);
+        if (code === 200 && res?.ok) {
+          await refresh();
+          return true;
+        }
+        error = res?.error || tr("解除关联失败", "Could not unlink directory");
+      } catch (e) {
+        setConn(false);
+        error = tr("无法连接控制服务", "Could not connect to the control service");
+      } finally {
+        saving = false;
+      }
+      modal.setBody(`${bodyHtml}<p class="msg bad" role="alert">${esc(error)}</p>`);
+      return "keep";
+    },
+  });
 }
 
 function addViaPicker(pid) {

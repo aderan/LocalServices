@@ -65,6 +65,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.contentViewController = NSHostingController(rootView: StatusPanel(model: panelModel, app: self))
         return panel
     }()
+    private lazy var quickServicesPanel = QuickServicesPanel()
     let mainWindow = MainWindowController(base: base, portString: port)
     var services: [Service] = []
     var projects: [WorkspaceProject] = []
@@ -88,6 +89,20 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         mainWindow.onLanguageChanged = { [weak self] in self?.refresh() }
         installMainMenu() // ⌘N/⌘R/⌘Q 等在主窗口聚焦时生效
+        for shortcut in mainWindow.shortcuts {
+            shortcut.conflictingAction = { [weak self, weak shortcut] key in
+                self?.mainWindow.shortcuts.first { $0 !== shortcut && $0.isActive && $0.saved == key }?.action
+            }
+            shortcut.onOpen = { [weak self, weak shortcut] in
+                guard let self, let shortcut, let key = shortcut.saved,
+                      !mainWindow.recordShortcutIfEditing(key) else { return }
+                switch shortcut.action {
+                case .mainWindow: showMainWindow()
+                case .quickServices: showQuickServices()
+                }
+            }
+            shortcut.restore()
+        }
         updateIcon()
         refresh()
         mainWindow.show()
@@ -176,6 +191,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.services = []
                 self.authenticationFailed = code == 401
             }
+            self.quickServicesPanel.update(self.openableRunningServices)
             self.request("GET", "api/registry") { [weak self] code2, obj2 in
                 guard let self, self.refreshVersion == version else { return }
                 if code2 == 200, let reg = obj2?["registry"] as? [String: Any],
@@ -351,7 +367,26 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mainWindow.evaluate("window.lsOpenView && window.lsOpenView('new-project')")
     }
 
-    @objc func showMainWindow() { closeStatusPanel(); mainWindow.show() }
+    @objc func showMainWindow() {
+        quickServicesPanel.dismiss()
+        closeStatusPanel()
+        mainWindow.show()
+    }
+
+    private var openableRunningServices: [Service] {
+        services.filter { $0.running && $0.canOpen && !$0.busy }.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    @objc func showQuickServices() {
+        closeStatusPanel()
+        quickServicesPanel.show(services: openableRunningServices, language: panelModel.language) { [weak self] id in
+            guard let self, openableRunningServices.contains(where: { $0.id == id }) else { return }
+            performOperation(id, "open")
+        }
+        if quickServicesPanel.isVisible { refresh() }
+    }
 
     @objc func showSettings() {
         showMainWindow()
@@ -375,6 +410,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let appItem = NSMenuItem(title: panelModel.language.productName, action: nil, keyEquivalent: "")
         let appSub = NSMenu()
         for (t, s, k) in [(text("打开主窗口", "Open main window"), #selector(showMainWindow), "n"),
+                          (ShortcutAction.quickServices.title(in: panelModel.language), #selector(showQuickServices), ""),
                           (text("设置…", "Settings…"), #selector(showSettings), ","),
                           (text("添加项目…", "Add project…"), #selector(newProject), ""),
                           (text("在浏览器中打开", "Open in browser"), #selector(openDashboard), "d"),

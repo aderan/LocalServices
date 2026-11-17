@@ -190,6 +190,7 @@ class Controller:
         self._compose_name_cache: dict[tuple, tuple[float, str | None]] = {}
         self.fsevents: dict = {"ok": None, "at": 0.0, "detail": ""}
         self._refresh_lock = threading.Lock()
+        self._domain_sync_lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="probe")
         self.infrastructure = Infrastructure()
         self.reload()
@@ -922,8 +923,6 @@ class Controller:
                 self._run_generator(p, g, reason="启动")
             self._startup_remaining(p)
             success = True
-            if open_after:
-                self.open(p.id)
         except RuntimeUnavailable as e:
             self._docker_blocked(p, "Docker 运行环境未就绪：" + str(e), open_after)
         except DependencyError as e:
@@ -959,6 +958,11 @@ class Controller:
                                 self._set_error(p.id, c.id, f"{original}；清理失败：{err}")
             finally:
                 self._end(p.id)
+        if success and open_after:
+            try:
+                self.open(p.id, sync_routes=True)
+            except Exception as e:  # noqa: BLE001
+                self._set_error(p.id, "", f"无法打开服务：{e}\n{traceback.format_exc(limit=3)}")
 
     def _wait_compose_ready(self, p: Project, c: Component) -> bool:
         """compose 组件就绪：容器 Running，且（有 healthcheck 用 health；否则声明端口探针；都没有=Running 即就绪）。"""
@@ -1181,7 +1185,7 @@ class Controller:
                 self._set_error(p.id, "", "重启失败：" + redact(str(e))[:1200])
             self._end(p.id)
 
-    def open(self, pid: str) -> dict:
+    def open(self, pid: str, *, sync_routes: bool = False) -> dict:
         p = self.projects.get(pid)
         if not p:
             return {"ok": False, "error": "未知项目"}
@@ -1196,7 +1200,7 @@ class Controller:
         entry_note = None
         st = self.domain_settings()
         if st.get("use_domains"):
-            pub = self._public_open_url(p, st)
+            pub = self._public_open_url(p, st, sync_routes=sync_routes)
             if pub:
                 url = pub
             elif self._form_endpoints(p, st):
@@ -1216,7 +1220,20 @@ class Controller:
             eps = [e for e in eps if not e.derived]
         return eps
 
-    def _public_open_url(self, p: Project, settings: dict | None = None) -> str | None:
+    def sync_domain_routes(self, *, refresh: bool = False) -> dict | None:
+        from . import locove
+
+        # Read the snapshot under the same lock as the periodic sync so an older snapshot
+        # cannot replace a freshly activated route.
+        with self._domain_sync_lock:
+            settings = self.domain_settings()
+            if not settings.get("use_domains"):
+                return None
+            snapshot = self.refresh_snapshot() if refresh else self.snapshot()
+            return locove.gated_sync(settings, self.projects, snapshot)
+
+    def _public_open_url(self, p: Project, settings: dict | None = None,
+                         *, sync_routes: bool = False) -> str | None:
         """域名模块整体可用（DNS+代理+resolver，D3 状态机 available）且服务处于可打开
         状态时，返回带业务端口的公开地址（http://<host>:<port><open_path>，缺省 5670）。
 
@@ -1228,9 +1245,16 @@ class Controller:
         from . import locove
         try:
             st = locove.module_status(settings)
+            if st.get("state") != "available":
+                return None
+            if sync_routes:
+                result = self.sync_domain_routes(refresh=True)
+                if not result or not result.get("ok") or result.get("pending"):
+                    return None
+                route = ((locove.read_routes() or {}).get("routes") or {}).get(eps[0].host, {})
+                if route.get("service") != p.id or route.get("state") != "proxy":
+                    return None
         except Exception:  # noqa: BLE001 — 域名层故障不阻塞直连打开
-            return None
-        if st.get("state") != "available":
             return None
         snap = next((s for s in self.snapshot().get("projects", [])
                      if s.get("id") == p.id), None)
