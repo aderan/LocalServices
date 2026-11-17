@@ -82,6 +82,22 @@ class ResourcesV2Base(unittest.TestCase):
 
 
 class InventoryV2Test(ResourcesV2Base):
+    def test_stopped_colima_replaces_placeholder_for_missing_context(self):
+        dep = manifest.Dependency("Postgres", manifest.Probe(tcp="127.0.0.1:5432"), container="app-pg")
+        project = manifest.Project("api", "API", Path("."), dependencies=[dep])
+        placeholder = {"Name": "colima", "DockerEndpoint": "", "Error": "context not found"}
+        profile = {"name": "default", "runtime": "docker", "status": "Stopped"}
+        with patch.object(dockerctx, "name", return_value="colima"), \
+                patch.object(dockerctx, "run", return_value=ns(stdout=json.dumps(placeholder))), \
+                patch.object(dockerctx, "list_colima_profiles", return_value=[profile]):
+            result = resources.environments([project], [])
+        self.assertEqual(len(result["environments"]), 1)
+        environment = result["environments"][0]
+        self.assertEqual(environment["profile"], "default")
+        self.assertEqual(environment["state"], "stopped")
+        self.assertEqual(environment["contexts"], ["colima"])
+        self.assertEqual([s["id"] for s in environment["services"]], ["api"])
+
     def test_environment_inventory_keeps_offline_bindings_and_groups_aliases(self):
         endpoint = dockerctx.colima_endpoint("sandbox")
         online = dockerctx.colima_endpoint("default")

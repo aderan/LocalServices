@@ -113,7 +113,10 @@ def environments(projects: list[manifest.Project], statuses: list[dict]) -> dict
             continue
         context = dockerctx.colima_context(profile)
         group = groups.setdefault(endpoint, _environment(context, endpoint, profiles))
-        if context not in context_endpoints:
+        if not context_endpoints.get(context):
+            # Docker can list the missing selected context with no endpoint.
+            # Use the verified profile instead of its unresolved placeholder.
+            groups.pop(context, None)
             group["contexts"].append(context)
             context_endpoints[context] = endpoint
         group["profile_stopped"] = record.get("status") == "Stopped"
