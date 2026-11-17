@@ -227,6 +227,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.ctl._domain_settings_cache = (0.0, {})  # 设置变更立即生效（sync 门控/URL 端口）
                 self._send(*res)
                 return
+            if u.path == "/api/locove/endpoint-compatibility":
+                self._send(*self._set_endpoint_compatibility(body))
+                return
             if u.path in ("/api/locove/enable", "/api/locove/disable", "/api/locove/uninstall"):
                 # D3：域名模块生命周期操作。enable 可能等待管理员当次授权（osascript
                 # 弹窗），一律后台执行；进度经 GET /api/locove 的 optin 面轮询。
@@ -445,6 +448,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"ok": False, "error": str(e)})
 
 
+    def _set_endpoint_compatibility(self, body: dict) -> tuple[int, dict]:
+        if not isinstance(body, dict) or not all(
+            isinstance(body.get(key), str) for key in ("service", "host", "component", "mode")
+        ):
+            return 400, {"ok": False, "error": "需要 service、host、component 和 mode"}
+        service, host, component, mode = (body[key] for key in ("service", "host", "component", "mode"))
+        project = self.ctl.projects.get(service)
+        if not project or not any(e.host == host and e.component == component for e in project.endpoints):
+            return 404, {"ok": False, "error": "该服务入口未登记"}
+        try:
+            Registry().set_locove_endpoint_compatibility(host, {"service": service, "component": component}, mode)
+        except RegistryError as e:
+            return e.status, {"ok": False, "error": str(e)}
+        self.ctl._domain_settings_cache = (0.0, {})
+        return 200, {"ok": True, "mode": mode}
+
+
 def loop(fn, interval: float, name: str):
     def run():
         while True:
@@ -462,6 +482,10 @@ def main() -> int:
     paths.ensure()
     agent_api.mark_stale_jobs_failed()
     ctl = Controller()
+    try:
+        Registry().migrate_locove_endpoint_compatibility(ctl.projects, (locove.read_routes() or {}).get("routes"))
+    except (RegistryError, OSError):
+        traceback.print_exc()
     port = paths.daemon_port()
     Handler.ctl, Handler.token, Handler.port = ctl, load_token(), port
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)

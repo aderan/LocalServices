@@ -171,16 +171,6 @@ def _vite_component(project, component) -> bool:
         return False
 
 
-def _loopback_dashboard(project, component) -> bool:
-    if not component or component.run != "local" or not component.cmd:
-        return False
-    command = component.cmd
-    if project.id == "englishlearn-admin":
-        return Path(command[0]).name == "make" and command[1:] == ["sources-manager"]
-    return (project.id == "creatorstudio-dashboard"
-            and command[-3:] == ["-m", "creator_studio", "dashboard"])
-
-
 def desired_routes(projects: dict, snapshot: dict | None = None,
                    settings: dict | None = None) -> dict:
     """由清单 + 共享快照推导期望路由。快照缺失时按 unavailable 收敛（不猜测运行态）。
@@ -191,6 +181,7 @@ def desired_routes(projects: dict, snapshot: dict | None = None,
     unavailable（503），绝不把流量转发给已停止组件的端口——它可能已被无关程序占用。
     """
     snap_projects = {p.get("id"): p for p in (snapshot or {}).get("projects", [])}
+    loopback_endpoints = (settings or {}).get("loopback_endpoints", {})
     routes: dict[str, Route] = {}
     for pid, p in projects.items():
         st = snap_projects.get(pid, {})
@@ -211,7 +202,8 @@ def desired_routes(projects: dict, snapshot: dict | None = None,
                     state = "proxy" if port else "unavailable"
                 else:
                     state = "unavailable"
-            loopback_origin = state == "proxy" and _loopback_dashboard(p, comp)
+            loopback_origin = state == "proxy" and loopback_endpoints.get(e.host) == {
+                "service": pid, "component": e.component}
             routes[e.host] = Route(host=e.host, service=pid, component=e.component,
                                    upstream_port=port, state=state,
                                    loopback_host=loopback_origin or (state == "proxy" and _vite_component(p, comp)),
@@ -282,7 +274,7 @@ def render_caddyfile(routes: dict[str, Route], port: int | None = None,
                     f'\t\tnot header Origin "{origin}"',
                     "\t}",
                     "\t@cross_site_fetch {",
-                    "\t\theader Sec-Fetch-Site cross-site",
+                    "\t\theader Sec-Fetch-Site *-site",
                     "\t\tnot header Sec-Fetch-Mode navigate",
                     "\t}",
                     "\troute {",

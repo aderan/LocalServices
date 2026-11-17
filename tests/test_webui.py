@@ -293,6 +293,31 @@ class DaemonEndToEndTest(unittest.TestCase):
         self.assertEqual(code, 200, res)
         self.assertTrue(res.get("ok"))
 
+    def test_endpoint_compatibility_is_saved_only_for_a_registered_entry(self):
+        sid = "webui-loopback"
+        src = self.src / sid
+        src.mkdir()
+        port = free_port()
+        code, info = self.call("POST", "/api/register", {
+            "schemaVersion": 1,
+            "service": {"id": sid, "name": "Loopback", "source": str(src), "components": [
+                {"id": "main", "kind": "server", "cmd": ["/bin/sleep", "100"], "port": port},
+            ]},
+        })
+        self.assertEqual(code, 200, info)
+        host = f"{sid}.locove"
+        path = "/api/locove/endpoint-compatibility"
+        body = {"service": sid, "host": host, "component": "main", "mode": "loopback"}
+        self.assertEqual(self.call("POST", path, body, token=None)[0], 401)
+        self.assertEqual(self.call("POST", path, body, origin="http://example.test")[0], 403)
+        self.assertEqual(self.call("POST", path, {**body, "component": "other"})[0], 404)
+        self.assertEqual(self.call("POST", path, {**body, "mode": "unknown"})[0], 400)
+        self.assertEqual(self.call("POST", path, body, origin=self.origin)[0], 200)
+        settings = self.call("GET", "/api/locove")[1]["settings"]
+        self.assertEqual(settings["loopback_endpoints"][host], {"service": sid, "component": "main"})
+        self.assertEqual(self.call("POST", path, {**body, "mode": "auto"}, origin=self.origin)[0], 200)
+        self.assertNotIn(host, self.call("GET", "/api/locove")[1]["settings"].get("loopback_endpoints", {}))
+
 
 class MenubarBuildTest(unittest.TestCase):
     """主窗口 App 构建冒烟：swiftc 可用才跑（CI/无 Xcode 环境跳过）。"""

@@ -912,7 +912,9 @@ function detailsHtml(p) {
     return `<tr><td class="k">${tr("入口", "Endpoint")} ${esc(e.id)}</td>
       <td><button class="link" onclick="copyText('${esc(e.public_url)}','${p.id}')" title="${tr("点击复制", "Click to copy")}">${esc(e.public_url)}</button>
         <span class="note"> (${tr("组件", "Component")} ${esc(e.component)} · ${tr("落点", "Path")} ${esc(e.open_path)})</span></td>
-      <td class="k">${esc(st)}</td><td></td></tr>`;
+      <td class="k">${esc(st)}</td><td><button data-service="${esc(p.id)}" data-host="${esc(e.host)}"
+        data-component="${esc(e.component)}" onclick="editEndpointCompatibility(this.dataset)">
+        ${tr("入口设置", "Endpoint settings")}</button></td></tr>`;
   }).join("");
   const direct = p.observe_only ? "" : `<tr><td class="k">${tr("直连地址", "Direct URL")}</td><td colspan="3">${esc(p.open || "—")}<span class="note">${tr("（内部端口实现细节；域名形式为 http://域名:5670，在设置中启用）", " (Enable local domain access in Settings.)")}</span></td></tr>`;
   return `<div class="detail" id="detail-${esc(p.id)}" tabindex="-1">
@@ -2100,6 +2102,44 @@ function toggleMenu(ev, key) {
   const anchor = ev && ev.target;
   if (menuState && anchor && menuState.anchor === anchor) { closeMenu(); return; }
   openMenu(anchor, menuItems(key));
+}
+
+async function editEndpointCompatibility({service, host, component}) {
+  const owner = locoveData?.settings?.loopback_endpoints?.[host];
+  const enabled = owner?.service === service && owner?.component === component;
+  let saving = false;
+  await showModal({
+    title: tr("入口设置", "Endpoint settings"),
+    okText: tr("保存", "Save"),
+    bodyHtml: `
+      <p class="modal-line"><code>${esc(host)}</code></p>
+      <label class="radio"><input type="checkbox" name="loopback" ${enabled ? "checked" : ""}>
+        ${tr("兼容仅接受本机地址的应用", "Support apps that only accept loopback addresses")}</label>
+      <p class="modal-line muted">${tr(
+        "直连可用、域名因 Host 或 Origin 检查返回 403 时，可以开启。Locove 仍会拦截跨站写请求。",
+        "Enable this if the direct URL works but the domain returns 403 due to a Host or Origin check. Locove continues to block cross-origin writes.")}</p>
+      <p class="reason warn" data-endpoint-error role="alert" hidden></p>`,
+    onOk: async body => {
+      if (saving) return "keep";
+      const mode = body.querySelector('[name="loopback"]').checked ? "loopback" : "auto";
+      if ((mode === "loopback") === enabled) return true;
+      saving = true;
+      try {
+        const [code, result] = await api("POST", "/api/locove/endpoint-compatibility",
+          {service, host, component, mode});
+        if (code !== 200 || !result?.ok) throw new Error(result?.error);
+        await refresh();
+        return true;
+      } catch (e) {
+        const error = body.querySelector("[data-endpoint-error]");
+        error.textContent = e.message || tr("保存失败", "Could not save the endpoint setting");
+        error.hidden = false;
+        return "keep";
+      } finally {
+        saving = false;
+      }
+    },
+  });
 }
 
 // showModal：自绘模态（替代 confirm/prompt）。Esc=取消、Enter=主操作（textarea 除外）、

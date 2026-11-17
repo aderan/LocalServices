@@ -1959,15 +1959,52 @@ class Registry:
                 and 1024 <= port <= 65535 and port not in cls.LOCOVE_PORT_FORBIDDEN)
 
     def locove_settings(self) -> dict:
-        """{"use_domains", "domain_form", "domain_port"}；缺省全部关闭/后缀式/5670。"""
+        """Return local domain settings and any explicitly configured loopback entries."""
         with _file_lock():
             data = self._load()
         st = data.get("settings") or {}
         port = st.get("domain_port", self.LOCOVE_PORT_DEFAULT)
+        endpoints = st.get("loopback_endpoints")
         return {"use_domains": bool(st.get("use_domains", False)),
                 "domain_form": st.get("domain_form", "suffix") if st.get("domain_form") in ("suffix", "custom") else "suffix",
                 "domain_port": port if self.locove_port_valid(port) else self.LOCOVE_PORT_DEFAULT,
-                "domains_enabled_at": float(st.get("domains_enabled_at") or 0) or None}
+                "domains_enabled_at": float(st.get("domains_enabled_at") or 0) or None,
+                **({"loopback_endpoints": endpoints} if isinstance(endpoints, dict) and endpoints else {})}
+
+    def set_locove_endpoint_compatibility(self, host: str, owner: dict, mode: str) -> None:
+        """Save a local preference for an endpoint resolved by the control daemon."""
+        if mode not in ("auto", "loopback"):
+            raise RegistryError("mode 必须是 auto 或 loopback")
+        with _file_lock():
+            data = self._load()
+            settings = data.setdefault("settings", {})
+            endpoints = settings.setdefault("loopback_endpoints", {})
+            if mode == "loopback":
+                endpoints[host] = owner
+            elif endpoints.get(host) == owner:
+                del endpoints[host]
+            self._save(data)
+
+    def migrate_locove_endpoint_compatibility(self, projects: dict, routes: dict | None) -> None:
+        """Keep active compatibility from older route data when its owner still matches."""
+        if not isinstance(routes, dict):
+            return
+        endpoints = {}
+        for host, route in routes.items():
+            if not isinstance(route, dict) or route.get("loopback_origin") is not True:
+                continue
+            service = route.get("service")
+            project = projects.get(service) if isinstance(service, str) else None
+            component = route.get("component")
+            if project and any(e.host == host and e.component == component for e in project.endpoints):
+                endpoints[host] = {"service": service, "component": component}
+        if endpoints:
+            with _file_lock():
+                data = self._load()
+                settings = data.setdefault("settings", {})
+                if "loopback_endpoints" not in settings:
+                    settings["loopback_endpoints"] = endpoints
+                    self._save(data)
 
     def locove_settings_update(self, body: dict) -> dict:
         body = body if isinstance(body, dict) else {}

@@ -63,6 +63,27 @@ class RegistrySettingsTest(SettingsEnv):
         with self.assertRaises(RegistryError):
             self.reg.locove_settings_update({"domain_form": "wildcard"})
 
+    def test_saved_endpoint_setting_round_trips_and_can_be_cleared(self):
+        host = "snap.locove"
+        owner = {"service": "snap", "component": "web"}
+        self.reg.set_locove_endpoint_compatibility(host, owner, "loopback")
+        self.reg.locove_settings_update({"domain_port": 5678})
+        self.assertEqual(Registry().locove_settings()["loopback_endpoints"], {host: owner})
+        self.reg.set_locove_endpoint_compatibility(host, owner, "auto")
+        self.assertEqual(Registry().locove_settings().get("loopback_endpoints", {}), {})
+
+    def test_migration_keeps_only_matching_routes_and_respects_reset(self):
+        project = _proj()
+        host = project.endpoints[0].host
+        owner = {"service": project.id, "component": "web"}
+        routes = {host: dict(owner, loopback_origin=True),
+                  "stale.locove": dict(owner, loopback_origin=True)}
+        self.reg.migrate_locove_endpoint_compatibility({project.id: project}, routes)
+        self.assertEqual(Registry().locove_settings()["loopback_endpoints"], {host: owner})
+        self.reg.set_locove_endpoint_compatibility(host, owner, "auto")
+        self.reg.migrate_locove_endpoint_compatibility({project.id: project}, routes)
+        self.assertEqual(Registry().locove_settings().get("loopback_endpoints", {}), {})
+
     def test_api_handlers(self):
         code, res = register_api.handle_locove_settings_post({"use_domains": True})
         self.assertEqual(code, 200)

@@ -463,6 +463,10 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
   工作台与菜单栏从 `GET /api/registry` 读取，界面语言不触发域名模块配置变更。
 - registry.json 顶层 `settings`: `{"use_domains": bool（缺省 false）, "domain_form": "suffix"|"custom"（缺省 suffix）}`；
   `GET/POST /api/locove/settings`（POST 部分字段更新，非法 domain_form 400）；`GET /api/locove` 合并返回 `settings`。
+- 每个入口可在服务详情的「入口设置」开启回环兼容。`POST /api/locove/endpoint-compatibility`
+  接收 `{service, host, component, mode}`，其中 `mode` 为 `auto` 或 `loopback`。
+  本机偏好保存在 `settings.loopback_endpoints`，由域名、服务 ID 和组件 ID 共同匹配。
+  回环模式仅为该入口转换 Host 和已验证的同源 Origin，跨站或缺少 Origin 的写请求会被拒绝。
 - **打开行为**：默认（use_domains=false）一切打开动作用直连地址（`open` / 组件端口），
   即使域名入口健康也不经域名——「域名入口未就绪」提示只在开启后出现。
   开启 + 入口健康 → 经 `http://<host><open_path>` 打开；开启 + 入口故障 → 回退直连并附缺口说明。
