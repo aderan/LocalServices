@@ -35,8 +35,13 @@ class InfrastructureTest(unittest.TestCase):
                 output = json.dumps({"name": self.profile, "status": "Stopped", "runtime": "docker"})
             elif args[0] == "start":
                 self.runtime = True
+            elif args[0] == "stop":
+                self.runtime = self.running = False
             else:
                 self.fail(f"unexpected Colima operation: {args}")
+        elif executable == "orbctl":
+            self.assertIn(args, [["start"], ["stop"]])
+            self.runtime = args == ["start"]
         elif "context" in args:
             output = self.endpoint
         elif "info" in args:
@@ -74,6 +79,37 @@ class InfrastructureTest(unittest.TestCase):
         self.recover()
         starts = [c[1:] for c in self.commands if Path(c[0]).name == "colima" and c[1] == "start"]
         self.assertEqual(starts, [["start", self.profile, "--activate=false"]])
+
+    def test_testing_stop_holds_background_recovery_until_explicit_start(self):
+        self.runtime = True
+        binding = {"context": "colima", "endpoint": self.endpoint, "autostart": True}
+        infra = Infrastructure()
+        with patch("localservices.infrastructure.subprocess.run", side_effect=self.command), \
+                patch("localservices.infrastructure.shutil.which", side_effect=lambda name, **kwargs: name):
+            infra.stop_for_test(binding)
+            with self.assertRaisesRegex(DependencyError, "开发测试"):
+                infra.ensure([], lambda _: None, docker_required=True, binding=binding)
+            self.assertFalse(any(c[:2] == ["colima", "start"] for c in self.commands))
+            infra.ensure([], lambda _: None, docker_required=True, binding=binding, resume_test=True)
+        self.assertEqual([c for c in self.commands if c[:2] == ["colima", "stop"]],
+                         [["colima", "stop", self.profile]])
+        self.assertTrue(self.runtime)
+
+    def test_orbstack_testing_stop_and_manual_start_use_provider_commands(self):
+        from localservices import dockerctx
+
+        self.runtime = True
+        self.endpoint = dockerctx.canonical_endpoint(f"unix://{Path.home()}/.orbstack/run/docker.sock")
+        binding = {"context": "orbstack", "endpoint": self.endpoint}
+        infra = Infrastructure()
+        with patch("localservices.infrastructure.subprocess.run", side_effect=self.command), \
+                patch("localservices.infrastructure.shutil.which", side_effect=lambda name, **kwargs: name):
+            infra.stop_for_test(binding)
+            with self.assertRaisesRegex(DependencyError, "开发测试"):
+                infra.ensure([], lambda _: None, docker_required=True, binding=binding)
+            infra.ensure([], lambda _: None, docker_required=True, binding=binding, start_environment=True)
+        self.assertEqual([c for c in self.commands if c[0] == "orbctl"],
+                         [["orbctl", "stop"], ["orbctl", "start"]])
 
     def test_bound_compose_does_not_start_colima_without_permission(self):
         binding = {"context": "colima", "endpoint": self.endpoint, "autostart": False}

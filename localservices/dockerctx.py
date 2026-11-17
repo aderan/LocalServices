@@ -92,6 +92,10 @@ def colima_endpoint(profile: str) -> str:
     return f"unix://{colima_root() / profile / 'docker.sock'}"
 
 
+def is_orbstack(endpoint_value: str) -> bool:
+    return endpoint_value == canonical_endpoint(f"unix://{Path.home() / '.orbstack/run/docker.sock'}")
+
+
 def colima_profile(endpoint_value: str, profiles: list[dict]) -> str | None:
     for record in profiles:
         profile = record.get("name")

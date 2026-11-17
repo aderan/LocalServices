@@ -151,8 +151,12 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/resources/environments":
                 data = resources.environments(list(self.ctl.projects.values()), self.ctl.snapshot().get("projects", []))
                 data["error"] = redact(data["error"])[:600]
+                with self.ctl.infrastructure.lock:
+                    test_stops = dict(self.ctl.infrastructure.test_stops)
                 for environment in data["environments"]:
                     environment["error"] = redact(environment["error"])[:600]
+                    if environment["endpoint"] in test_stops:
+                        environment["test_state"] = test_stops[environment["endpoint"]]
                 self._send(200, data)
                 return
             if u.path == "/api/locove":
@@ -253,6 +257,31 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if u.path == "/api/refresh":
                 self._send(200, self.ctl.refresh_snapshot(wait=6))
+                return
+            test_stop = re.fullmatch(r"/api/projects/([a-z0-9-]+)/docker-test/stop", u.path)
+            if test_stop:
+                project_id = test_stop.group(1)
+                projects = list(self.ctl.projects.values())
+                if not any((p.project or p.id) == project_id for p in projects) and not Registry().project(project_id):
+                    self._send(404, {"ok": False, "error": "项目不存在"})
+                    return
+                context = body.get("context") if isinstance(body, dict) else None
+                endpoint = body.get("endpoint") if isinstance(body, dict) else None
+                if not isinstance(context, str) or not isinstance(endpoint, str) or not endpoint.startswith("unix:///"):
+                    self._send(400, {"ok": False, "error": "请选择本机 Docker 连接"})
+                    return
+                target = {"context": context, "endpoint": endpoint}
+                if any(p.id in self.ctl.ops and p.uses_docker() and dockerctx.same_environment(p.docker, target)
+                       for p in projects):
+                    self._send(409, {"ok": False, "error": "有服务正在操作此 Docker 环境，请稍后再试"})
+                    return
+                try:
+                    self.ctl.infrastructure.stop_for_test(target)
+                except DependencyError as exc:
+                    self._send(409, {"ok": False, "error": redact(str(exc))[:1200]})
+                    return
+                threading.Thread(target=self.ctl.refresh_snapshot, daemon=True).start()
+                self._send(200, {"ok": True})
                 return
             if u.path == "/api/resources/environments/start":
                 context = body.get("context") if isinstance(body, dict) else None

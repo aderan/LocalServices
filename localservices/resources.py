@@ -167,7 +167,7 @@ def _environment(context: str, endpoint: str, profiles: list[dict]) -> dict:
     provider = "colima" if profile else "docker"
     if endpoint == f"unix://{Path.home() / '.docker/run/docker.sock'}":
         provider = "docker-desktop"
-    elif endpoint == f"unix://{Path.home() / '.orbstack/run/docker.sock'}":
+    elif dockerctx.is_orbstack(endpoint):
         provider = "orbstack"
     elif endpoint.startswith("unix:///") and "podman" in Path(endpoint).name:
         provider = "podman"

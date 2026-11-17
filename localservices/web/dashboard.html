@@ -48,6 +48,11 @@
   .badge.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--card)); }
   .docker-recovery { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .docker-recovery-error { overflow-wrap: anywhere; }
+  .runtime-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .docker-test-panel > summary { cursor: pointer; font-weight: 600; }
+  .docker-test-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 9px 0; border-top: 1px solid var(--line); }
+  .docker-test-row > strong { margin-right: auto; }
+  .docker-test-row > .reason { flex-basis: 100%; }
   .docker-other > summary { cursor: pointer; padding: 8px 0; }
   .docker-other > section { margin-top: 10px; }
   .content { display: flex; flex-direction: column; min-width: 0; }
@@ -362,6 +367,7 @@ let agentCandidates = null;  // /api/agents/candidates（连接页候选，按�
 let agentsData = null, resourcesData = null, draftsData = null, removedData = null;
 let resourcesLoading = false, resourcesFetchedAt = 0, focusedDocker = null;
 const dockerStarting = new Set(), dockerErrors = new Map();
+const dockerStopping = new Set(), dockerStopErrors = new Map(), openDockerTests = new Set();
 let otherDockerOpen = false;
 let locoveData = null;   // /api/locove：dns / 入口 / 代理三层健康 + 路由事实
 let view = "all";     // all | project:<id> | attention | removed | resources | agents | drafts | new-project
@@ -865,7 +871,7 @@ function detailsHtml(p) {
     `<tr><td class="k">${tr("依赖", "Dependency")} ${esc(d.name)}</td><td>${d.ok ? tr("可用", "Available") : tr("不可用", "Unavailable")}${d.detail ? "：" + esc(d.detail) : ""}</td><td class="k">${d.managed ? "" : tr("外部管理", "Managed externally")}</td><td class="k">${esc(d.note || "")}</td></tr>`).join("");
   const environment = resourcesData?.environments?.find(e =>
     e.contexts?.includes(p.docker_context) && (!p.docker_endpoint || p.docker_endpoint === e.endpoint));
-  const canStartEnvironment = p.state === "stopped" && environment?.profile && environment.state !== "ready";
+  const canStartEnvironment = p.state === "stopped" && environment && canManageDocker(environment) && environment.state !== "ready";
   const docker = p.docker_context ? `<tr><td class="k">${tr("Docker 运行环境", "Docker environment")}</td>
     <td colspan="3"><button class="link" data-context="${esc(p.docker_context)}" data-endpoint="${esc(p.docker_endpoint || "")}"
       onclick="showDockerEnvironment(this.dataset)">${esc(environment ? dockerEnvironmentName(environment) : p.docker_context)}</button>
@@ -1051,6 +1057,7 @@ function viewProject(pid) {
     </div>
     ${members.map(p => serviceRow(p, false)).join("") || `<div class="empty">${g.members.length ? tr("没有匹配的服务", "No matching services") : tr("此项目暂无已登记服务", "No registered services in this project")}</div>`}
   </section>
+  ${projectDockerTest(pj, g.members)}
   <section class="card project-config" aria-labelledby="project-config-title">
     <h3 id="project-config-title">${tr("项目配置", "Project configuration")}</h3>
     <div class="project-settings">
@@ -1183,6 +1190,83 @@ async function importCandidate(path) {
   } catch (e) { setConn(false); }
 }
 
+function canManageDocker(e) {
+  return e.contexts?.length && (e.profile || e.provider === "orbstack");
+}
+
+function projectDockerTest(project, members) {
+  const ids = new Set(members.map(p => p.id));
+  const projectUses = e => Boolean(e.services?.some(s => ids.has(s.id)));
+  const targets = (resourcesData?.environments || []).filter(canManageDocker)
+    .sort((a, b) => Number(projectUses(b)) - Number(projectUses(a)));
+  const rows = targets.map(e => {
+    const bound = projectUses(e);
+    const stopping = dockerStopping.has(e.endpoint) || e.test_state === "stopping";
+    const busy = stopping || dockerStarting.has(e.endpoint);
+    const error = dockerStopErrors.get(e.endpoint);
+    return `<div class="docker-test-row"><strong>${esc(dockerEnvironmentName(e))}
+      <span class="note">${bound ? tr("本项目使用", "Used by this project") : tr("其他本机环境", "Other local environment")}</span></strong>
+      <span class="note">${esc(dockerEnvironmentState(e))}</span>
+      ${e.state === "ready" || stopping ? `<button class="ghost danger" data-project="${esc(project.id)}" data-endpoint="${esc(e.endpoint)}"
+        onclick="confirmDockerTestStop(this.dataset)" ${busy ? "disabled" : ""}>${stopping ? tr("正在停止…", "Stopping…") : tr("停止环境", "Stop environment")}</button>`
+        : dockerRecoveryAction(e)}
+      ${error ? `<p class="reason warn docker-recovery-error" role="status">${esc(error)}</p>` : ""}</div>`;
+  }).join("");
+  return `<details class="card docker-test-panel" data-project="${esc(project.id)}" ${openDockerTests.has(project.id) ? "open" : ""}
+      ontoggle="toggleDockerTests(this)">
+    <summary>${tr("开发测试", "Development testing")}</summary>
+    <p class="note">${tr("暂停本机 Docker 环境，测试服务恢复。此操作会影响共用该环境的项目。", "Stop a local Docker environment to test service recovery. This affects projects that share it.")}</p>
+    ${rows || `<p class="note">${resourcesLoading || !resourcesData ? tr("正在读取环境…", "Loading environments…")
+      : tr("暂无可测试的 Colima 或 OrbStack 环境", "No Colima or OrbStack environment available for testing")}</p>`}
+  </details>`;
+}
+
+function toggleDockerTests(panel) {
+  if (panel.open) {
+    if (openDockerTests.has(panel.dataset.project)) return;
+    openDockerTests.add(panel.dataset.project);
+    loadResources();
+  } else {
+    openDockerTests.delete(panel.dataset.project);
+  }
+}
+
+async function confirmDockerTestStop({project, endpoint}) {
+  const environment = resourcesData?.environments?.find(e => e.endpoint === endpoint);
+  if (!environment || !canManageDocker(environment) || environment.state !== "ready" || dockerStopping.has(endpoint)) return;
+  const name = dockerEnvironmentName(environment);
+  const services = (environment.services || []).map(s => esc(s.name));
+  const running = (environment.containers || []).filter(c => c.state === "running").map(c => esc(c.name));
+  const ok = await showModal({
+    title: tr(`停止 ${name} 进行测试`, `Stop ${name} for testing`),
+    okText: tr("停止环境", "Stop environment"),
+    cancelText: tr("取消", "Cancel"),
+    danger: true,
+    bodyHtml: `<p>${tr("停止整个运行环境会中断其中的所有容器及使用它的服务。", "Stopping the environment interrupts all containers and services that use it.")}</p>
+      ${environment.provider === "orbstack" ? `<p>${tr("OrbStack 中运行的 Linux 虚拟机也会停止。", "Any Linux machines running in OrbStack will also stop.")}</p>` : ""}
+      ${services.length ? `<p>${tr("已绑定服务", "Bound services")} · ${services.join("、")}</p>` : ""}
+      ${running.length ? `<p>${tr("运行中容器", "Running containers")} · ${running.slice(0, 8).join("、")}
+        ${running.length > 8 ? ` +${running.length - 8}` : ""}</p>` : ""}
+      <p class="note">${tr("手动启动环境即可结束测试。", "Start the environment manually to end the test.")}</p>`,
+  });
+  if (!ok || dockerStopping.has(endpoint)) return;
+  dockerStopping.add(endpoint);
+  dockerStopErrors.delete(endpoint);
+  render();
+  try {
+    const [code, result] = await api("POST", `/api/projects/${encodeURIComponent(project)}/docker-test/stop`,
+      {context: environment.context, endpoint});
+    if (code !== 200) dockerStopErrors.set(endpoint, result?.error || tr("停止环境失败", "Could not stop environment"));
+  } catch {
+    dockerStopErrors.set(endpoint, tr("无法连接控制服务", "Could not reach Locove"));
+  } finally {
+    dockerStopping.delete(endpoint);
+    await loadResources();
+    await refresh();
+    render();
+  }
+}
+
 function dockerEnvironmentName(e) {
   if (e.profile) return "Colima " + e.profile;
   if (e.provider === "docker-desktop") return "Docker Desktop";
@@ -1192,7 +1276,9 @@ function dockerEnvironmentName(e) {
 }
 
 function dockerEnvironmentState(e) {
+  if (dockerStopping.has(e.endpoint) || e.test_state === "stopping") return tr("停止中", "Stopping");
   if (dockerStarting.has(e.endpoint)) return tr("启动中", "Starting");
+  if (e.test_state === "stopped" && e.state !== "ready") return tr("测试已停止", "Stopped for testing");
   switch (e.state) {
     case "ready": return tr("Docker 可用", "Docker ready");
     case "stopped": return tr("已停止", "Stopped");
@@ -1202,7 +1288,8 @@ function dockerEnvironmentState(e) {
   }
 }
 
-function dockerDetailsOpen() {
+function dockerResourcesVisible() {
+  if (view === "resources" || (view.startsWith("project:") && openDockerTests.has(view.slice(8)))) return true;
   if (view !== "all" && view !== "attention" && !view.startsWith("project:")) return false;
   return snap?.projects?.some(p => open[p.id] && p.docker_context);
 }
@@ -1259,14 +1346,16 @@ function viewResources() {
     if (!matchEnvironment && !rows) continue;
     const error = e.error;
     const blocked = (e.services || []).some(s => s.docker_blocked);
-    const canStart = e.profile && e.contexts?.length && e.state !== "ready";
+    const canStart = canManageDocker(e) && (e.state !== "ready" || blocked);
+    const actionError = dockerErrors.get(e.endpoint);
     const card = `<section class="card" data-docker-context="${esc(aliases.join(" "))}" data-endpoint="${esc(e.endpoint || "")}">
-      <div class="card-head"><h3>${esc(title)}</h3><span class="badge ${e.state === "ready" ? "ok" : "mut"}">${esc(dockerEnvironmentState(e))}</span>
-      </div>
+      <div class="card-head"><h3>${esc(title)}</h3><div class="runtime-card-actions">
+        <span class="badge ${e.state === "ready" && !dockerStopping.has(e.endpoint) ? "ok" : "mut"}">${esc(dockerEnvironmentState(e))}</span>
+        ${canStart ? dockerRecoveryAction(e, {retry: blocked, showError: false}) : ""}</div></div>
       <p class="note">${tr("Docker 连接", "Docker connections")} · ${esc(aliases.join(", "))}</p>
       ${services ? `<p>${tr("已绑定服务", "Bound services")}</p><ul>${services}</ul>` : ""}
-      ${canStart || (blocked && e.profile && e.contexts?.length) ? dockerRecoveryAction(e, {retry: blocked}) : ""}
-      ${blocked && !e.profile ? `<p class="note">${tr("请在对应的工具中启动该环境，Locove 会重新检查。", "Start the environment in its own tool. Locove will check again.")}</p>` : ""}
+      ${actionError ? `<p class="reason warn docker-recovery-error" role="status">${esc(actionError)}</p>` : ""}
+      ${blocked && !canManageDocker(e) ? `<p class="note">${tr("请在对应的工具中启动该环境，Locove 会重新检查。", "Start the environment in its own tool. Locove will check again.")}</p>` : ""}
       ${error ? `<details><summary>${tr("连接诊断", "Connection diagnostics")}</summary>
         <p class="reason warn docker-recovery-error">${esc(error)}</p></details>` : ""}
       ${rows ? `<details><summary>${tr("容器", "Containers")} · ${allContainers.length}</summary><div class="table-scroll"><table>
@@ -1288,14 +1377,15 @@ function viewResources() {
     ${active.length || other.length ? "" : `<div class="empty">${tr("没有匹配的运行环境", "No matching environments")}</div>`}`;
 }
 
-function dockerRecoveryAction(target, {retry = false, service = "", remember = false, label} = {}) {
+function dockerRecoveryAction(target, {retry = false, service = "", remember = false, label, showError = true} = {}) {
   const busy = dockerStarting.has(target.endpoint);
-  const error = dockerErrors.get(target.endpoint);
+  const disabled = busy || dockerStopping.has(target.endpoint) || target.test_state === "stopping";
+  const error = showError && dockerErrors.get(target.endpoint);
   label ||= retry ? tr("启动环境并重试", "Start environment and retry") : tr("启动环境", "Start environment");
   return `<span class="docker-recovery">
     <button data-context="${esc(target.context)}" data-endpoint="${esc(target.endpoint)}"
       data-service="${esc(service)}" data-retry="${retry}" onclick="recoverDocker(this)"
-      ${busy ? "disabled" : ""}>${busy ? tr("正在启动环境…", "Starting environment…") : label}</button>
+      ${disabled ? "disabled" : ""}>${busy ? tr("正在启动环境…", "Starting environment…") : label}</button>
     ${remember ? `<label><input type="checkbox" ${busy ? "disabled" : ""}> ${tr("以后按需自动启动", "Start automatically when needed")}</label>` : ""}
   </span>${error ? `<p class="reason warn docker-recovery-error" role="status">${esc(error)}</p>` : ""}`;
 }
@@ -1315,7 +1405,7 @@ async function recoverDocker(button) {
     dockerErrors.set(endpoint, tr("无法连接控制服务", "Could not reach Locove"));
   } finally {
     dockerStarting.delete(endpoint);
-    if (view === "resources" || dockerDetailsOpen()) await loadResources();
+    if (dockerResourcesVisible()) await loadResources();
     await refresh();
     render();
   }
@@ -2672,7 +2762,7 @@ async function loadResources() {
   if (view === "resources") {
     render();
     scrollToDockerEnvironment();
-  } else if (dockerDetailsOpen()) {
+  } else if (dockerResourcesVisible()) {
     render();
   }
 }
@@ -3473,7 +3563,7 @@ async function refresh(manual) {
     if (!agentCandidates) loadCandidates().then(render);
     setConn(true);
     if (draftsData) loadDrafts();
-    if ((view === "resources" || dockerDetailsOpen()) && Date.now() - resourcesFetchedAt > 5000) loadResources();
+    if (dockerResourcesVisible() && Date.now() - resourcesFetchedAt > 5000) loadResources();
   } catch (e) {
     setConn(false);
     if (snap) for (const p of snap.projects) { p.state = "unknown"; p.label = "未知"; p.op = null; p.can_open = false; p.reason = ""; }

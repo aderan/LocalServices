@@ -767,7 +767,8 @@ class Controller:
         with self.lock:
             self.ops.pop(pid, None)
 
-    def _prepare_dependencies(self, p: Project, components: list[Component] | None = None) -> None:
+    def _prepare_dependencies(self, p: Project, components: list[Component] | None = None,
+                              *, resume_test: bool = False) -> None:
         docker_required = any(c.run == "compose" for c in (p.managed_components() if components is None else components))
         if not docker_required and not any(d.required for d in p.dependencies):
             return
@@ -779,9 +780,10 @@ class Controller:
 
         progress("检查必要依赖")
         if docker_required or (p.docker and any(d.required and d.container for d in p.dependencies)):
-            self.infrastructure.ensure(p.dependencies, progress, docker_required=docker_required, binding=p.docker)
+            self.infrastructure.ensure(p.dependencies, progress, docker_required=docker_required,
+                                       binding=p.docker, resume_test=resume_test)
         else:
-            self.infrastructure.ensure(p.dependencies, progress)
+            self.infrastructure.ensure(p.dependencies, progress, resume_test=resume_test)
         with self.lock:
             self.ops[p.id].update(kind="starting", detail="",
                                   budget=self._startup_budget(p),
@@ -874,7 +876,7 @@ class Controller:
                 # automatic start (autostart / re-login): keep intent, retry after the guard period
                 return
             if not skip_build:
-                self._prepare_dependencies(p)
+                self._prepare_dependencies(p, resume_test=by_user)
             for c in self._order(p):
                 if only and c.id not in only:
                     continue
@@ -1147,7 +1149,7 @@ class Controller:
     def _do_restart(self, p: Project, components: list[str] | None, by_user: bool = False) -> None:
         try:
             comps = [c for c in self._order(p) if not components or c.id in components]
-            self._prepare_dependencies(p, comps)
+            self._prepare_dependencies(p, comps, resume_test=by_user)
             # Compile first so a broken/slow build never takes down the running instance.
             for c in comps:
                 if c.run == "compose":

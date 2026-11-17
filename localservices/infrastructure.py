@@ -33,6 +33,7 @@ class Infrastructure:
         self.lock = threading.Lock()
         self.recoveries: dict[str, Future] = {}
         self.containers: dict[tuple[str, str], threading.Lock] = {}
+        self.test_stops: dict[str, str] = {}
 
     def _remaining(self, deadline):
         remaining = deadline - time.monotonic()
@@ -70,8 +71,16 @@ class Infrastructure:
             return endpoint
         return dockerctx.canonical_endpoint(result.stdout.strip())
 
-    def _restore_runtime(self, endpoint, deadline, progress):
+    def _restore_runtime(self, endpoint, deadline, progress, start_orbstack):
         if self._docker(["info", "--format", "{{.ServerVersion}}"], deadline).returncode == 0:
+            return
+        if start_orbstack and dockerctx.is_orbstack(endpoint):
+            progress("正在启动 OrbStack")
+            result = self._command(["orbctl", "start"], deadline, ENVIRONMENT_TIMEOUT)
+            if result.returncode:
+                raise RuntimeUnavailable(f"OrbStack 启动失败：{(result.stderr or result.stdout).strip()}")
+            while self._docker(["info", "--format", "{{.ServerVersion}}"], deadline).returncode:
+                time.sleep(min(0.5, self._remaining(deadline)))
             return
         if not endpoint.startswith(f"unix://{dockerctx.colima_root()}/"):
             raise RuntimeUnavailable(f"Docker {dockerctx.name()} 不可达，请启动对应的运行环境后重试")
@@ -95,26 +104,39 @@ class Infrastructure:
         except DependencyError as exc:
             raise RuntimeUnavailable(f"Colima {profile} 已启动，Docker {dockerctx.name()} 仍不可达：{exc}") from exc
 
-    def _runtime(self, deadline, progress, allow_start):
+    def _runtime(self, deadline, progress, allow_start, resume_test, start_orbstack):
         endpoint = self._endpoint(deadline)
         if not endpoint or not dockerctx.is_local(endpoint):
             raise RuntimeUnavailable(f"Docker {dockerctx.name()} 未指向本机默认环境，{dockerctx.REMOTE_REFUSAL}")
         with self.lock:
+            test_state = self.test_stops.get(endpoint)
+            if test_state == "stopping":
+                raise RuntimeUnavailable("Docker 环境正在执行开发测试关停")
             future = self.recoveries.get(endpoint)
-            owner = future is None and allow_start
+            owner = future is None and allow_start and (not test_state or resume_test)
             if owner:
                 future = self.recoveries[endpoint] = Future()
         if future is None:
             if self._docker(["info", "--format", "{{.ServerVersion}}"], deadline).returncode:
+                if test_state:
+                    raise RuntimeUnavailable("Docker 环境已因开发测试停止，请手动启动")
                 raise RuntimeUnavailable(f"Docker {dockerctx.name()} 不可达，请先启动运行环境")
+            with self.lock:
+                current_test = self.test_stops.get(endpoint)
+                if current_test == "stopping" or (current_test and not test_state):
+                    raise RuntimeUnavailable("Docker 环境正在执行开发测试关停")
+                if test_state:
+                    self.test_stops.pop(endpoint, None)
             return endpoint
         if owner:
             try:
-                self._restore_runtime(endpoint, deadline, progress)
+                self._restore_runtime(endpoint, deadline, progress, start_orbstack)
             except BaseException as exc:
                 future.set_exception(exc)
                 raise
             else:
+                with self.lock:
+                    self.test_stops.pop(endpoint, None)
                 future.set_result(None)
             finally:
                 with self.lock:
@@ -126,6 +148,40 @@ class Infrastructure:
             except FutureTimeout as exc:
                 raise RuntimeUnavailable(f"等待 Docker {dockerctx.name()} 就绪超时") from exc
         return endpoint
+
+    def stop_for_test(self, binding: dict) -> None:
+        endpoint = binding["endpoint"]
+        deadline = time.monotonic() + ENVIRONMENT_TIMEOUT
+        try:
+            with dockerctx.bound(binding, allow_stopped_colima=True):
+                profile = dockerctx.colima_profile(endpoint, dockerctx.list_colima_profiles())
+                if profile:
+                    command = ["colima", "stop", profile]
+                elif dockerctx.is_orbstack(endpoint):
+                    command = ["orbctl", "stop"]
+                else:
+                    raise DependencyError("这个 Docker 环境不支持开发测试关停")
+                with self.lock:
+                    previous = self.test_stops.get(endpoint)
+                    if endpoint in self.recoveries or previous == "stopping":
+                        raise DependencyError("环境已有操作在进行，请稍后再试")
+                    self.test_stops[endpoint] = "stopping"
+                stopped = False
+                try:
+                    result = self._command(command, deadline, ENVIRONMENT_TIMEOUT)
+                    if result.returncode:
+                        raise DependencyError(f"停止环境失败：{(result.stderr or result.stdout).strip()}")
+                    while self._docker(["info", "--format", "{{.ServerVersion}}"], deadline).returncode == 0:
+                        time.sleep(min(0.5, self._remaining(deadline)))
+                    stopped = True
+                finally:
+                    with self.lock:
+                        if stopped or previous:
+                            self.test_stops[endpoint] = "stopped"
+                        else:
+                            self.test_stops.pop(endpoint, None)
+        except dockerctx.BindingError as exc:
+            raise DependencyError(str(exc)) from exc
 
     def _inspect(self, dependency, deadline):
         result = self._docker(["container", "inspect", "--format", INSPECT, dependency.container], deadline)
@@ -163,15 +219,17 @@ class Infrastructure:
                 return
             time.sleep(min(0.5, self._remaining(deadline)))
 
-    def ensure(self, dependencies, progress, *, docker_required=False, binding=None, start_environment=False):
+    def ensure(self, dependencies, progress, *, docker_required=False, binding=None, start_environment=False,
+               resume_test=False):
         try:
             with dockerctx.bound(binding, allow_stopped_colima=True):
                 self._ensure(dependencies, progress, docker_required,
-                             start_environment or not binding or binding.get("autostart", False))
+                             start_environment or not binding or binding.get("autostart", False),
+                             resume_test or start_environment, start_environment)
         except dockerctx.BindingError as exc:
             raise RuntimeUnavailable(str(exc)) from exc
 
-    def _ensure(self, dependencies, progress, docker_required, allow_start):
+    def _ensure(self, dependencies, progress, docker_required, allow_start, resume_test, start_orbstack):
         required = [d for d in dependencies if d.required]
         deadline = time.monotonic() + ENVIRONMENT_TIMEOUT
         for dependency in required:
@@ -188,7 +246,7 @@ class Infrastructure:
             return
         progress("等待共享容器环境准备")
         try:
-            endpoint = self._runtime(deadline, progress, allow_start)
+            endpoint = self._runtime(deadline, progress, allow_start, resume_test, start_orbstack)
         except DependencyError as exc:
             raise RuntimeUnavailable(str(exc)) from exc
         for dependency in containers:
