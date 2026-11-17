@@ -110,12 +110,26 @@ class Handler(BaseHTTPRequestHandler):
                 if self._guard(need_token=False):
                     self._send(200, {"ok": True, "version": __version__, "pid": os.getpid(), "started": STARTED})
                 return
-            if u.path in ("/", "/index.html"):
+            if u.path in ("/", "/index.html", "/endpoint-settings"):
                 if not self._guard(need_token=False):
                     return
-                if self.headers.get("Sec-Fetch-Site") not in (None, "none", "same-origin"):
+                endpoint_link = u.path == "/endpoint-settings"
+                # A click on the proxy's 403 page opens this read-only deep link.
+                clicked_link = endpoint_link and (
+                    self.headers.get("Sec-Fetch-Mode") == "navigate"
+                    and self.headers.get("Sec-Fetch-Dest") == "document"
+                    and self.headers.get("Sec-Fetch-User") == "?1"
+                )
+                if self.headers.get("Sec-Fetch-Site") not in (None, "none", "same-origin") and not clicked_link:
                     self._send(403, {"ok": False, "error": "cross-site navigation refused"})
                     return
+                if endpoint_link:
+                    query = parse_qs(u.query)
+                    project = self.ctl.projects.get(query.get("service", [""])[0])
+                    host = query.get("host", [""])[0]
+                    if not project or not any(e.host == host for e in project.endpoints):
+                        self._send(404, {"ok": False, "error": "该服务入口未登记"})
+                        return
                 content = (WEB / "dashboard.html").read_bytes()
                 html = content.replace(b"__DASHBOARD_REVISION__", dashboard_revision(content).encode())
                 self._send(200, html.replace(b"__TOKEN__", self.token.encode()), "text/html; charset=utf-8")

@@ -36,6 +36,17 @@ class LoopbackDashboardRoutesTest(unittest.TestCase):
         self.assertNotIn("header_up Host", site)
         self.assertNotIn("request_header", site)
 
+    def test_default_entry_has_a_403_link_to_its_own_settings(self):
+        site = self.proxy_for("demo", ["make", "run"])
+        self.assertIn("status 403", site)
+        self.assertIn("/endpoint-settings?service=demo&amp;host=demo.locove#p-demo", site)
+        self.assertIn("copy_response", site)
+
+    def test_enabled_entry_does_not_suggest_enabling_compatibility(self):
+        site = self.proxy_for("demo", ["make", "run"],
+                              owner={"service": "demo", "component": "web"})
+        self.assertNotIn("/endpoint-settings?", site)
+
     def test_override_does_not_apply_to_reassigned_endpoint(self):
         site = self.proxy_for("demo", ["make", "run"],
                               owner={"service": "demo", "component": "previous"})

@@ -370,6 +370,7 @@ const dockerStarting = new Set(), dockerErrors = new Map();
 const dockerStopping = new Set(), dockerStopErrors = new Map(), openDockerTests = new Set();
 let otherDockerOpen = false;
 let locoveData = null;   // /api/locove：dns / 入口 / 代理三层健康 + 路由事实
+let pendingEndpointSettings = location.pathname === "/endpoint-settings";
 let view = "all";     // all | project:<id> | attention | removed | resources | agents | drafts | new-project
 let connOk = null;
 let manualRefresh = false;
@@ -3616,6 +3617,13 @@ async function refresh(manual) {
     return;
   }
   render();
+  if (connOk && locoveData && pendingEndpointSettings) {
+    pendingEndpointSettings = false;
+    const query = new URLSearchParams(location.search);
+    const service = query.get("service");
+    const endpoint = snap.projects.find(p => p.id === service)?.endpoints?.find(e => e.host === query.get("host"));
+    if (endpoint) editEndpointCompatibility({service, host: endpoint.host, component: endpoint.component});
+  }
 }
 
 document.getElementById("globalSearch").addEventListener("input", render);

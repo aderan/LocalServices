@@ -22,7 +22,9 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
+from urllib.parse import urlencode
 
 from . import paths
 
@@ -236,6 +238,37 @@ display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}
 div{{text-align:center}}h1{{font-size:17px;font-weight:600}}p{{color:#98989d;font-size:13px}}</style></head>
 <body><div><h1>{host} 未运行</h1><p>服务已停止或未就绪。在 Locove／洛湾 工作台启动后即可访问。</p></div></body></html>"""
 
+_FORBIDDEN_PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>访问被拒绝 · Locove</title>
+<style>:root{{color-scheme:light dark}}body{{font:16px system-ui,sans-serif;margin:0;padding:clamp(24px,8vw,96px)}}
+main{{max-width:560px}}h1{{font-size:1.5em}}p{{line-height:1.6}}a{{display:inline-block;margin-top:.5em;
+padding:.55em .9em;border-radius:6px;background:#1656ca;color:white;text-decoration:none}}</style></head>
+<body><main><h1>应用返回 403</h1><p><strong>{host}</strong></p>
+<p>如果直连地址可以打开，应用可能只接受本机地址。你可以在 Locove 的入口设置中检查并开启兼容。</p>
+<a href="{link}">入口设置</a></main></body></html>"""
+
+
+def _forbidden_response(route: Route) -> list[str]:
+    query = urlencode({"service": route.service, "host": route.host})
+    link = f"http://127.0.0.1:{paths.daemon_port()}/endpoint-settings?{query}#p-{route.service}"
+    body = _FORBIDDEN_PAGE.format(host=escape(route.host), link=escape(link))
+    return [
+        "\t\t@entry_forbidden status 403",
+        "\t\thandle_response @entry_forbidden {",
+        "\t\t\troute {",
+        "\t\t\t\theader @entry_navigation {",
+        '\t\t\t\t\tContent-Type "text/html; charset=utf-8"',
+        "\t\t\t\t\tCache-Control no-store",
+        "\t\t\t\t\tX-Frame-Options DENY",
+        '\t\t\t\t\tContent-Security-Policy "default-src \'none\'; style-src \'unsafe-inline\'; frame-ancestors \'none\'"',
+        "\t\t\t\t}",
+        f"\t\t\t\trespond @entry_navigation `{body}` 403",
+        "\t\t\t\tcopy_response",
+        "\t\t\t}",
+        "\t\t}",
+    ]
+
 
 def render_caddyfile(routes: dict[str, Route], port: int | None = None,
                      settings: dict | None = None) -> str:
@@ -284,11 +317,24 @@ def render_caddyfile(routes: dict[str, Route], port: int | None = None,
                     f"\t\trequest_header @public_origin Origin http://{upstream}",
                 ])
                 indent = "\t\t"
+            else:
+                parts.extend([
+                    "\t@entry_navigation {",
+                    "\t\tmethod GET",
+                    "\t\theader Accept *text/html*",
+                    "\t\tnot header Origin *",
+                    '\t\texpression `{http.request.header.Sec-Fetch-Mode} in ["", "navigate"] '
+                    '&& {http.request.header.Sec-Fetch-Dest} in ["", "document"]`',
+                    "\t}",
+                ])
             parts.append(f"{indent}reverse_proxy {upstream} {{")
             if r.loopback_host:
                 # Caddy has already matched the public Host and forwards it as X-Forwarded-Host.
                 parts.append(f"{indent}\theader_up Host {{upstream_hostport}}")
-            parts.extend([f"{indent}\tflush_interval -1", f"{indent}}}"])
+            parts.append(f"{indent}\tflush_interval -1")
+            if not r.loopback_origin:
+                parts.extend(_forbidden_response(r))
+            parts.append(f"{indent}}}")
             if r.loopback_origin:
                 parts.append("\t}")
         else:

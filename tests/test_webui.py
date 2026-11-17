@@ -306,6 +306,20 @@ class DaemonEndToEndTest(unittest.TestCase):
         })
         self.assertEqual(code, 200, info)
         host = f"{sid}.locove"
+        link = f"/endpoint-settings?service={sid}&host={host}"
+        headers = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate",
+                   "Sec-Fetch-Dest": "document", "Sec-Fetch-User": "?1"}
+        with urllib.request.urlopen(urllib.request.Request(self.base + link, headers=headers), timeout=5) as res:
+            self.assertIn("editEndpointCompatibility", res.read().decode())
+        for path, changes, expected in [
+            ("/", {}, 403),
+            (link, {"Sec-Fetch-Dest": "iframe"}, 403),
+            (link, {"Sec-Fetch-User": ""}, 403),
+            (f"/endpoint-settings?service={sid}&host=other.locove", {}, 404),
+        ]:
+            with self.assertRaises(urllib.error.HTTPError) as err:
+                urllib.request.urlopen(urllib.request.Request(self.base + path, headers={**headers, **changes}), timeout=5)
+            self.assertEqual(err.exception.code, expected)
         path = "/api/locove/endpoint-compatibility"
         body = {"service": sid, "host": host, "component": "main", "mode": "loopback"}
         self.assertEqual(self.call("POST", path, body, token=None)[0], 401)

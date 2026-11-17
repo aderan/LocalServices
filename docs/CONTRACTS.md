@@ -467,6 +467,8 @@ TOML 顶层新增可选 `[[endpoints]]`：`id`、`host`、`component`、`open_pa
   接收 `{service, host, component, mode}`，其中 `mode` 为 `auto` 或 `loopback`。
   本机偏好保存在 `settings.loopback_endpoints`，由域名、服务 ID 和组件 ID 共同匹配。
   回环模式仅为该入口转换 Host 和已验证的同源 Origin，跨站或缺少 Origin 的写请求会被拒绝。
+- 默认模式下，上游对页面导航返回 403 时，代理会保留 403 状态并提供该入口的设置链接。
+  API 和资源请求继续收到原响应，打开设置页不会改变兼容模式。
 - **打开行为**：默认（use_domains=false）一切打开动作用直连地址（`open` / 组件端口），
   即使域名入口健康也不经域名——「域名入口未就绪」提示只在开启后出现。
   开启 + 入口健康 → 经 `http://<host><open_path>` 打开；开启 + 入口故障 → 回退直连并附缺口说明。
