@@ -216,10 +216,32 @@ def _kill_group(proc: subprocess.Popen) -> None:
             pass
 
 
+def _system_proxies() -> dict[str, str]:
+    from urllib import request
+
+    get_system = getattr(request, "getproxies_macosx_sysconf", None)
+    return get_system() if get_system else {}
+
+
+def agent_environment() -> dict[str, str]:
+    """Use macOS proxy settings for Agent children when their environment has no override."""
+    env = dict(os.environ)
+    keys = {key.lower() for key in env}
+    override = env.pop("LOCALSERVICES_AGENT_PROXY", "")
+    proxies = {"http": override, "https": override} if override else _system_proxies()
+    for scheme in ("http", "https"):
+        key = f"{scheme}_proxy"
+        if key not in keys and "all_proxy" not in keys and proxies.get(scheme):
+            env[key] = proxies[scheme]
+    if "no_proxy" not in keys and proxies:
+        env["no_proxy"] = "localhost,127.0.0.1,::1"
+    return env
+
+
 def _run_bounded(argv: list[str], cwd: str, timeout: float) -> tuple[int, str, str, bool]:
     """有界运行：返回 (returncode, stdout, stderr, timed_out)；超时杀整组绝无残留。"""
     proc = subprocess.Popen(
-        argv, cwd=cwd, stdin=subprocess.DEVNULL,
+        argv, cwd=cwd, stdin=subprocess.DEVNULL, env=agent_environment(),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         start_new_session=True,
     )

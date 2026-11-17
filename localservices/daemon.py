@@ -156,6 +156,9 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/agents":
                 self._send(*agent_api.handle_agents_get())
                 return
+            if u.path == "/api/diagnoses":
+                self._send(*agent_api.handle_diagnoses_get())
+                return
             if u.path == "/api/agents/candidates":
                 self._send(*agent_api.handle_agents_candidates())
                 return
@@ -388,6 +391,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if u.path == "/api/agents/default":
                 self._send(*agent_api.handle_agents_default(body))
+                return
+            if u.path == "/api/diagnoses":
+                self._send(*agent_api.handle_diagnose(body, self.ctl))
                 return
             if u.path == "/api/analyze":
                 self._send(*agent_api.handle_analyze(body))

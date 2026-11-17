@@ -129,6 +129,18 @@ Docker 不可达时 `{"ok": false, "error": "..."}`，不阻塞其余 API。服�
 `GET /api/agents` 返回缓存；`POST /api/agents/scan` `{paths?}` 重扫（不真实调用）；
 `POST /api/agents/verify` `{kind}` 做一次最小真实调用（≤60s）并更新状态。程序路径或版本变化后状态重检。
 
+### Agent 故障诊断
+
+`POST /api/diagnoses` 接收一个服务 `{service}` 或共享 Docker 环境 `{endpoint, action_error?}`，
+可选 `agent` 和 `language`。控制服务从当前故障状态和相关日志生成有界、脱敏的证据，
+返回 `202 + job_id`。Docker 环境故障按 endpoint 归并，同一 Agent 的并发诊断可共用一个任务。
+`GET /api/jobs/<id>` 返回进度和结果 `{summary, steps}`，`GET /api/diagnoses` 返回每个目标最近
+24 小时内的最新诊断。诊断结果是建议。执行和验证通过已有的服务重试、运行环境恢复、端口修复入口完成。
+
+macOS 上的 Agent 子进程在没有对应代理环境变量时使用系统 HTTP/HTTPS 代理。
+系统代理关闭时，可在控制服务环境中设 `LOCALSERVICES_AGENT_PROXY=http://127.0.0.1:7897`，
+用实际代理地址替换示例。该值仅在运行 Agent 时转换为 HTTP/HTTPS 代理设置。
+
 ## 5. CLI（lsctl）新增子命令（机器可读）
 
 ```

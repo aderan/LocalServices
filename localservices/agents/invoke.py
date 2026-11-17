@@ -361,7 +361,7 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
 
         report("launch_cli")
         with subprocess.Popen(
-            argv, cwd=workdir,  # 临时空目录，绝不是目标目录
+            argv, cwd=workdir, env=detect.agent_environment(),  # 临时空目录，绝不是目标目录
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True,

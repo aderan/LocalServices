@@ -5,6 +5,7 @@
 - POST /api/agents/scan   → handle_agents_scan(body)
 - POST /api/agents/verify → handle_agents_verify(body)（同步 ≤70s）
 - POST /api/analyze       → handle_analyze(body)（后台线程，202 + job_id）
+- GET / POST /api/diagnoses → 最近诊断 / 发起后台诊断
 - GET  /api/jobs/<id>     → handle_job_get(job_id)
 """
 
@@ -18,10 +19,11 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 
 from . import paths
-from .agents import base, detect, invoke
+from .agents import base, detect, diagnose, invoke
 from .agents.base import KINDS
 # 复用 controller.redact 的 SECRET_RE 家族（键值对/bearer/URL 凭据/DSN/长十六进制）。
 # controller 不 import agents/agent_api，无循环依赖；controller.py 为 Integrator 所有，
@@ -410,32 +412,118 @@ def handle_analyze(body: dict) -> tuple[int, dict]:
                 return 400, {"ok": False, "error": "timeout 必须是数字"}
             timeout = min(max(float(body["timeout"]), 1.0), MAX_ANALYZE_TIMEOUT)
 
-        key = (agent, str(d), project_id, focus)
-        with _LOCK:
-            existing = _RUNNING.get(key)
-            if existing:
-                job = _read_job(existing)
-                if job and job.get("state") in ("queued", "running"):
-                    return 202, {"ok": True, "job_id": existing, "existing": True}
-                _RUNNING.pop(key, None)
-            _cleanup_old_jobs()
-            job_id = "job-" + secrets.token_hex(8)
-            job = {"id": job_id, "kind": "analyze", "state": "queued",
-                   "agent": agent, "directory": str(d), "project_id": project_id,
-                   "timeout": timeout, "activity": [],
-                   "created_at": time.time(), "started_at": None,
-                   "finished_at": None, "result": None, "error": None}
-            _write_job(job)
-            _RUNNING[key] = job_id
-        _POOL.submit(_run_job, job_id, agent, str(d), focus, timeout, key, project_ctx)
-        return 202, {"ok": True, "job_id": job_id}
+        key = ("analyze", agent, str(d), project_id, focus)
+        fields = {"kind": "analyze", "agent": agent, "directory": str(d),
+                  "project_id": project_id, "timeout": timeout}
+        run = partial(invoke.run_analysis, agent, str(d), focus=focus,
+                      timeout=timeout, project_context=project_ctx)
+        return _enqueue_job(key, fields, run)
     except Exception as e:  # noqa: BLE001
         return 500, {"ok": False, "error": str(e)}
 
 
-def _run_job(job_id: str, agent: str, directory: str, focus: str | None,
-             timeout: float, key: tuple, project_ctx: dict | None = None) -> None:
-    """线程体：queued → running → done/failed，每次状态变化原子落盘。"""
+def handle_diagnose(body: dict, ctl) -> tuple[int, dict]:
+    """Diagnose a service or shared Docker environment from observed failure evidence."""
+    from . import dockerctx, resources
+
+    if not isinstance(body, dict):
+        return 400, {"ok": False, "error": "诊断参数无效"}
+    service, endpoint = body.get("service"), body.get("endpoint")
+    if (service is None) == (endpoint is None):
+        return 400, {"ok": False, "error": "请选择一个服务或运行环境"}
+    if service is not None and (not isinstance(service, str) or not service):
+        return 400, {"ok": False, "error": "服务无效"}
+    language = body.get("language", "zh-CN")
+    if language not in ("en", "zh", "zh-CN"):
+        return 400, {"ok": False, "error": "诊断语言无效"}
+    try:
+        _, default_agent = base.load_connections()
+        agent = body.get("agent", default_agent)
+        if agent not in KINDS:
+            return 400, {"ok": False, "error": "未知 Agent"}
+        statuses = ctl.snapshot().get("projects", [])
+        if service is not None:
+            status = next((p for p in statuses if p.get("id") == service), None)
+            if status is None:
+                return 404, {"ok": False, "error": "未知服务"}
+            if status.get("state") not in ("failed", "conflict", "partial"):
+                return 409, {"ok": False, "error": "服务当前没有故障"}
+            error = status.get("error") or {}
+            endpoint = (error.get("docker_target") or {}).get("endpoint")
+            if not endpoint:
+                logs = ctl.logs(service, error.get("component"), 15).get("logs", {})
+                evidence = {
+                    "operation": "start or check service",
+                    "name": status.get("name"), "state": status.get("state"),
+                    "reason": status.get("reason"), "error": error,
+                    "components": [{key: component.get(key) for key in ("id", "name", "port", "state", "detail")}
+                                   for component in status.get("components", [])[:12]],
+                    "dependencies": status.get("dependencies", []),
+                    "logs": {key: value[-1500:] for key, value in list(logs.items())[:6]},
+                }
+        if endpoint is not None:
+            if not isinstance(endpoint, str) or not endpoint:
+                return 400, {"ok": False, "error": "运行环境无效"}
+            endpoint = dockerctx.canonical_endpoint(endpoint)
+            entries = resources.environments(list(ctl.projects.values()), statuses)["environments"]
+            env = next((e for e in entries if e.get("endpoint") == endpoint), None)
+            if env is None:
+                return 404, {"ok": False, "error": "未知运行环境"}
+            reasons = [p.get("reason") for p in statuses
+                       if ((p.get("error") or {}).get("docker_target") or {}).get("endpoint") == endpoint
+                       and p.get("reason")]
+            action_error = body.get("action_error")
+            if not isinstance(action_error, str):
+                action_error = ""
+            if env.get("state") == "ready" and not (reasons or action_error):
+                return 409, {"ok": False, "error": "运行环境当前没有故障"}
+            evidence = {"operation": "start or connect to Docker environment",
+                        "environment": {key: env.get(key) for key in ("provider", "context", "profile", "state", "error")},
+                        "affected_service_errors": reasons[:4], "startup_error": action_error[:1200]}
+        evidence = _sanitize(evidence)
+        target = {"endpoint": endpoint} if endpoint is not None else {"service": service}
+        key = ("diagnose", endpoint, service if endpoint is None else None, agent, language)
+        run = partial(diagnose.run, agent, evidence, language)
+        return _enqueue_job(key, {"kind": "diagnose", "agent": agent, "target": target},
+                            lambda **_: {"ok": True, **run()})
+    except Exception as e:  # noqa: BLE001
+        return 500, {"ok": False, "error": _redact_text(str(e))[:500]}
+
+
+def handle_diagnoses_get() -> tuple[int, dict]:
+    """Return the newest retained diagnostic job per target."""
+    jobs = {}
+    for path in paths.jobs_dir().glob("job-*.json"):
+        job = _read_job(path.stem)
+        if not job or job.get("kind") != "diagnose" or time.time() - job["created_at"] > JOB_TTL:
+            continue
+        target = job["target"]
+        key = (target.get("service"), target.get("endpoint"))
+        if key not in jobs or jobs[key]["created_at"] < job["created_at"]:
+            jobs[key] = job
+    return 200, {"ok": True, "jobs": list(jobs.values())}
+
+
+def _enqueue_job(key: tuple, fields: dict, run) -> tuple[int, dict]:
+    with _LOCK:
+        existing = _RUNNING.get(key)
+        if existing:
+            job = _read_job(existing)
+            if job and job.get("state") in ("queued", "running"):
+                return 202, {"ok": True, "job_id": existing, "existing": True}
+        _cleanup_old_jobs()
+        job_id = "job-" + secrets.token_hex(8)
+        job = {**fields, "id": job_id, "state": "queued", "activity": [],
+               "created_at": time.time(), "started_at": None, "finished_at": None,
+               "result": None, "error": None}
+        _write_job(job)
+        _RUNNING[key] = job_id
+    _POOL.submit(_run_job, job_id, key, run)
+    return 202, {"ok": True, "job_id": job_id}
+
+
+def _run_job(job_id: str, key: tuple, run) -> None:
+    """Persist each job transition atomically."""
     job = _read_job(job_id) or {"id": job_id, "kind": "analyze"}
 
     def record_activity(event: str) -> None:
@@ -456,9 +544,7 @@ def _run_job(job_id: str, agent: str, directory: str, focus: str | None,
     try:
         job.update({"state": "running", "started_at": time.time()})
         _write_job(job)
-        result = invoke.run_analysis(agent, directory, focus=focus, timeout=timeout,
-                                     project_context=project_ctx, on_activity=record_activity,
-                                     on_output=record_output)
+        result = run(on_activity=record_activity, on_output=record_output)
         if result.get("ok"):
             job.update({"state": "done", "result": result, "error": None,
                         "finished_at": time.time()})

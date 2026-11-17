@@ -199,6 +199,13 @@
   .diagnosis strong { font-size: 14px; }
   .diagnosis p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9em; overflow: auto; }
   .diagnosis .acts { justify-content: flex-start; }
+  .agent-diagnosis-result { margin-top: 4px; color: var(--fg); overflow-wrap: anywhere; }
+  .agent-diagnosis-result h4 { margin: 0 0 4px; font-size: 13px; }
+  .diagnosis .agent-diagnosis-result p { max-height: none; }
+  .agent-diagnosis-result ol { margin: 7px 0 0; padding-inline-start: 1.6em; }
+  .agent-diagnosis-result li + li { margin-top: 3px; }
+  .agent-diagnosis-actions select { font: inherit; padding: 3px 6px; color: var(--fg);
+                                    background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
   .diagnostic-toggle { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line));
                        background: color-mix(in srgb, var(--bad) 7%, var(--card)); }
   .diagnosis:focus { outline: 2px solid var(--btn); outline-offset: 2px; }
@@ -367,6 +374,8 @@ let agentCandidates = null;  // /api/agents/candidates（连接页候选，按�
 let agentsData = null, resourcesData = null, draftsData = null, removedData = null;
 let resourcesLoading = false, resourcesFetchedAt = 0, focusedDocker = null;
 const dockerStarting = new Set(), dockerErrors = new Map();
+const diagnoses = new Map(), diagnosisPending = new Set();
+let diagnosesLoaded = false;
 const dockerStopping = new Set(), dockerStopErrors = new Map(), openDockerTests = new Set();
 let otherDockerOpen = false;
 let locoveData = null;   // /api/locove：dns / 入口 / 代理三层健康 + 路由事实
@@ -888,6 +897,7 @@ function detailsHtml(p) {
   const target = runtimeBlocked && p.error.docker_target;
   const canRecover = target && p.error.docker_profile;
   const canRepair = canRetry && p.intent === "stopped";
+  const diagnosisTarget = serviceDiagnosisTarget(p);
   const diagnosis = p.reason || problem ? `<section class="diagnosis${p.state === "partial" || !problem ? " warning" : ""}" id="reason-${esc(p.id)}" tabindex="-1">
     <strong>${esc(p.reason ? p.reason.split("\n", 1)[0] : stateLabel(p) || tr("诊断", "Diagnosis"))}</strong>
     ${p.reason?.includes("\n") ? `<p>${esc(p.reason.slice(p.reason.indexOf("\n") + 1))}</p>` : ""}
@@ -898,10 +908,12 @@ function detailsHtml(p) {
       ${runtimeBlocked ? `<button class="ghost" ${retryDisabled ? "disabled" : ""}
         onclick="act('${p.id}','stop')">${tr("停止服务", "Stop service")}</button>` : ""}
       ${canRetry && !canRecover ? `<button class="primary" data-act="retry" ${retryDisabled ? "disabled" : ""} onclick="act('${p.id}','start',{open:true})">${tr("重试服务", "Retry service")}</button>` : ""}
-      ${canRepair ? `<button data-act="agent-repair" ${retryDisabled ? "disabled" : ""} onclick="wizRepair('${p.id}')">${tr("Agent 检查并修复", "Diagnose and repair with an agent")}</button>` : ""}
+      ${problem ? diagnosisAction(diagnosisTarget, retryDisabled) : ""}
+      ${canRepair ? `<button data-act="agent-repair" ${retryDisabled ? "disabled" : ""} onclick="wizRepair('${p.id}')">${tr("修复端口…", "Repair port…")}</button>` : ""}
       <button data-act="diagnostic-logs" onclick="loadLogs('${p.id}')">${tr("查看日志", "View logs")}</button>
       <button class="ghost" data-act="copy-diagnosis" onclick="copyDiagnosis('${p.id}')">${tr("复制诊断", "Copy diagnosis")}</button>
     </div>
+    ${problem ? diagnosisResult(diagnoses.get(diagnosisKey(diagnosisTarget))) : ""}
   </section>` : "";
   const lg = logs[p.id] !== undefined
     ? `<div class="log-window"><header>stdout / stderr · ${tr("最近 200 行", "Last 200 lines")}</header><pre id="logs-${p.id}">${esc(logs[p.id] || tr("(无日志)", "(No logs)"))}</pre></div>`
@@ -1351,6 +1363,7 @@ function viewResources() {
     const blocked = (e.services || []).some(s => s.docker_blocked);
     const canStart = canManageDocker(e) && (e.state !== "ready" || blocked);
     const actionError = dockerErrors.get(e.endpoint);
+    const diagnosisTarget = {endpoint: e.endpoint, action_error: actionError};
     const card = `<section class="card" data-docker-context="${esc(aliases.join(" "))}" data-endpoint="${esc(e.endpoint || "")}">
       <div class="card-head"><h3>${esc(title)}</h3><div class="runtime-card-actions">
         <span class="badge ${e.state === "ready" && !dockerStopping.has(e.endpoint) ? "ok" : "mut"}">${esc(dockerEnvironmentState(e))}</span>
@@ -1361,6 +1374,8 @@ function viewResources() {
       ${blocked && !canManageDocker(e) ? `<p class="note">${tr("请在对应的工具中启动该环境，Locove 会重新检查。", "Start the environment in its own tool. Locove will check again.")}</p>` : ""}
       ${error ? `<details><summary>${tr("连接诊断", "Connection diagnostics")}</summary>
         <p class="reason warn docker-recovery-error">${esc(error)}</p></details>` : ""}
+      ${e.endpoint && (actionError || error || blocked) ? `<div class="acts">${diagnosisAction(diagnosisTarget, dockerStarting.has(e.endpoint))}</div>
+        ${diagnosisResult(diagnoses.get(diagnosisKey(diagnosisTarget)))}` : ""}
       ${rows ? `<details><summary>${tr("容器", "Containers")} · ${allContainers.length}</summary><div class="table-scroll"><table>
         <tr><td class="k">${tr("名称", "Name")}</td><td class="k">${tr("状态", "Status")}</td>
           <td class="k">Compose</td><td class="k">${tr("端口", "Ports")}</td><td class="k">${tr("数据卷与挂载", "Volumes and mounts")}</td>
@@ -1378,6 +1393,93 @@ function viewResources() {
       ontoggle="otherDockerOpen = this.open"><summary>${tr("其他 Docker 连接", "Other Docker connections")} · ${other.length}</summary>
       ${other.join("")}</details>` : ""}
     ${active.length || other.length ? "" : `<div class="empty">${tr("没有匹配的运行环境", "No matching environments")}</div>`}`;
+}
+
+function serviceDiagnosisTarget(service) {
+  const endpoint = service.error?.docker_target?.endpoint;
+  return endpoint ? {endpoint, action_error: dockerErrors.get(endpoint)} : {service: service.id};
+}
+
+function diagnosisKey(target) {
+  return target.endpoint ? "environment:" + target.endpoint : "service:" + target.service;
+}
+
+function diagnosisAction(target, disabled) {
+  const key = diagnosisKey(target);
+  const job = diagnoses.get(key);
+  const working = diagnosisPending.has(key) || ["queued", "running"].includes(job?.state);
+  const agent = job?.agent;
+  const choices = agent ? `<select aria-label="${tr("诊断 Agent", "Diagnostic agent")}">
+    <option value="">${tr("默认 Agent", "Default agent")}</option>
+    <option value="codex" ${agent === "codex" ? "selected" : ""}>Codex</option>
+    <option value="claude" ${agent === "claude" ? "selected" : ""}>Claude</option>
+  </select>` : "";
+  return `<span class="docker-recovery agent-diagnosis-actions">${choices}<button data-act="diagnose" data-target="${esc(JSON.stringify(target))}"
+      onclick="startDiagnosis(this)" ${disabled || working ? "disabled" : ""}>
+      ${working ? tr("Agent 正在诊断…", "Agent is diagnosing…") : job ? tr("重新诊断", "Diagnose again") : tr("用 Agent 诊断", "Diagnose with an agent")}
+    </button></span>`;
+}
+
+function diagnosisResult(job) {
+  if (!job || !["done", "failed"].includes(job.state)) return "";
+  if (job.state === "failed") return `<p role="status">${esc(job.error || tr("诊断失败", "Diagnosis failed"))}
+    <button class="link" onclick="setView('agents')">${tr("验证 Agent 连接", "Test agent connection")}</button></p>`;
+  return `<div class="agent-diagnosis-result" role="status"><h4>${tr("Agent 诊断", "Agent diagnosis")}</h4><p>${esc(job.result.summary)}</p>
+    ${job.result.steps.length ? `<ol>${job.result.steps.map(step => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}</div>`;
+}
+
+async function loadDiagnoses() {
+  try {
+    const [code, data] = await api("GET", "/api/diagnoses");
+    if (code !== 200) return;
+    for (const job of data.jobs || []) {
+      const key = diagnosisKey(job.target);
+      if (diagnosisPending.has(key)) continue;
+      const previous = diagnoses.get(key);
+      if (previous?.id === job.id || previous?.created_at > job.created_at) continue;
+      diagnoses.set(key, job);
+      if (["queued", "running"].includes(job.state)) pollDiagnosis(key, job.id);
+    }
+    render();
+  } catch { /* Diagnostic history is optional for rendering the workbench. */ }
+}
+
+async function startDiagnosis(button) {
+  const target = JSON.parse(button.dataset.target);
+  const agent = button.parentElement.querySelector("select")?.value || undefined;
+  const key = diagnosisKey(target);
+  if (diagnosisPending.has(key)) return;
+  diagnosisPending.add(key);
+  render();
+  try {
+    const [code, data] = await api("POST", "/api/diagnoses", {...target, agent, language});
+    if (code !== 202) throw new Error(data?.error || tr("无法发起诊断", "Could not start diagnosis"));
+    diagnoses.set(key, {id: data.job_id, target, state: "queued", created_at: Date.now() / 1000});
+    pollDiagnosis(key, data.job_id);
+  } catch (error) {
+    diagnoses.set(key, {target, state: "failed", error: error.message});
+  } finally {
+    diagnosisPending.delete(key);
+    render();
+  }
+}
+
+async function pollDiagnosis(key, id) {
+  if (diagnoses.get(key)?.id !== id) return;
+  try {
+    const [code, job] = await api("GET", `/api/jobs/${id}`);
+    if (diagnoses.get(key)?.id !== id) return;
+    if (code !== 200) throw new Error(job?.error || tr("无法读取诊断", "Could not load diagnosis"));
+    diagnoses.set(key, job);
+    if (["queued", "running"].includes(job.state)) {
+      setTimeout(() => pollDiagnosis(key, id), 1200);
+      return;
+    }
+  } catch (error) {
+    if (diagnoses.get(key)?.id !== id) return;
+    diagnoses.set(key, {...diagnoses.get(key), state: "failed", error: error.message});
+  }
+  render();
 }
 
 function dockerRecoveryAction(target, {retry = false, service = "", remember = false, label, showError = true} = {}) {
@@ -2042,9 +2144,25 @@ function serviceMenuItems(sid) {
     {label: tr("编辑", "Edit"), run: () => editService(sid)},
     {label: tr("日志", "Logs"), run: () => loadLogs(sid)},
     {label: tr("打开目录", "Open source directory"), run: () => act(sid, "open-source")},
+    ...recentDiagnosisMenu(sid),
     ...(life.length ? [{sep: true}, ...life, {sep: true}] : [{sep: true}]),
     {label: tr("移除登记…", "Remove registration…"), danger: true, run: () => askRemoveService(sid)},
   ];
+}
+
+function recentDiagnosisMenu(sid) {
+  const service = servicesById()[sid];
+  if (!service) return [];
+  const keys = [serviceDiagnosisTarget(service), {endpoint: service.docker_endpoint}, {service: sid}];
+  const jobs = keys.map(target => diagnoses.get(diagnosisKey(target)))
+    .filter(job => ["done", "failed"].includes(job?.state))
+    .sort((a, b) => b.created_at - a.created_at);
+  if (!jobs.length) return [];
+  return [{
+    label: tr("查看最近诊断", "View recent diagnosis"),
+    run: () => showModal({title: tr("最近诊断", "Recent diagnosis"), okText: tr("完成", "Done"),
+      bodyHtml: diagnosisResult(jobs[0]), onOk: () => true}),
+  }];
 }
 
 function menuItems(key) {
@@ -3602,6 +3720,7 @@ async function refresh(manual) {
       if (lc === 200 && lv) locoveData = lv;
     } catch (e) { /* 域名面不可用不阻塞状态刷新 */ }
     if (!agentCandidates) loadCandidates().then(render);
+    if (!diagnosesLoaded) { diagnosesLoaded = true; loadDiagnoses(); }
     setConn(true);
     if (draftsData) loadDrafts();
     if (dockerResourcesVisible() && Date.now() - resourcesFetchedAt > 5000) loadResources();
