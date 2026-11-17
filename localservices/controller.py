@@ -787,6 +787,44 @@ class Controller:
                                   budget=self._startup_budget(p),
                                   deadline=time.monotonic() + self._startup_budget(p))
 
+    def _docker_blocked(self, p: Project, message: str, open_after: bool = False) -> None:
+        context = (p.docker or {}).get("context") or dockerctx.default_name()
+        endpoint = dockerctx.inspect_context(context) or dockerctx.stopped_colima_endpoint(context)
+        self._set_error(p.id, "", redact(message)[:1200])
+        error = self.errors[p.id]
+        error["docker_environment"] = context
+        if not endpoint.startswith("unix:///") or (p.docker and endpoint != p.docker["endpoint"]):
+            return
+        error["docker_target"] = {"context": context, "endpoint": endpoint}
+        error["docker_profile"] = dockerctx.colima_profile(endpoint, dockerctx.list_colima_profiles())
+        error["open_after"] = open_after
+
+    def docker_recovery_candidates(self, target: dict, service_id: str | None = None) -> list[str]:
+        eligible = []
+        for p in list(self.projects.values()):
+            error = self.errors.get(p.id, {})
+            previous = error.get("docker_target")
+            if (p.observe_only or p.id in self.ops or (service_id and p.id != service_id)
+                    or not previous or previous["endpoint"] != target["endpoint"]
+                    or self.store.intent_read(p) != "running"):
+                continue
+            expected = (p.docker or {}).get("context") or dockerctx.default_name()
+            if previous["context"] == expected and (not p.docker or p.docker["endpoint"] == previous["endpoint"]):
+                eligible.append(p.id)
+        return eligible
+
+    def resume_docker_services(self, target: dict, service_id: str | None = None) -> list[str]:
+        resumed = []
+        with self.lock:
+            for pid in self.docker_recovery_candidates(target, service_id):
+                p = self.projects[pid]
+                error = self.errors[pid]
+                if self._begin(pid, "starting", budget=self._startup_budget(p)):
+                    threading.Thread(target=self._do_start, args=(p, error.get("open_after", False)),
+                                     kwargs={"by_user": False}, daemon=True).start()
+                    resumed.append(pid)
+        return resumed
+
     def start(self, pid: str, open_after: bool = False) -> dict:
         p = self.projects.get(pid)
         if not p:
@@ -885,8 +923,7 @@ class Controller:
             if open_after:
                 self.open(p.id)
         except RuntimeUnavailable as e:
-            self._set_error(p.id, "", "Docker 运行环境未就绪：" + redact(str(e))[:1200])
-            self.errors[p.id]["docker_environment"] = (p.docker or {}).get("context") or dockerctx.name()
+            self._docker_blocked(p, "Docker 运行环境未就绪：" + str(e), open_after)
         except DependencyError as e:
             self._set_error(p.id, "", "必要依赖未就绪：" + redact(str(e))[:1200])
         except TimeoutError as e:
@@ -896,7 +933,7 @@ class Controller:
         finally:
             try:
                 if not success and not conflicted:
-                    if not previous:
+                    if not previous and not self.errors.get(p.id, {}).get("docker_environment"):
                         self.store.set_intent(p.id, "stopped", by="start-failed")
                     if started_seq:
                         with self.lock:
@@ -1136,9 +1173,10 @@ class Controller:
                     raise RuntimeError(f"{c.name or c.id} 停止失败：{err}")
             self._do_start(p, False, only=[c.id for c in comps], skip_build=True, by_user=by_user)
         except Exception as e:  # a preparation timeout must not leave a stuck operation
-            self._set_error(p.id, "", "重启失败：" + redact(str(e))[:1200])
             if isinstance(e, RuntimeUnavailable):
-                self.errors[p.id]["docker_environment"] = (p.docker or {}).get("context") or dockerctx.name()
+                self._docker_blocked(p, "重启失败：" + str(e))
+            else:
+                self._set_error(p.id, "", "重启失败：" + redact(str(e))[:1200])
             self._end(p.id)
 
     def open(self, pid: str) -> dict:
@@ -1391,6 +1429,7 @@ class Controller:
             self.check_fsevents()
         except Exception as e:  # noqa: BLE001
             self.fsevents = {"ok": None, "at": time.time(), "detail": f"检查失败：{e}"}
+        checked_docker = set()
         for p in list(self.projects.values()):
             if p.observe_only or p.id in self.ops:
                 continue
@@ -1400,6 +1439,18 @@ class Controller:
                 continue
             intent = self.store.intent(p)
             err = self.errors.get(p.id)
+            if intent == "running" and err and err.get("docker_environment"):
+                target = err.get("docker_target")
+                if target and target["endpoint"] not in checked_docker:
+                    checked_docker.add(target["endpoint"])
+                    try:
+                        with dockerctx.bound(target):
+                            ready = dockerctx.run(["info", "--format", "{{.ServerVersion}}"], timeout=4).returncode == 0
+                    except (OSError, subprocess.SubprocessError, dockerctx.BindingError):
+                        ready = False
+                    if ready:
+                        self.resume_docker_services(target)
+                continue
             if intent == "running" and err and time.time() - err["at"] < 120:
                 continue  # a start just failed (build/install/launchd); don't hot-loop
             if intent == "running":
@@ -1642,6 +1693,7 @@ class Controller:
         if p.uses_docker():
             base["docker_context"] = (p.docker or {}).get("context") or dockerctx.name()
             base["docker_endpoint"] = (p.docker or {}).get("endpoint")
+            base["docker_autostart"] = not p.docker or p.docker.get("autostart", False)
         return base
 
     def refresh_snapshot(self, wait: float | None = None) -> dict:

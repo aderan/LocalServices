@@ -25,6 +25,7 @@ from . import __version__, paths
 from . import agent_api, dockerctx, locove, locove_optin, register_api, resources
 from .controller import Controller, redact
 from .infrastructure import DependencyError
+from .registry import Registry, RegistryError
 
 WEB = Path(__file__).resolve().parent / "web"
 STARTED = time.time()
@@ -256,17 +257,35 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/resources/environments/start":
                 context = body.get("context") if isinstance(body, dict) else None
                 endpoint = body.get("endpoint") if isinstance(body, dict) else None
-                if not isinstance(context, str) or not isinstance(endpoint, str) or not dockerctx.is_local(endpoint):
+                if not isinstance(context, str) or not isinstance(endpoint, str) or not endpoint.startswith("unix:///"):
                     self._send(400, {"ok": False, "error": "请选择本机 Docker 连接"})
+                    return
+                target = {"context": context, "endpoint": endpoint}
+                service_id = body.get("service_id")
+                retry = body.get("retry", False)
+                remember = body.get("remember", False)
+                if (type(retry) is not bool or type(remember) is not bool
+                        or (service_id is not None and (not isinstance(service_id, str) or not service_id))
+                        or (remember and not service_id)):
+                    self._send(400, {"ok": False, "error": "运行环境恢复参数无效"})
+                    return
+                if service_id and not self.ctl.docker_recovery_candidates(target, service_id):
+                    self._send(409, {"ok": False, "error": "服务的等待状态或 Docker 绑定已变化，请刷新后重试"})
                     return
                 try:
                     self.ctl.infrastructure.ensure([], lambda detail: None, docker_required=True,
-                                                   binding={"context": context, "endpoint": endpoint},
-                                                   start_environment=True)
+                                                   binding=target, start_environment=True)
+                    if remember:
+                        Registry().enable_docker_autostart(service_id, target)
+                        self.ctl.reload(force=True)
                 except DependencyError as exc:
                     self._send(409, {"ok": False, "error": redact(str(exc))[:1200]})
                     return
-                self._send(200, {"ok": True})
+                except RegistryError as exc:
+                    self._send(exc.status, exc.payload)
+                    return
+                resumed = self.ctl.resume_docker_services(target, service_id) if retry or service_id else []
+                self._send(200, {"ok": True, "resumed": resumed})
                 return
             if u.path == "/api/register":
                 res = register_api.handle_register(body, self.ctl)

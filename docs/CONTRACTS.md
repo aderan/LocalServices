@@ -295,6 +295,7 @@ V1 §1–§8 继续有效；与之冲突的地方以本节为准。变更必须�
 - `GET /api/resources/environments` 返回本机 Docker 连接及运行环境。指向同一本机 socket 的连接合并展示。Colima 即使停止时移除了自己的 context，已有 Docker profile 仍会显示。每个环境单独报告状态，已登记的服务关系在离线时仍可见。`GET /api/resources` 继续提供默认 context 的容器清单。
 - 注册可携带 `service.docker = {context, endpoint?, autostart?}`。Locove 解析并保存本机 socket，启动、停止、状态和日志按此绑定执行。连接改指向时，显式绑定要求重新选择。旧清单沿用 `LOCALSERVICES_DOCKER_CONTEXT`。
 - Compose 和启动前需就绪的容器依赖共用环境恢复。显式绑定的 `autostart` 控制服务是否可以按需代启已确认的 Colima profile。资源页可用 `POST /api/resources/environments/start`，提交 `{context, endpoint}`，显式启动该 Colima 环境。容器创建仍由 Compose 的 `confirmed_provision` 单独授权。
+- 环境不可达时保留服务的运行意图。调度器在原绑定恢复后只继续等待该环境且仍应运行的服务。显式恢复入口可以附带 `retry=true` 重试该环境的等待服务，或附带 `service_id` 仅继续指定服务。指定服务时可附带 `remember=true`，为其当前绑定开启按需代启。
 - 停止服务保留 Docker 环境与依赖容器。若某个 Compose 组件的容器仍被另一条登记引用，停止该容器会返回引用方。
 
 ## V2.7 运行适配（LocalProcess + Compose）

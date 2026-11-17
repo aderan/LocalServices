@@ -270,6 +270,40 @@ class StartupTest(unittest.TestCase):
         self.assertFalse((self.root / "runtime/logs/fixture.web.log").exists(),
                          "no compilation or launch may happen before required dependencies are ready")
 
+    def test_docker_recovery_does_not_resume_a_service_stopped_by_user(self):
+        ctl, _ = self.simulated_service(lambda *args: (True, ""))
+        service = ctl.projects["fixture"]
+        target = {"context": "fixture-docker", "endpoint": "unix:///tmp/fixture-docker.sock"}
+        service.docker = dict(target)
+        ctl.errors[service.id] = {"docker_target": target}
+        ctl.store.set_intent(service.id, "stopped")
+        self.assertEqual(ctl.resume_docker_services(target), [])
+
+    def test_docker_failure_preserves_intent_and_recovery_resumes_service(self):
+        from localservices import dockerctx
+        from localservices.infrastructure import RuntimeUnavailable
+
+        ctl, _ = self.simulated_service(lambda *args: (True, ""))
+        service = ctl.projects["fixture"]
+        target = {"context": "colima-fixture", "endpoint": dockerctx.colima_endpoint("fixture")}
+        service.docker = dict(target)
+        service.dependencies.append(manifest.Dependency("DB", manifest.Probe(tcp="127.0.0.1:49002"),
+                                                        required=True, container="fixture-db", volume="data"))
+        profiles = [{"name": "fixture", "runtime": "docker"}]
+        with patch.object(ctl.infrastructure, "ensure", side_effect=RuntimeUnavailable("Docker stopped")), \
+                patch.object(dockerctx, "inspect_context", return_value=target["endpoint"]), \
+                patch.object(dockerctx, "list_colima_profiles", return_value=profiles):
+            self.assertTrue(ctl.start(service.id)["accepted"])
+            self.assertTrue(self.wait_finished(ctl))
+        self.assertEqual(ctl.store.intent_read(service), "running")
+        self.assertEqual(ctl.errors[service.id]["docker_profile"], "fixture")
+        unrelated = {**target, "endpoint": "unix:///tmp/another.sock"}
+        self.assertEqual(ctl.resume_docker_services(unrelated), [])
+        with patch.object(ctl.infrastructure, "ensure"):
+            self.assertEqual(ctl.resume_docker_services(target), [service.id])
+            self.assertTrue(self.wait_finished(ctl))
+        self.assertEqual(ctl.project_status(service)["state"], "available")
+
     def test_environment_preparation_is_visible_and_has_a_separate_budget(self):
         entered, release = threading.Event(), threading.Event()
         caller = threading.current_thread()

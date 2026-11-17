@@ -45,6 +45,11 @@
   .badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; font-size: 11px;
            background: var(--bad); color: #fff; text-align: center; margin-left: 4px; }
   .badge.mut { background: var(--mute); }
+  .badge.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--card)); }
+  .docker-recovery { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .docker-recovery-error { overflow-wrap: anywhere; }
+  .docker-other > summary { cursor: pointer; padding: 8px 0; }
+  .docker-other > section { margin-top: 10px; }
   .content { display: flex; flex-direction: column; min-width: 0; }
   .topbar { display: flex; align-items: center; gap: 12px; padding: 19px 26px 17px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   .topbar h2 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
@@ -357,6 +362,7 @@ let agentCandidates = null;  // /api/agents/candidates（连接页候选，按�
 let agentsData = null, resourcesData = null, draftsData = null, removedData = null;
 let resourcesLoading = false, resourcesFetchedAt = 0, focusedDocker = null;
 const dockerStarting = new Set(), dockerErrors = new Map();
+let otherDockerOpen = false;
 let locoveData = null;   // /api/locove：dns / 入口 / 代理三层健康 + 路由事实
 let view = "all";     // all | project:<id> | attention | removed | resources | agents | drafts | new-project
 let connOk = null;
@@ -866,12 +872,20 @@ function detailsHtml(p) {
   const problem = ["failed", "conflict", "partial"].includes(p.state);
   const canRetry = ["failed", "conflict"].includes(p.state) && !p.observe_only && !p.can_takeover;
   const retryDisabled = p.op || busy(p.id) || busy("g-" + p.group) || connOk === false;
+  const runtimeBlocked = p.intent === "running" && p.error?.docker_environment && !p.op;
+  const target = runtimeBlocked && p.error.docker_target;
+  const canRecover = target && p.error.docker_profile;
   const canRepair = canRetry && p.intent === "stopped";
   const diagnosis = p.reason || problem ? `<section class="diagnosis${p.state === "partial" || !problem ? " warning" : ""}" id="reason-${esc(p.id)}" tabindex="-1">
     <strong>${esc(p.reason ? p.reason.split("\n", 1)[0] : stateLabel(p) || tr("诊断", "Diagnosis"))}</strong>
     ${p.reason?.includes("\n") ? `<p>${esc(p.reason.slice(p.reason.indexOf("\n") + 1))}</p>` : ""}
     <div class="acts">
-      ${canRetry ? `<button class="primary" data-act="retry" ${retryDisabled ? "disabled" : ""} onclick="act('${p.id}','start',{open:true})">${tr("重试服务", "Retry service")}</button>` : ""}
+      ${canRecover ? dockerRecoveryAction(target, {
+        service: p.id, remember: p.docker_autostart === false, label: tr("启动 Colima 并继续", "Start Colima and continue")
+      }) : ""}
+      ${runtimeBlocked ? `<button class="ghost" ${retryDisabled ? "disabled" : ""}
+        onclick="act('${p.id}','stop')">${tr("停止服务", "Stop service")}</button>` : ""}
+      ${canRetry && !canRecover ? `<button class="primary" data-act="retry" ${retryDisabled ? "disabled" : ""} onclick="act('${p.id}','start',{open:true})">${tr("重试服务", "Retry service")}</button>` : ""}
       ${canRepair ? `<button data-act="agent-repair" ${retryDisabled ? "disabled" : ""} onclick="wizRepair('${p.id}')">${tr("Agent 检查并修复", "Diagnose and repair with an agent")}</button>` : ""}
       <button data-act="diagnostic-logs" onclick="loadLogs('${p.id}')">${tr("查看日志", "View logs")}</button>
       <button class="ghost" data-act="copy-diagnosis" onclick="copyDiagnosis('${p.id}')">${tr("复制诊断", "Copy diagnosis")}</button>
@@ -1063,19 +1077,20 @@ function viewAttention() {
     `<div class="card"><div class="card-head"><h3>${tr("系统警告", "System warnings")}</h3></div><p class="reason warn" style="margin:0 0 6px">${esc(w)}</p></div>`).join("");
   const rows = attentionServices().filter(matchesSearch).map(p => serviceRow(p, true)).join("");
   const grouped = new Map();
-  for (const service of attentionServices()) {
-    const context = service.error?.docker_environment;
-    if (!context) continue;
-    const endpoint = service.docker_endpoint || "";
-    const key = endpoint || context;
-    if (!grouped.has(key)) grouped.set(key, {context, endpoint, names: []});
+  for (const service of attentionServices().filter(matchesSearch)) {
+    const error = service.error;
+    if (!error?.docker_environment || service.intent !== "running" || service.op) continue;
+    const target = error.docker_target || {context: error.docker_environment, endpoint: ""};
+    const key = target.endpoint || target.context;
+    if (!grouped.has(key)) grouped.set(key, {target, profile: error.docker_profile, names: []});
     grouped.get(key).names.push(service.name);
   }
-  const environments = Array.from(grouped.values(), ({context, endpoint, names}) => `<section class="card">
-    <div class="card-head"><h3>${esc(context)}</h3>
-      <button data-context="${esc(context)}" data-endpoint="${esc(endpoint)}" onclick="showDockerEnvironment(this.dataset)">
+  const environments = Array.from(grouped.values(), ({target, profile, names}) => `<section class="card">
+    <div class="card-head"><h3>${esc(dockerEnvironmentName({...target, profile}))}</h3>
+      <button data-context="${esc(target.context)}" data-endpoint="${esc(target.endpoint)}" onclick="showDockerEnvironment(this.dataset)">
         ${tr("查看运行环境", "View environment")}</button></div>
-    <p class="reason warn">${tr("启动受阻", "Startup blocked")} · ${esc(names.join("、"))}</p></section>`).join("");
+    <p class="reason warn">${tr("等待 Docker", "Waiting for Docker")} · ${esc(names.join("、"))}</p>
+    ${profile ? dockerRecoveryAction(target, {retry: true}) : ""}</section>`).join("");
   return sys + environments + (rows || `<div class="empty">${tr("没有需要处理的服务。", "No services need attention.")}</div>`);
 }
 
@@ -1162,11 +1177,12 @@ function dockerEnvironmentName(e) {
   if (e.profile) return "Colima " + e.profile;
   if (e.provider === "docker-desktop") return "Docker Desktop";
   if (e.provider === "podman") return "Podman";
+  if (e.provider === "orbstack") return "OrbStack";
   return e.context;
 }
 
 function dockerEnvironmentState(e) {
-  if (dockerStarting.has(e.context)) return tr("启动中", "Starting");
+  if (dockerStarting.has(e.endpoint)) return tr("启动中", "Starting");
   switch (e.state) {
     case "ready": return tr("Docker 可用", "Docker ready");
     case "stopped": return tr("已停止", "Stopped");
@@ -1199,7 +1215,8 @@ function viewResources() {
   const q = document.getElementById("globalSearch").value.trim().toLowerCase();
   const environments = [...(resourcesData.environments || [])].sort((a, b) =>
     Number(Boolean(b.services?.length)) - Number(Boolean(a.services?.length)));
-  const cards = environments.map((e, i) => {
+  const active = [], other = [];
+  for (const e of environments) {
     const title = dockerEnvironmentName(e);
     const aliases = [...new Set([e.context, ...(e.contexts || [])])];
     const services = (e.services || []).map(s => `<li>${esc(s.name)} · ${esc(s.binding_changed
@@ -1224,16 +1241,19 @@ function viewResources() {
           <td>${[...(r.volumes || []).map(esc), ...binds].join("<br>") || "—"}</td>
           <td>${consumers.join("<br>") || "—"}${shared ? `<p class="note">${tr("跨项目共享", "Shared across projects")}</p>` : ""}</td></tr>`;
       }).join("");
-    if (!matchEnvironment && !rows) return "";
-    const storedError = dockerErrors.get(e.context);
-    const error = storedError || e.error;
+    if (!matchEnvironment && !rows) continue;
+    const error = e.error;
+    const blocked = (e.services || []).some(s => s.docker_blocked);
     const canStart = e.profile && e.contexts?.length && e.state !== "ready";
-    return `<section class="card" data-docker-context="${esc(aliases.join(" "))}" data-endpoint="${esc(e.endpoint || "")}">
+    const card = `<section class="card" data-docker-context="${esc(aliases.join(" "))}" data-endpoint="${esc(e.endpoint || "")}">
       <div class="card-head"><h3>${esc(title)}</h3><span class="badge ${e.state === "ready" ? "ok" : "mut"}">${esc(dockerEnvironmentState(e))}</span>
-        ${canStart ? `<button onclick="startDockerEnvironment(${i})" ${dockerStarting.has(e.context) ? "disabled" : ""}>${tr("启动环境", "Start environment")}</button>` : ""}</div>
+      </div>
       <p class="note">${tr("Docker 连接", "Docker connections")} · ${esc(aliases.join(", "))}</p>
       ${services ? `<p>${tr("已绑定服务", "Bound services")}</p><ul>${services}</ul>` : ""}
-      ${error ? `<p class="reason warn">${esc(error)}</p>` : ""}
+      ${canStart || (blocked && e.profile && e.contexts?.length) ? dockerRecoveryAction(e, {retry: blocked}) : ""}
+      ${blocked && !e.profile ? `<p class="note">${tr("请在对应的工具中启动该环境，Locove 会重新检查。", "Start the environment in its own tool. Locove will check again.")}</p>` : ""}
+      ${error ? `<details><summary>${tr("连接诊断", "Connection diagnostics")}</summary>
+        <p class="reason warn docker-recovery-error">${esc(error)}</p></details>` : ""}
       ${rows ? `<details><summary>${tr("容器", "Containers")} · ${allContainers.length}</summary><div class="table-scroll"><table>
         <tr><td class="k">${tr("名称", "Name")}</td><td class="k">${tr("状态", "Status")}</td>
           <td class="k">Compose</td><td class="k">${tr("端口", "Ports")}</td><td class="k">${tr("数据卷与挂载", "Volumes and mounts")}</td>
@@ -1241,28 +1261,47 @@ function viewResources() {
         ${rows}</table></div></details>` : `<p class="note">${e.state === "ready" && !e.error
           ? tr("无容器", "No containers") : tr("容器状态无法验证", "Container status unavailable")}</p>`}
     </section>`;
-  }).join("");
+    const important = e.services?.length || e.state === "ready";
+    (important ? active : other).push(card);
+  }
+  const expandOther = q || otherDockerOpen || focusedDocker;
   return `${resourcesData.error ? `<p class="reason warn">${esc(resourcesData.error)}</p>` : ""}
-    ${cards || `<div class="empty">${tr("没有匹配的运行环境", "No matching environments")}</div>`}`;
+    ${active.join("")}
+    ${other.length ? `<details class="docker-other" ${expandOther ? "open" : ""}
+      ontoggle="otherDockerOpen = this.open"><summary>${tr("其他 Docker 连接", "Other Docker connections")} · ${other.length}</summary>
+      ${other.join("")}</details>` : ""}
+    ${active.length || other.length ? "" : `<div class="empty">${tr("没有匹配的运行环境", "No matching environments")}</div>`}`;
 }
 
-async function startDockerEnvironment(index) {
-  const environments = [...(resourcesData?.environments || [])].sort((a, b) =>
-    Number(Boolean(b.services?.length)) - Number(Boolean(a.services?.length)));
-  const e = environments[index];
-  if (!e || dockerStarting.has(e.context)) return;
-  dockerStarting.add(e.context);
-  dockerErrors.delete(e.context);
+function dockerRecoveryAction(target, {retry = false, service = "", remember = false, label} = {}) {
+  const busy = dockerStarting.has(target.endpoint);
+  const error = dockerErrors.get(target.endpoint);
+  label ||= retry ? tr("启动环境并重试", "Start environment and retry") : tr("启动环境", "Start environment");
+  return `<span class="docker-recovery">
+    <button data-context="${esc(target.context)}" data-endpoint="${esc(target.endpoint)}"
+      data-service="${esc(service)}" data-retry="${retry}" onclick="recoverDocker(this)"
+      ${busy ? "disabled" : ""}>${busy ? tr("正在启动环境…", "Starting environment…") : label}</button>
+    ${remember ? `<label><input type="checkbox" ${busy ? "disabled" : ""}> ${tr("以后按需自动启动", "Start automatically when needed")}</label>` : ""}
+  </span>${error ? `<p class="reason warn docker-recovery-error" role="status">${esc(error)}</p>` : ""}`;
+}
+
+async function recoverDocker(button) {
+  const {context, endpoint, service, retry} = button.dataset;
+  if (dockerStarting.has(endpoint)) return;
+  const remember = Boolean(button.closest(".docker-recovery").querySelector("input")?.checked);
+  dockerStarting.add(endpoint);
+  dockerErrors.delete(endpoint);
   render();
   try {
     const [code, result] = await api("POST", "/api/resources/environments/start",
-      {context: e.context, endpoint: e.endpoint});
-    if (code !== 200) dockerErrors.set(e.context, result?.error || tr("环境启动失败", "Could not start environment"));
+      {context, endpoint, retry: retry === "true", service_id: service || undefined, remember});
+    if (code !== 200) dockerErrors.set(endpoint, result?.error || tr("环境启动失败", "Could not start environment"));
   } catch {
-    dockerErrors.set(e.context, tr("无法连接控制服务", "Could not reach Locove"));
+    dockerErrors.set(endpoint, tr("无法连接控制服务", "Could not reach Locove"));
   } finally {
-    dockerStarting.delete(e.context);
-    await loadResources();
+    dockerStarting.delete(endpoint);
+    if (view === "resources") await loadResources();
+    await refresh();
     render();
   }
 }

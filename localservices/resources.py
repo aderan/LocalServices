@@ -127,10 +127,13 @@ def environments(projects: list[manifest.Project], statuses: list[dict]) -> dict
         endpoint = binding.get("endpoint") or context_endpoints.get(context, "")
         group = groups.setdefault(endpoint or context, _environment(context, endpoint, profiles))
         status = observed.get(project.id, {})
+        blocked_target = (status.get("error") or {}).get("docker_target") or {}
         group["services"].append({
             "id": project.id, "name": project.name, "context": context, "state": status.get("state", "unknown"),
             "label": status.get("label") or "未知",
             "binding_changed": bool(binding) and context_endpoints.get(context) != endpoint,
+            **({"docker_blocked": True} if endpoint and blocked_target.get("endpoint") == endpoint
+               and status.get("intent") == "running" and not status.get("op") else {}),
         })
 
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -161,6 +164,8 @@ def _environment(context: str, endpoint: str, profiles: list[dict]) -> dict:
     provider = "colima" if profile else "docker"
     if endpoint == f"unix://{Path.home() / '.docker/run/docker.sock'}":
         provider = "docker-desktop"
+    elif endpoint == f"unix://{Path.home() / '.orbstack/run/docker.sock'}":
+        provider = "orbstack"
     elif endpoint.startswith("unix:///") and "podman" in Path(endpoint).name:
         provider = "podman"
     return {"context": context, "endpoint": endpoint, "contexts": [], "provider": provider,

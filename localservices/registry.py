@@ -970,6 +970,27 @@ class Registry:
         base.update(toml)
         return base
 
+    def enable_docker_autostart(self, sid: str, target: dict) -> None:
+        with _file_lock():
+            project = manifest.load_all().get(sid)
+            if not project or not project.file or not project.docker or any(
+                    project.docker.get(key) != target[key] for key in ("context", "endpoint")):
+                raise RegistryError("服务的 Docker 绑定已变化，请重新选择运行环境", status=409)
+            if project.docker.get("autostart"):
+                return
+            definition = tomllib.loads(project.file.read_text())
+            definition["docker"]["autostart"] = True
+            file = project.file
+            if file.parent.resolve() == paths.services_dir().resolve():
+                file = paths.user_services_dir() / f"{sid}.toml"
+            data = self._load()
+            owner = _find(data, project.project or sid)
+            if owner:
+                owner["revision"] += 1
+                owner["updated_at"] = _now()
+            _atomic_commit([(file, dumps_toml(definition).encode())],
+                           after=(lambda: self._save(data)) if owner else None)
+
     # ---------- 移除登记（V2.1 / V2.2） ----------
 
     def remove_service(self, sid: str, disposition: str, ctl, removed_by: str = "user") -> dict:
