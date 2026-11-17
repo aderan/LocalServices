@@ -111,12 +111,15 @@ class Route:
     upstream_port: int | None
     state: str  # proxy | unavailable
     loopback_host: bool = False
+    loopback_origin: bool = False
 
     def to_json(self) -> dict:
         row = {"service": self.service, "component": self.component,
                "upstream_port": self.upstream_port, "state": self.state}
         if self.loopback_host:
             row["loopback_host"] = True
+        if self.loopback_origin:
+            row["loopback_origin"] = True
         return row
 
 
@@ -168,6 +171,16 @@ def _vite_component(project, component) -> bool:
         return False
 
 
+def _loopback_dashboard(project, component) -> bool:
+    if not component or component.run != "local" or not component.cmd:
+        return False
+    command = component.cmd
+    if project.id == "englishlearn-admin":
+        return Path(command[0]).name == "make" and command[1:] == ["sources-manager"]
+    return (project.id == "creatorstudio-dashboard"
+            and command[-3:] == ["-m", "creator_studio", "dashboard"])
+
+
 def desired_routes(projects: dict, snapshot: dict | None = None,
                    settings: dict | None = None) -> dict:
     """由清单 + 共享快照推导期望路由。快照缺失时按 unavailable 收敛（不猜测运行态）。
@@ -198,9 +211,11 @@ def desired_routes(projects: dict, snapshot: dict | None = None,
                     state = "proxy" if port else "unavailable"
                 else:
                     state = "unavailable"
+            loopback_origin = state == "proxy" and _loopback_dashboard(p, comp)
             routes[e.host] = Route(host=e.host, service=pid, component=e.component,
                                    upstream_port=port, state=state,
-                                   loopback_host=state == "proxy" and _vite_component(p, comp))
+                                   loopback_host=loopback_origin or (state == "proxy" and _vite_component(p, comp)),
+                                   loopback_origin=loopback_origin)
     return routes
 
 
@@ -237,11 +252,12 @@ def render_caddyfile(routes: dict[str, Route], port: int | None = None,
     所有站点与 catch-all 经全局 default_bind 只监听回环（review R1）——admin 的
     127.0.0.1 不约束业务 listener，必须显式绑定；否则数据面会开在所有网卡上。
     业务端口（缺省 5670）由 effective_port 统一裁决。"""
+    public_port = effective_port(port, settings)
     parts = [
         "{",
         f"\tadmin 127.0.0.1:{admin_port()}",
         "\tauto_https off",
-        f"\thttp_port {effective_port(port, settings)}",
+        f"\thttp_port {public_port}",
         "\tdefault_bind 127.0.0.1 ::1",
         "\tgrace_period 3s",
         "}",
@@ -249,12 +265,40 @@ def render_caddyfile(routes: dict[str, Route], port: int | None = None,
     for host, r in sorted(routes.items()):
         parts.append(f'\nhttp://{host} {{')
         if r.state == "proxy" and r.upstream_port:
-            parts.append(f"\treverse_proxy 127.0.0.1:{r.upstream_port} {{")
+            upstream = f"127.0.0.1:{r.upstream_port}"
+            indent = "\t"
+            if r.loopback_origin:
+                authority = host if public_port == 80 else f"{host}:{public_port}"
+                origin = f'http://{authority}'
+                # Validate the public origin before translating it for a loopback-only dashboard.
+                parts.extend([
+                    f'\t@public_origin header Origin "{origin}"',
+                    "\t@foreign_origin {",
+                    "\t\theader Origin *",
+                    f'\t\tnot header Origin "{origin}"',
+                    "\t}",
+                    "\t@write_without_origin {",
+                    "\t\tnot method GET HEAD OPTIONS",
+                    f'\t\tnot header Origin "{origin}"',
+                    "\t}",
+                    "\t@cross_site_fetch {",
+                    "\t\theader Sec-Fetch-Site cross-site",
+                    "\t\tnot header Sec-Fetch-Mode navigate",
+                    "\t}",
+                    "\troute {",
+                    '\t\trespond @foreign_origin "Forbidden origin" 403',
+                    '\t\trespond @write_without_origin "Origin required" 403',
+                    '\t\trespond @cross_site_fetch "Forbidden cross-site request" 403',
+                    f"\t\trequest_header @public_origin Origin http://{upstream}",
+                ])
+                indent = "\t\t"
+            parts.append(f"{indent}reverse_proxy {upstream} {{")
             if r.loopback_host:
                 # Caddy has already matched the public Host and forwards it as X-Forwarded-Host.
-                parts.append("\t\theader_up Host {upstream_hostport}")
-            parts.append("\t\tflush_interval -1")
-            parts.append("\t}")
+                parts.append(f"{indent}\theader_up Host {{upstream_hostport}}")
+            parts.extend([f"{indent}\tflush_interval -1", f"{indent}}}"])
+            if r.loopback_origin:
+                parts.append("\t}")
         else:
             body = _UNAVAILABLE_PAGE.format(host=host)
             parts.append(f"\trespond `{body}` 503 {{")
