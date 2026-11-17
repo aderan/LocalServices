@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -109,10 +110,14 @@ class Route:
     component: str
     upstream_port: int | None
     state: str  # proxy | unavailable
+    loopback_host: bool = False
 
     def to_json(self) -> dict:
-        return {"service": self.service, "component": self.component,
-                "upstream_port": self.upstream_port, "state": self.state}
+        row = {"service": self.service, "component": self.component,
+               "upstream_port": self.upstream_port, "state": self.state}
+        if self.loopback_host:
+            row["loopback_host"] = True
+        return row
 
 
 def effective_endpoints(p, settings: dict | None) -> list:
@@ -126,6 +131,41 @@ def effective_endpoints(p, settings: dict | None) -> list:
 
 def _component_states(st: dict) -> dict:
     return {c.get("id"): c for c in (st.get("components") or []) if isinstance(c, dict)}
+
+
+def _vite_command(command: list[str]) -> bool:
+    if not command:
+        return False
+    executable = Path(command[0]).name
+    return executable == "vite" or (
+        executable == "node" and len(command) > 1 and command[1].endswith("/vite/bin/vite.js")
+    )
+
+
+def _vite_component(project, component) -> bool:
+    if not component or component.run != "local" or not component.cmd:
+        return False
+    command = component.cmd
+    if _vite_command(command):
+        return True
+    manager = Path(command[0]).name
+    if manager not in {"npm", "pnpm", "yarn"} or len(command) < 2:
+        return False
+    if command[1] in {"run", "run-script"}:
+        if len(command) < 3:
+            return False
+        script = command[2]
+    elif manager != "npm" or command[1] == "start":
+        script = command[1]
+    else:
+        return False
+    try:
+        package = json.loads((project.comp_cwd(component) / "package.json").read_text())
+        scripts = package.get("scripts") if isinstance(package, dict) else None
+        value = scripts.get(script) if isinstance(scripts, dict) else None
+        return isinstance(value, str) and _vite_command(shlex.split(value))
+    except (OSError, ValueError):
+        return False
 
 
 def desired_routes(projects: dict, snapshot: dict | None = None,
@@ -159,7 +199,8 @@ def desired_routes(projects: dict, snapshot: dict | None = None,
                 else:
                     state = "unavailable"
             routes[e.host] = Route(host=e.host, service=pid, component=e.component,
-                                   upstream_port=port, state=state)
+                                   upstream_port=port, state=state,
+                                   loopback_host=state == "proxy" and _vite_component(p, comp))
     return routes
 
 
@@ -209,6 +250,9 @@ def render_caddyfile(routes: dict[str, Route], port: int | None = None,
         parts.append(f'\nhttp://{host} {{')
         if r.state == "proxy" and r.upstream_port:
             parts.append(f"\treverse_proxy 127.0.0.1:{r.upstream_port} {{")
+            if r.loopback_host:
+                # Caddy has already matched the public Host and forwards it as X-Forwarded-Host.
+                parts.append("\t\theader_up Host {upstream_hostport}")
             parts.append("\t\tflush_interval -1")
             parts.append("\t}")
         else:
