@@ -14,6 +14,23 @@
       "type": "boolean",
       "description": "Trial local startup and register after readiness."
     },
+    "review_ports": {
+      "type": "boolean",
+      "description": "Check running TCP listeners as well as registered reservations for a new service."
+    },
+    "port_changes": {
+      "type": "array",
+      "description": "Apply new ports to a registration candidate with verify_start enabled.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["component", "port"],
+        "properties": {
+          "component": {"type": "string"},
+          "port": {"type": "integer", "minimum": 1024, "maximum": 65535}
+        }
+      }
+    },
     "revision": {
       "type": "integer",
       "minimum": 0

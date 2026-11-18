@@ -316,6 +316,31 @@ def _diff_definitions(old: dict, new: dict) -> list[dict]:
     return out
 
 
+def _registration_port_conflicts(components: list[manifest.Component], owners: dict[int, str],
+                                 listeners: dict[int, int] | None) -> list[dict]:
+    listening = listeners or {}
+    occupied = set(owners) | set(listening) | {paths.daemon_port()}
+    occupied.update(c.port for c in components if c.port)
+    conflicts = []
+    for component in components:
+        port = component.port
+        if component.kind == "generator" or not port:
+            continue
+        owner, pid = owners.get(port), listening.get(port)
+        if not owner and not pid:
+            continue
+        suggested = None
+        if listeners is not None:
+            suggested = next((p for p in range(max(port + 1, 1024), 65536) if p not in occupied), None)
+            if suggested is None:
+                suggested = next((p for p in range(1024, port) if p not in occupied), None)
+            if suggested is not None:
+                occupied.add(suggested)
+        conflicts.append({"component": component.id, "port": port, "reserved_by": owner,
+                          "listener_pid": pid, "suggested_port": suggested})
+    return conflicts
+
+
 def _identity(source: Path, comps) -> tuple:
     """注册身份 = resolve(source) + 排序后 cwd 集合 + 排序后 cmd argv 集合（CONTRACTS §2）。"""
     cwds = sorted(str((source / (c.cwd or ".")).resolve()) for c in comps)
@@ -697,15 +722,17 @@ class Registry:
 
     # ---------- 注册（CONTRACTS §2） ----------
 
-    def register_service(self, payload: dict, dry_run: bool = False, *, trial=None) -> dict:
+    def register_service(self, payload: dict, dry_run: bool = False, *, trial=None,
+                         listeners: dict[int, int] | None = None) -> dict:
         try:
-            return self._register(payload, dry_run=dry_run, trial=trial)
+            return self._register(payload, dry_run=dry_run, trial=trial, listeners=listeners)
         except RegistryError as e:
             out = dict(e.payload)
             out.setdefault("details", [])
             return out
 
-    def _register(self, payload: dict, dry_run: bool = False, *, trial=None) -> dict:
+    def _register(self, payload: dict, dry_run: bool = False, *, trial=None,
+                  listeners: dict[int, int] | None = None) -> dict:
         if not isinstance(payload, dict):
             return {"ok": False, "error": "payload 必须是对象", "details": []}
         if payload.get("schemaVersion") != 1:
@@ -845,19 +872,25 @@ class Registry:
                 ] == derived_rows:
                     final_def.pop("endpoints", None)
 
-            # 端口冲突（锁内重读后的最新状态；更新自身端口除外）
-            owners: dict[int, str] = {}
-            for lp in loaded.values():
-                for lc in lp.managed_components():
-                    if lc.port:
-                        owners[lc.port] = f"{lp.id}.{lc.id}"
-            for cobj in comp_objs:
-                if cobj.kind == "generator" or not cobj.port:
-                    continue
-                owner = owners.get(cobj.port)
-                if owner and owner.split(".", 1)[0] != sid:
-                    return {"ok": False, "error": f"端口 {cobj.port} 已被占用",
-                            "details": [f"{owner} 与 {sid}.{cobj.id}"]}
+            # 登记预留取锁内最新状态，更新时排除自己的登记与实例。
+            owners = {c.port: f"{p.id}.{c.id}" for p in loaded.values() if p.id != sid
+                      for c in p.managed_components() if c.port}
+            conflicts = _registration_port_conflicts(
+                comp_objs, owners, listeners if action == "created" else None)
+            if conflicts:
+                first = conflicts[0]
+                details = []
+                for conflict in conflicts:
+                    cid = f"{sid}.{conflict['component']}"
+                    if conflict["reserved_by"]:
+                        details.append(f"{conflict['reserved_by']} 与 {cid}")
+                    if conflict["listener_pid"]:
+                        details.append(f"{cid}：PID {conflict['listener_pid']} 正在监听")
+                can_repair = action == "created" and all(
+                    c.kind == "server" and c.run == "local" and c.port and not c.build
+                    for c in comp_objs)
+                return {"ok": False, "error": f"端口 {first['port']} 已被占用", "details": details,
+                        "port_conflicts": conflicts, "can_repair_ports": can_repair}
 
             # V3 域名冲突（锁内重读后的最新状态；以实际将写盘的定义计算，预览 = 实际）
             host_owner: dict[str, str] = {}

@@ -17,7 +17,7 @@ import tomllib
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 
-from . import dockerctx, manifest, paths, trial
+from . import dockerctx, manifest, paths, procs, trial
 from .controller import redact
 from .registry import ID_RE, Registry, RegistryError, dumps_toml
 
@@ -63,7 +63,8 @@ def _verified_register(body: dict, ctl, repair_sid: str | None = None) -> tuple[
             elif expected != effective:
                 raise RegistryError("试启动期间定义已变更，请重新验证", status=409)
 
-        preview = _registry.register_service(body, dry_run=True, trial=capture)
+        listeners = procs.listeners() if body.get("review_ports") or body.get("port_changes") else None
+        preview = _registry.register_service(body, dry_run=True, trial=capture, listeners=listeners)
         if not preview.get("ok") or expected is None:
             return _register_status(preview)
         log_dir = paths.logs_dir()
@@ -127,20 +128,9 @@ def handle_service_repair(sid: str, body: dict, ctl) -> tuple[int, dict]:
             raise RegistryError("自动修复只调整当前启动命令的端口参数")
         old = component.get("port")
         _check_port_command(component["cmd"], cmd, old, port)
-        component.update(cmd=cmd, port=port)
-        changes = [f'components[{component["id"]}].{field}' for field in ("cmd", "port")]
-        ready = component.get("ready") or {}
-        if ready.get("http"):
-            ready["http"] = _with_port(ready["http"], port)
-            changes.append(f'components[{component["id"]}].ready.http')
-        if ready.get("tcp"):
-            ready["tcp"] = ready["tcp"].rpartition(":")[0] + f":{port}"
-            changes.append(f'components[{component["id"]}].ready.tcp')
-        if service.get("open") and (trial.local_url(service["open"])[1] == old
-                                    or sum(bool(c.get("port")) for c in service["components"]) == 1):
-            service["open"] = _with_port(service["open"], port)
-            changes.append("open")
-        service["edited"] = changes
+        update_open = bool(service.get("open")) and (trial.local_url(service["open"])[1] == old
+                         or sum(bool(c.get("port")) for c in service["components"]) == 1)
+        service["edited"] = _apply_port_change(service, component, port, cmd, update_open)
         return _verified_register({"schemaVersion": 1, "revision": project["revision"],
                                    "project": {"id": project["id"]}, "service": service,
                                    "by": "gui"}, ctl, repair_sid=sid)
@@ -155,6 +145,81 @@ def _with_port(url: str, port: int) -> str:
     parts = urlsplit(url)
     host = f"[{host}]" if ":" in host else host
     return urlunsplit(parts._replace(netloc=f"{host}:{port}"))
+
+
+def _apply_port_change(service: dict, component: dict, port: int, cmd: list[str],
+                       update_open: bool) -> list[str]:
+    component.update(cmd=cmd, port=port)
+    prefix = f'components[{component["id"]}]'
+    changes = [f"{prefix}.cmd", f"{prefix}.port"]
+    ready = component.get("ready")
+    if isinstance(ready, dict):
+        if isinstance(ready.get("http"), str) and ready["http"]:
+            ready["http"] = _with_port(ready["http"], port)
+            changes.append(f"{prefix}.ready.http")
+        if isinstance(ready.get("tcp"), str) and ready["tcp"]:
+            ready["tcp"] = ready["tcp"].rpartition(":")[0] + f":{port}"
+            changes.append(f"{prefix}.ready.tcp")
+    if update_open:
+        service["open"] = _with_port(service["open"], port)
+        changes.append("open")
+    return changes
+
+
+def _candidate_port_command(cmd: list[str], old: int, port: int) -> list[str]:
+    switches = [i for i, arg in enumerate(cmd[1:], 1)
+                if arg in ("--port", "-p") or arg.startswith("--port=")]
+    if len(switches) == 1:
+        i = switches[0]
+        if cmd[i] == f"--port={old}":
+            return cmd[:i] + [f"--port={port}"] + cmd[i + 1:]
+        if cmd[i + 1:i + 2] == [str(old)] and cmd[i] in ("--port", "-p"):
+            return cmd[:i + 1] + [str(port)] + cmd[i + 2:]
+    if switches:
+        raise RegistryError("启动命令的端口参数不明确，请先核对命令与登记端口")
+    if cmd[1:3] == ["-m", "http.server"] and cmd[3:4] == [str(old)]:
+        return cmd[:3] + [str(port)] + cmd[4:]
+    if cmd[1:3] == ["-m", "http.server"]:
+        raise RegistryError("请先核对 http.server 命令中的端口参数")
+    npm_separator = (["--"] if os.path.basename(cmd[0]) == "npm"
+                     and cmd[1:2] in (["run"], ["run-script"]) and "--" not in cmd else [])
+    return cmd + npm_separator + ["--port", str(port)]
+
+
+def _apply_candidate_port_changes(body: dict) -> dict:
+    if body.get("verify_start") is not True or body.get("dry_run"):
+        raise RegistryError("换端口登记需要试启动验证")
+    body = copy.deepcopy(body)
+    service = body.get("service")
+    changes = body["port_changes"]
+    components = service.get("components") if isinstance(service, dict) else None
+    if not isinstance(changes, list) or not changes or not isinstance(components, list):
+        raise RegistryError("缺少候选组件或换端口参数")
+    opening = service.get("open")
+    open_port = trial.local_url(opening)[1] if isinstance(opening, str) and opening else None
+    edited = service.get("edited")
+    if edited is None:
+        edited = service["edited"] = []
+    if not isinstance(edited, list):
+        raise RegistryError("service.edited 必须是字符串数组")
+    seen = set()
+    for change in changes:
+        cid = change.get("component") if isinstance(change, dict) else None
+        if not isinstance(cid, str) or cid in seen:
+            raise RegistryError("每个换端口操作需要一个不同的组件 ID")
+        seen.add(cid)
+        component = next((c for c in components if isinstance(c, dict) and c.get("id") == cid), None)
+        port = change.get("port")
+        if component is None or type(port) is not int or not 1024 <= port <= 65535:
+            raise RegistryError("请选择候选组件并填写 1024–65535 的端口")
+        old, cmd = component.get("port"), component.get("cmd")
+        if (type(old) is not int or old == port or component.get("run", "local") != "local"
+                or component.get("shell_script") or not isinstance(cmd, list) or not cmd
+                or not all(isinstance(arg, str) for arg in cmd)):
+            raise RegistryError(f"组件 {cid} 需要不同的端口和可调整的本地启动命令")
+        command = _candidate_port_command(cmd, old, port)
+        edited.extend(_apply_port_change(service, component, port, command, open_port == old))
+    return body
 
 
 def _check_port_command(old_cmd: list[str], new_cmd: list[str], old: int | None, port: int) -> None:
@@ -186,6 +251,10 @@ def handle_register(body: dict, ctl) -> tuple[int, dict]:
             return 400, {"ok": False, "error": "body 必须是对象"}
         if "verify_start" in body and not isinstance(body["verify_start"], bool):
             return 400, {"ok": False, "error": "verify_start 必须是布尔值"}
+        if "review_ports" in body and not isinstance(body["review_ports"], bool):
+            raise RegistryError("review_ports 必须是布尔值")
+        if "port_changes" in body:
+            body = _apply_candidate_port_changes(body)
         definition = body.get("service")
         binding = definition.get("docker") if isinstance(definition, dict) else None
         if isinstance(binding, dict) and isinstance(binding.get("context"), str):
@@ -202,7 +271,11 @@ def handle_register(body: dict, ctl) -> tuple[int, dict]:
                         return 409, {"ok": False, "error": "请先停止服务，再更换 Docker 运行环境"}
         if body.get("verify_start") is True and not body.get("dry_run"):
             return _verified_register(body, ctl)
-        return _register_status(_registry.register_service(body, dry_run=bool(body.get("dry_run"))))
+        listeners = procs.listeners() if body.get("review_ports") else None
+        return _register_status(_registry.register_service(
+            body, dry_run=bool(body.get("dry_run")), listeners=listeners))
+    except ValueError as e:
+        return 400, {"ok": False, "error": str(e)}
     except Exception as e:  # noqa: BLE001
         return _fail(e)
 

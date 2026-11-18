@@ -74,6 +74,8 @@ Docker 不可达时 `{"ok": false, "error": "..."}`，不阻塞其余 API。服�
 - 注册成功 ≠ 运行验证成功。响应含 `validation.warnings[]`；启动是独立的 `POST /api/projects/<id>/start`。
 - `verify_start: true` 可在正式注册前试启动新登记的本地服务，验证监听归属、探针和打开地址。通过后停止试运行进程并登记；失败保留验证记录，项目和服务定义不落盘。响应的 `trial` 提供状态、检查项和本机日志路径。
 - `POST /api/services/<sid>/repair` 接收 `{revision, component: {id, port, cmd}}`，为已停止的服务验证并保存受限的端口修复。启动命令的端口参数、监听端口、探针与打开地址一起更新。
+- 注册审核提交 `review_ports: true`，同时检查新服务的 TCP 监听与登记预留。冲突响应的 `port_conflicts[]` 包含 `component`、`port`、`reserved_by`、`listener_pid` 和 `suggested_port`，最后三项可为 `null`。推荐端口避开现有预留、监听和同一候选的组件端口。
+- `port_changes: [{component, port}]` 与 `verify_start: true` 一起提交。服务端调整本地启动命令、探针和关联打开地址，其他字段沿用候选值。试启动通过后，在登记锁内再次核对定义与预留端口，再提交新登记。
 - 登记预检使用 `dry_run: true`。当 `action` 为 `diff` 时，`registration_action` 区分
   `created`、`updated` 和 `unchanged`；新服务的差异以空定义为基准。
 

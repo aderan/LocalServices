@@ -1887,6 +1887,47 @@ function trialDetails(result) {
     ${record.log ? `<br>本机验证记录 <code>${esc(record.log)}</code>` : ""}</p>`;
 }
 
+function candidatePortReview(w, i) {
+  const result = w.results[i]?.res;
+  if (result?.service_id || result?.draft_id) return null;
+  if (w.diffs[i]?.port_conflicts?.length) return w.diffs[i];
+  return result?.port_conflicts?.length ? result : null;
+}
+
+function candidatePortReviewHtml(w, c, i, review) {
+  const conflicts = review.port_conflicts;
+  const suggested = conflicts.map(conflict => conflict.suggested_port);
+  const disabled = w.registering ? "disabled" : "";
+  const repairable = review.can_repair_ports && !c.components.some(component => component.shell_script);
+  return `<div class="port-review">
+    ${conflicts.map(({component, port, reserved_by, listener_pid}) => {
+      const causes = [];
+      if (reserved_by) causes.push(tr(`登记预留 ${reserved_by}`, `Reserved by ${reserved_by}`));
+      if (listener_pid) causes.push(tr(`进程正在监听（PID ${listener_pid}）`, `Process listening (PID ${listener_pid})`));
+      return `<p class="reason bad">${esc(`${component} · ${port} · ${causes.join(" · ")}`)}</p>`;
+    }).join("")}
+    ${repairable ? `<p class="note">${tr("洛湾会用新端口试启动，验证通过后才保存登记。",
+      "Locove saves the registration after the service passes a trial on the new port.")}</p>
+      <form onsubmit="event.preventDefault(); wizTryCandidatePorts(${i}, [...new FormData(this).values()].map(Number))">
+        ${conflicts.map(({component}) => `<div class="field">
+          <label for="wiz-port-${i}-${esc(component)}">${esc(tr(`${component} 新端口`, `New port for ${component}`))}</label>
+          <input id="wiz-port-${i}-${esc(component)}" name="${esc(component)}" type="number" inputmode="numeric"
+            min="1024" max="65535" required value="${esc(c._portChoices?.[component] ?? "")}"
+            oninput="(wiz.candidates[${i}]._portChoices ??= {})[this.name] = this.value" ${disabled}>
+        </div>`).join("")}
+        <div class="acts" style="justify-content:flex-start">
+          ${suggested.every(Number.isInteger) ? `<button type="button" class="primary" ${disabled}
+            onclick="wizTryCandidatePorts(${i}, ${JSON.stringify(suggested)})">${suggested.length === 1
+              ? tr(`用 ${suggested[0]} 试启动`, `Test on ${suggested[0]}`)
+              : tr("用推荐端口试启动", "Test suggested ports")}</button>` : ""}
+          <button type="submit" ${disabled}>${tr("手动端口试启动", "Test custom ports")}</button>
+          <button type="button" onclick="wizRefreshCandidatePreview(${i})" ${disabled}>${tr("重新检查端口", "Recheck ports")}</button>
+        </div>
+      </form>` : `<p class="note">${tr("请手动核对启动配置和端口后重新检查。", "Check the startup configuration and port, then recheck.")}</p>
+        <button onclick="wizRefreshCandidatePreview(${i})" ${disabled}>${tr("重新检查端口", "Recheck ports")}</button>`}
+    </div>`;
+}
+
 function viewNewProject() {
   const w = wiz;
   const bridge = nativeBridge();
@@ -1982,9 +2023,11 @@ function viewNewProject() {
   const candCards = w.candidates.map((c, i) => {
     const r = w.results[i];
     const d = r?.res?.service_id ? null : w.diffs[i];
+    const portReview = candidatePortReview(w, i);
     const editedNow = candidateEditedPaths(c);   // R06：本次审核中用户改过的字段（优先于旧覆盖）
     const advKeys = c.components?.flatMap(k => COMP_FWD_KEYS.filter(f => k[f] !== null && k[f] !== undefined && !(Array.isArray(k[f]) && !k[f].length))) || [];
-    const diffBox = d?.registration_action === "created"
+    const diffBox = portReview ? candidatePortReviewHtml(w, c, i, portReview)
+      : d?.registration_action === "created"
       ? `<p class="inline-note">预检通过，将新增服务 ${esc(d.service_id)}。</p>`
       : d?.ok === false
       ? `<p class="reason bad">预检失败：${esc(d.error || "校验失败")}${d.details?.length ? " · " + d.details.map(esc).join("；") : ""}</p>`
@@ -2009,8 +2052,11 @@ function viewNewProject() {
           ? `<div class="result-box ok">已注册（${esc(r.res.action)}，服务 ${esc(r.res.service_id)}）${(r.res.validation?.warnings || []).length ? `<div class="warnlist">警告：${r.res.validation.warnings.map(esc).join("；")}</div>` : ""}
              <button class="primary" onclick="wizStartService('${esc(r.res.service_id)}')" ${busy("wiz-start-" + r.res.service_id) ? "disabled" : ""}>${busy("wiz-start-" + r.res.service_id) ? "启动中…" : tr("启动并打开", "Start and open")}</button></div>`
           : `<div class="result-box bad">注册失败：${esc(r.res?.error || r.code)}${(r.res?.details || []).length ? `<div class="warnlist">${r.res.details.map(esc).join("；")}</div>` : ""}
-             ${r.code === 409 ? "<br>版本冲突：已刷新修订号，可重试注册。" : ""}<button onclick="wizRegister()">重试注册</button></div>`)
+             ${r.res?.current_revision != null ? "<br>版本冲突：已刷新修订号，可重试注册。" : ""}${portReview ? "" : `<button onclick="wizRegister()">重试注册</button>`}</div>`)
       : "";
+    if (r?.portRepair && r.res?.service_id) return `<div class="cand">
+      <div class="cand-head"><div class="name">${esc(c.name || c.id)}</div></div>
+      ${trialDetails(r.res)}${res}</div>`;
     const provisionWarn = isComposeCand(c) && effectiveProvision(c) === "up" && !c._confirmed_provision
       ? `<p class="reason warn">provision=up：需勾选「允许创建容器/拉镜像——由我确认」后才能注册（未确认时后台同样拒绝，注册前请确认）。</p>` : "";
     return `<div class="cand">
@@ -2018,9 +2064,9 @@ function viewNewProject() {
         <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" ${c._sel !== false ? "checked" : ""} onchange="wizToggleCand(${i})"> 选择</label>
         <div class="name">${esc(c.name || c.id)}<small>${esc(c.description || "")}</small></div>
       </div>
-      <div class="field"><label>${tr("服务 id", "Service ID")}</label><input value="${esc(c.id)}" oninput="wizCandField(${i},'id',this.value)"></div>
+      <div class="field"><label>${tr("服务 id", "Service ID")}</label><input value="${esc(c.id)}" oninput="wizCandField(${i},'id',this.value)" onchange="wizRefreshCandidatePreview(${i})"></div>
       <div class="field"><label>${tr("名称", "Name")}</label><input value="${esc(c.name)}" oninput="wizCandField(${i},'name',this.value)"></div>
-      <div class="field"><label>${tr("入口 URL", "Open URL")}</label><input value="${esc(c.open || "")}" placeholder="http://127.0.0.1:<端口>/" oninput="wizCandField(${i},'open',this.value)"></div>
+      <div class="field"><label>${tr("入口 URL", "Open URL")}</label><input value="${esc(c.open || "")}" placeholder="http://127.0.0.1:<端口>/" oninput="wizCandField(${i},'open',this.value)" onchange="wizRefreshCandidatePreview(${i})"></div>
       ${(c.components || []).map((k, ci) => compIsCompose(k, c) ? `<div class="comp-edit">
         <div class="field"><label>组件 ${esc(k.id)}（compose）</label>
           <span class="inline-note">compose 组件无需命令；字段可编辑，其余随注册保留</span></div>
@@ -2033,13 +2079,13 @@ function viewNewProject() {
             <option value="up" ${(k.provision || c.provision) === "up" ? "selected" : ""}>up（允许 compose up 创建/拉取）</option>
           </select></div>
         <div class="field"><label></label>
-          <input style="min-width:80px;max-width:110px" placeholder="${tr("端口", "Port")}" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)">
-          <input placeholder="${tr("探针 URL", "Health check URL")}" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)"></div>
+          <input style="min-width:80px;max-width:110px" placeholder="${tr("端口", "Port")}" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)" onchange="wizRefreshCandidatePreview(${i})">
+          <input placeholder="${tr("探针 URL", "Health check URL")}" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)" onchange="wizRefreshCandidatePreview(${i})"></div>
       </div>` : `<div class="comp-edit">
         <div class="field"><label>${tr("组件", "Component")} ${esc(k.id)}</label>
-          <input placeholder="${tr("命令（空格分隔 argv）", "Command (space-separated arguments)")}" value="${esc((k.cmd || []).join(" "))}" oninput="wizCompField(${i},${ci},'cmd',this.value)">
-          <input style="min-width:80px;max-width:110px" placeholder="${tr("端口", "Port")}" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)">
-          <input placeholder="${tr("探针 URL", "Health check URL")}" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)"></div>
+          <input placeholder="${tr("命令（空格分隔 argv）", "Command (space-separated arguments)")}" value="${esc((k.cmd || []).join(" "))}" oninput="wizCompField(${i},${ci},'cmd',this.value)" onchange="wizRefreshCandidatePreview(${i})">
+          <input style="min-width:80px;max-width:110px" placeholder="${tr("端口", "Port")}" value="${k.port ?? ""}" oninput="wizCompField(${i},${ci},'port',this.value)" onchange="wizRefreshCandidatePreview(${i})">
+          <input placeholder="${tr("探针 URL", "Health check URL")}" value="${esc(k.ready?.http || "")}" oninput="wizCompField(${i},${ci},'ready',this.value)" onchange="wizRefreshCandidatePreview(${i})"></div>
       </div>`).join("")}
       ${(candidateUsesDocker(c) || c.dependencies?.length) && w.dockerEnvironments ? dockerBindingField(w.dockerEnvironments, candidateDockerBinding(c, w),
         "wizSelectDocker(" + i + ",this)", "wizSetDockerAutostart(" + i + ",this.checked)") : ""}
@@ -2091,7 +2137,7 @@ function viewNewProject() {
       <div class="acts" style="justify-content:flex-start"><button onclick="wizStartAnalyze()" ${w.registering ? "disabled" : ""}>${tr("重新识别", "Discover again")}</button></div>
     </section>
     ${w.candidates.length ? `<section class="card"><div class="card-head"><h3>候选服务（${w.candidates.length}）</h3>
-      <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || !w.candidates.some((c, i) => c._sel !== false && !(w.results[i]?.res?.service_id || w.results[i]?.res?.draft_id)) ? "disabled" : ""}>${w.verifying ? tr("试启动中…", "Verifying…") : w.registering ? tr("注册中…", "Registering…") : tr("注册所选", "Register selected")}</button></div></div>
+      <div class="acts"><button class="primary" onclick="wizRegister()" ${w.registering || !w.candidates.some((_, i) => wizCanRegister(w, i)) ? "disabled" : ""}>${w.verifying ? tr("试启动中…", "Verifying…") : w.registering ? tr("注册中…", "Registering…") : tr("注册所选", "Register selected")}</button></div></div>
       ${(w.unresolved || []).length ? `<p class="reason warn">未解决项（不会静默丢弃）：${(w.unresolved || []).map(esc).join("；")}</p>` : ""}
       ${w.dupIds ? `<p class="inline-note">多目录同名服务已分配稳定 ID，可修改</p>` : ""}
       ${candCards}
@@ -3553,19 +3599,58 @@ function candPayload(c, proj, w = wiz) {
           by: "gui", service: svc};
 }
 
-async function wizRegisterOnce(w, i, verify) {
+async function wizRegisterOnce(w, i, verify, portChanges = null) {
   const c = w.candidates[i];
   if (candidateUsesDocker(c) && w.dockerEnvironments && !candidateDockerBinding(c, w))
     return [400, {error: tr("请选择 Docker 运行环境", "Select a Docker environment")}];
-  const [code, res] = await api("POST", "/api/register", {...candPayload(c, w.target, w), verify_start: verify});
+  const payload = {...candPayload(c, w.target, w), verify_start: verify, review_ports: true};
+  if (portChanges) payload.port_changes = portChanges;
+  const [code, res] = await api("POST", "/api/register", payload);
   if (!verify && code === 409 && w.target.revision && res?.current_revision != null) {  // 批量注册：用服务端最新 revision 重试一次，不静默失败
     await refresh();
     const g = registry?.registry?.projects?.find(p => p.id === w.target.id);
     if (!g) return [code, res];
     w.target = {...g};
-    return await api("POST", "/api/register", candPayload(c, w.target, w));
+    return await api("POST", "/api/register", {...candPayload(c, w.target, w), review_ports: true});
   }
   return [code, res];
+}
+
+function wizSaveRegistrationResult(w, i, code, res, portRepair = false) {
+  w.results[i] = {code, res, portRepair};
+  if (code === 200 && res?.service_id) {
+    w.target = {...w.target, id: res.project_id, revision: res.revision};
+    w.registered = true;
+  }
+}
+
+function wizCanRegister(w, i) {
+  const result = w.results[i]?.res;
+  return w.candidates[i]._sel !== false && !result?.service_id && !result?.draft_id && !candidatePortReview(w, i);
+}
+
+async function wizTryCandidatePorts(i, ports) {
+  const w = wiz;
+  const review = candidatePortReview(w, i);
+  if (!w.target || w.registering || !review?.can_repair_ports) return;
+  const conflicts = review.port_conflicts;
+  if (ports.length !== conflicts.length || ports.some(port => !Number.isInteger(port) || port < 1024 || port > 65535)) return;
+  const portChanges = conflicts.map(({component}, index) => ({component, port: ports[index]}));
+  w.diffs[i] = review;
+  w.registering = w.verifying = true;
+  render();
+  try {
+    const [code, res] = await wizRegisterOnce(w, i, true, portChanges);
+    wizSaveRegistrationResult(w, i, code, res, true);
+    if (res?.current_revision != null) w.target = {...w.target, revision: res.current_revision};
+  } catch (e) {
+    w.results[i] = {code: 0, res: {error: tr("无法连接控制服务", "Unable to connect to the control service")}};
+    setConn(false);
+  } finally {
+    w.registering = w.verifying = false;
+    await refresh();
+    render();
+  }
 }
 
 async function wizRegister(w = wiz, verify = false) {
@@ -3573,7 +3658,7 @@ async function wizRegister(w = wiz, verify = false) {
   w.registering = true; w.verifying = verify; render();
   for (let i = 0; i < w.candidates.length; i++) {
     const c = w.candidates[i];
-    if (c._sel === false || (w.results[i]?.res?.service_id || w.results[i]?.res?.draft_id)) continue;
+    if (!wizCanRegister(w, i)) continue;
     // R07：provision=up 未确认 → 后台必 400；GUI 先解释并拦下该条（其余候选不受影响）
     if (isComposeCand(c) && effectiveProvision(c) === "up" && !c._confirmed_provision) {
       w.results[i] = {code: 400, res: {error: "provision=up 需先勾选「允许创建容器/拉镜像——由我确认」（后台同样拒绝未确认的 up）"}};
@@ -3581,11 +3666,7 @@ async function wizRegister(w = wiz, verify = false) {
     }
     try {
       const [code, res] = await wizRegisterOnce(w, i, verify);
-      w.results[i] = {code, res};
-      if (code === 200 && res?.service_id) {
-        w.target = {...w.target, id: res.project_id, revision: res.revision};
-        w.registered = true;
-      }  // 后续候选不再撞修订号
+      wizSaveRegistrationResult(w, i, code, res);
     } catch (e) { w.results[i] = {code: 0, res: {error: "无法连接控制服务"}}; setConn(false); }
   }
   w.registering = false; w.verifying = false;
@@ -3597,9 +3678,11 @@ async function wizPrefetchDiff(i) {
   const target = w.target || w.project;
   const c = w.candidates[i];
   if (!c || w.diffs[i] || !target) return;
+  const request = {};
+  (w.diffRequests ??= {})[i] = request;
   try {
     const payload = candPayload(c, target, w);
-    const [code, res] = await api("POST", "/api/register", {...payload, dry_run: true});
+    const [code, res] = await api("POST", "/api/register", {...payload, dry_run: true, review_ports: true});
     if (code === 200) {
       // V2.3：diff 命中已登记服务时取其覆盖层（端点未就绪/404/501 → 静默降级）
       if (res && res.action === "diff" && res.registration_action !== "created" && res.service_id) {
@@ -3608,13 +3691,19 @@ async function wizPrefetchDiff(i) {
           if (oc === 200 && o && o.ok) res.overrideFields = Object.keys(o.fields || {});
         } catch (e2) { /* 覆盖层获取失败不阻塞 diff */ }
       }
-      w.diffs[i] = res;
-      render();
-    } else if (res) {
+    }
+    if (res && w.diffRequests[i] === request && w.candidates[i] === c) {
       w.diffs[i] = res;
       render();
     }
   } catch (e) { /* 差异预览失败不阻塞注册 */ }
+}
+
+function wizRefreshCandidatePreview(i) {
+  if (wiz.registering || wiz.results[i]?.res?.service_id || wiz.results[i]?.res?.draft_id) return;
+  delete wiz.diffs[i];
+  delete wiz.results[i];
+  return wizPrefetchDiff(i);
 }
 
 // V2.3「采用新值」：把字段加入候选的 accept_new，刷新该候选的 dry_run diff

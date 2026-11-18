@@ -137,7 +137,7 @@ const dispatchKey = (key, target) => {
     fn({key, target: target || null, preventDefault() {}, stopPropagation() {}});
 };
 
-const runner = new Function(script + "\n; return {render, api, refresh, removeDir, viewProject, wizField, wizNewTask, wizSelectTask, wizardTarget, wizRegister, wizPoll, applyAgentRepair, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
+const runner = new Function(script + "\n; return {render, api, refresh, removeDir, viewProject, wizField, wizNewTask, wizSelectTask, wizardTarget, wizRegister, wizPoll, wizPrefetchDiff, wizTryCandidatePorts, applyAgentRepair, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
 const page = runner();
 const out = [];
 const SECTIONS = [];
@@ -866,6 +866,47 @@ section("port repair confirmation");
     globalThis.fetch = originalFetch;
     page.setWiz(oldWizard);
   }
+}
+
+section("registration review port conflict");
+{
+  const oldWizard = page.wizGet();
+  const oldPort = await freePort();
+  const sid = "review-port-fixture";
+  const owner = {
+    id: "review-port-owner", name: "Port owner", source: srcB,
+    components: [{id: "web", cmd: ["python3", "-m", "http.server", String(oldPort)], port: oldPort}],
+  };
+  try {
+    const [code] = await page.api("POST", "/api/register", {schemaVersion: 1, service: owner});
+    if (code !== 200) throw new Error("Could not reserve the fixture port");
+    const wizard = {
+      step: "review", dir: srcA, agent: "codex", target: {id: sid, name: "Port review", revision: 0},
+      _diffFetched: true, _resFetched: true, results: {}, diffs: {}, candidates: [{
+        id: sid, name: "Port review", open: `http://127.0.0.1:${oldPort}/`,
+        components: [{id: "web", cmd: ["python3", "-m", "http.server", String(oldPort), "--bind", "127.0.0.1"],
+                      port: oldPort, start_timeout: 6, hot: true, auto_update: false}],
+      }],
+    };
+    page.setWiz(wizard);
+    await page.wizPrefetchDiff(0);
+    const recommended = wizard.diffs[0]?.port_conflicts?.[0]?.suggested_port;
+    const preview = page.viewNewProject();
+    check("候选端口冲突显示登记预留、推荐和手动试启动", recommended &&
+          preview.includes("登记预留") && preview.includes("review-port-owner.web") &&
+          preview.includes(`用 ${recommended} 试启动`) && preview.includes("手动端口试启动"));
+    const before = requests.filter(r => r.path === "/api/register").length;
+    await page.wizRegister(wizard);
+    check("批量注册跳过冲突候选", requests.filter(r => r.path === "/api/register").length === before);
+    await page.wizTryCandidatePorts(0, [recommended]);
+    const result = wizard.results[0]?.res;
+    check("审核页换端口调用真实试启动，验证后登记", result?.service_id === sid &&
+          result.trial?.state === "passed" && result.trial.checks[0]?.port === recommended);
+    const [, saved] = await page.api("GET", `/api/services/${sid}/definition`);
+    check("审核页换端口保留高级设置", saved?.definition?.components[0]?.start_timeout === 6 &&
+          saved.definition.components[0].hot === true && saved.definition.components[0].auto_update === false);
+  } catch (e) { check("审核页端口修复", false, e.message); }
+  finally { page.setWiz(oldWizard); }
 }
 
 section("analysis activity");
