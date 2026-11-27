@@ -137,7 +137,7 @@ const dispatchKey = (key, target) => {
     fn({key, target: target || null, preventDefault() {}, stopPropagation() {}});
 };
 
-const runner = new Function(script + "\n; return {render, api, refresh, removeDir, viewProject, wizField, wizNewTask, wizSelectTask, wizardTarget, wizRegister, wizPoll, wizPrefetchDiff, wizTryCandidatePorts, repairPort, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
+const runner = new Function(script + "\n; return {render, api, refresh, removeDir, viewProject, wizField, wizNewTask, wizSelectTask, wizardTarget, wizStartAnalyze, wizRegister, wizPoll, wizPrefetchDiff, wizTryCandidatePorts, repairPort, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
 const page = runner();
 const out = [];
 const SECTIONS = [];
@@ -804,6 +804,31 @@ section("independent recognition tasks");
   } finally {
     page.setWiz(oldWizard);
     page.setRegistry(oldRegistry);
+  }
+}
+
+section("Codex model selection");
+{
+  const oldWizard = page.wizGet();
+  const workbenchFetch = globalThis.fetch;
+  const sent = [];
+  try {
+    globalThis.fetch = async (url, options) => {
+      if (url !== "/api/analyze") return workbenchFetch(url, options);
+      sent.push(JSON.parse(options.body));
+      return {status: 400, json: async () => ({error: "model_not_supported"})};
+    };
+    page.setWiz({step: "dir", dir: srcA, name: "Codex model fixture", agent: "codex"});
+    check("Codex 模型输入默认显示 Auto", page.viewNewProject().includes('placeholder="Auto"'));
+    await page.wizStartAnalyze();
+    check("Auto 识别请求省略 model", !Object.hasOwn(sent[0], "model"));
+    page.wizField("model", " pinned ");
+    await page.wizStartAnalyze();
+    check("手动固定模型随请求发送", sent[1].model === "pinned");
+    check("固定模型不可用时可主动用 Auto 重试", page.viewNewProject().includes("用 Auto 重试"));
+  } finally {
+    page.setWiz(oldWizard);
+    globalThis.fetch = workbenchFetch;
   }
 }
 

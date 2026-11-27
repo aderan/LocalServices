@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess as sp
+import sys
 import tempfile
 import time
 import unittest
@@ -156,6 +157,113 @@ Path(args[args.index("-o") + 1]).write_text(Path({payload!r}).read_text())
             invoke.run_analysis("codex", str(self.target), focus="重点找 Admin 管理端", timeout=20)
         self.assertIn("重点找 Admin 管理端", captured["prompt"])
         self.assertIn("ANALYSIS ONLY", captured["prompt"])
+
+
+class CodexModelTest(InvokeEnv):
+    def install_codex(self, models, default, *, rejected=None, work_started=False, app_server=True):
+        payload = self.write_payload("models-result.json", json.dumps({"services": [_service()]}))
+        cli = self.bin / "codex"
+        self.exec_log = self.root / "exec-models.txt"
+        cli.write_text(rf"""#!{sys.executable}
+import json
+import os
+import sys
+import tomllib
+from pathlib import Path
+
+models, default = {models!r}, {default!r}
+config_path = Path(os.environ["CODEX_HOME"]) / "config.toml"
+configured = tomllib.loads(config_path.read_text()).get("model") if config_path.is_file() else None
+args = sys.argv[1:]
+if args[0] == "app-server":
+    if not {app_server!r}:
+        sys.exit(2)
+    for line in sys.stdin:
+        request = json.loads(line)
+        method = request["method"]
+        if method == "initialized":
+            continue
+        if method == "config/read":
+            assert request["params"]["cwd"] == {str(self.target.resolve())!r}
+        if method == "model/list":
+            assert request["params"]["modelProvider"] == "test-provider"
+        result = {{
+            "initialize": {{}},
+            "config/read": {{"config": {{"model": configured, "model_provider": "test-provider"}}}},
+            "model/list": {{"data": [{{"model": m, "isDefault": m == default, "hidden": False}}
+                                        for m in models], "nextCursor": None}},
+        }}[method]
+        print(json.dumps({{"id": request["id"], "result": result}}), flush=True)
+elif args[0] == "exec":
+    override = args[args.index("--model") + 1] if "--model" in args else None
+    with Path({str(self.exec_log)!r}).open("a") as f:
+        f.write(json.dumps(override) + "\n")
+    chosen = override or configured or default
+    if chosen not in models or chosen == {rejected!r}:
+        if {work_started!r}:
+            print(json.dumps({{"type": "item.started", "item": {{"type": "command_execution"}}}}))
+        print(json.dumps({{"type": "turn.failed", "error": {{
+            "message": f"The '{{chosen}}' model is not supported when using Codex with a ChatGPT account."
+        }}}}))
+        sys.exit(1)
+    Path(args[args.index("-o") + 1]).write_text(Path({payload!r}).read_text())
+""")
+        cli.chmod(0o755)
+
+    def configured_model(self, model):
+        config = self.root / "codex-home" / "config.toml"
+        config.write_text(f'model = "{model}"\n')
+        return config
+
+    def attempts(self):
+        return [json.loads(line) for line in self.exec_log.read_text().splitlines()]
+
+    def test_no_configured_model_uses_the_cli_default(self):
+        self.install_codex(["catalog-default"], "catalog-default")
+        result = invoke.run_analysis("codex", str(self.target), timeout=5)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.attempts(), [None])
+
+    def test_cli_without_model_discovery_keeps_normal_exec(self):
+        self.install_codex(["catalog-default"], "catalog-default", app_server=False)
+        result = invoke.run_analysis("codex", str(self.target), timeout=5)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.attempts(), [None])
+
+    def test_configured_model_recovers_automatically_after_cli_upgrade(self):
+        config = self.configured_model("preferred")
+        self.install_codex(["another-available-model", "catalog-default"], "catalog-default")
+        result = invoke.run_analysis("codex", str(self.target), timeout=5)
+        self.assertTrue(result["ok"], result)
+        self.install_codex(["preferred", "catalog-default"], "catalog-default")
+        upgraded = invoke.run_analysis("codex", str(self.target), timeout=5)
+        self.assertTrue(upgraded["ok"], upgraded)
+        self.assertEqual(self.attempts(), ["catalog-default", "preferred"])
+        self.assertEqual(config.read_text(), 'model = "preferred"\n')
+
+    def test_catalog_model_rejected_at_runtime_falls_back_once_before_work(self):
+        self.configured_model("preferred")
+        self.install_codex(["preferred", "catalog-default"], "catalog-default", rejected="preferred")
+        output = []
+        result = invoke.run_analysis("codex", str(self.target), timeout=5, on_output=output.append)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.attempts(), ["preferred", "catalog-default"])
+        self.assertEqual(output, [])
+        self.assertTrue(result["evidence"]["model_fallback"])
+
+    def test_model_rejection_after_work_begins_does_not_retry(self):
+        self.configured_model("preferred")
+        self.install_codex(["preferred", "catalog-default"], "catalog-default",
+                           rejected="preferred", work_started=True)
+        result = invoke.run_analysis("codex", str(self.target), timeout=5)
+        self.assertEqual(result["error"], "model_not_supported", result)
+        self.assertEqual(self.attempts(), ["preferred"])
+
+    def test_a_fixed_model_is_never_replaced(self):
+        self.install_codex(["catalog-default"], "catalog-default")
+        result = invoke.run_analysis("codex", str(self.target), timeout=5, model="fixed")
+        self.assertEqual(result["error"], "model_not_supported", result)
+        self.assertEqual(self.attempts(), ["fixed"])
 
 
 class BadOutputTest(InvokeEnv):
@@ -341,6 +449,20 @@ class AgentApiTest(InvokeEnv):
             agent_api.handle_analyze({"directory": str(self.root / "nope"), "agent": "codex"})[0], 400)
         code, body = agent_api.handle_analyze("not a dict")
         self.assertEqual((code, body["ok"]), (400, False))
+        self.assertEqual(agent_api.handle_analyze(
+            {"directory": str(self.target), "agent": "codex", "model": 42})[0], 400)
+
+    def test_analyze_forwards_a_fixed_model_and_deduplicates_by_it(self):
+        from localservices import agent_api
+
+        request = {"directory": str(self.target), "agent": "codex", "model": " pinned "}
+        with patch.object(agent_api, "_POOL") as pool, patch.object(agent_api, "_RUNNING", {}):
+            first = agent_api.handle_analyze(request)[1]["job_id"]
+            auto = agent_api.handle_analyze({**request, "model": " "})[1]["job_id"]
+            alias = agent_api.handle_analyze({**request, "model": "pinned"})[1]["job_id"]
+            self.assertEqual(alias, first)
+            self.assertNotEqual(auto, first)
+            self.assertEqual(pool.submit.call_args_list[0].args[-1].keywords["model"], "pinned")
 
     def test_agents_get_scan_and_verify(self):
         from localservices import agent_api

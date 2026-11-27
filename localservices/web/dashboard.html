@@ -406,7 +406,7 @@ let editState = null;             // 编辑对话框状态（两步：dry_run di
 const removedIntents = {};        // 恢复目标 -> "stopped" | "running"（缺省 stopped）
 
 function newWizard() {
-  return {step: "dir", dir: "", name: "", agent: "", project: null,
+  return {step: "dir", dir: "", name: "", agent: "", model: "", project: null,
           jobId: null, job: null, error: "",
           candidates: [], unresolved: [], results: {}, registering: false, manual: false,
           diffs: {},        // 候选下标 → dry_run 差异（与已登记服务的对比预览）
@@ -1836,11 +1836,13 @@ function analysisActivity(job) {
     : job.state === "failed" ? tr("识别未完成", "Analysis failed")
     : job.state === "done" ? tr("识别完成", "Analysis complete")
     : latest ? tr(...labels[latest.event]) : tr("等待识别进度", "Waiting for analysis progress");
+  const evidence = job.result?.evidence;
   return `<p class="note" role="status">${esc(status)}</p>
     ${job.state === "running" ? `<p class="note">${tr(`已运行 ${elapsed} 秒 · CLI 超时限制 ${job.timeout || 240} 秒`, `${elapsed}s elapsed · CLI timeout ${job.timeout || 240}s`)}
       ${quietFor >= 10 ? tr(` · 已有 ${quietFor} 秒没有新活动`, ` · No new activity for ${quietFor}s`) : ""}</p>` : ""}
     ${events.length ? `<details id="analysis-activity" ${wiz.activityOpen ? "open" : ""} ontoggle="if (this.isConnected) wiz.activityOpen = this.open">
       <summary>${tr("识别活动", "Analysis activity")}</summary>
+      ${evidence?.model ? `<p class="note">${tr("Codex 模型", "Codex model")} · ${esc(evidence.model)}${evidence.model_fallback ? tr("（Auto 回退）", " (Auto fallback)") : ""}</p>` : ""}
       <ul>${events.map(entry => `<li><span class="note">${esc(new Date(entry.at * 1000).toLocaleTimeString(language, {hour12: false}))}</span> ${esc(tr(...labels[entry.event]))}</li>`).join("")}</ul>
     </details>` : ""}
     <details id="analysis-output" ${wiz.outputOpen ? "open" : ""} ontoggle="if (this.isConnected) wiz.outputOpen = this.open">
@@ -1965,10 +1967,14 @@ function viewNewProject() {
       </div>
       <div class="field"><label>${tr("项目名称", "Project name")}</label><input id="wizName" aria-label="${tr("项目名称", "Project name")}" value="${esc(w.name)}" placeholder="${tr("默认取目录名", "Defaults to the directory name")}" oninput="wizField('name',this.value)" onblur="if (!this.value.trim()) wizField('dir', wiz.dir)"></div>
       <div class="field"><label>${tr("识别 Agent", "Discovery agent")}</label>
-        <select oninput="wizField('agent',this.value)" aria-label="${tr("识别 Agent", "Discovery agent")}">
+        <select onchange="wizField('agent',this.value); render()" aria-label="${tr("识别 Agent", "Discovery agent")}">
           ${["codex", "claude"].map(a => `<option value="${a}" ${(w.agent || agentsData?.default || "codex") === a ? "selected" : ""}>${a}</option>`).join("")}
         </select>
         <span class="inline-note">当前默认：${esc(agentsData?.default || "codex")}</span></div>
+      ${(w.agent || agentsData?.default || "codex") === "codex" ? `<div class="field">
+        <label for="wizModel">${tr("Codex 模型", "Codex model")}</label>
+        <input id="wizModel" value="${esc(w.model || "")}" placeholder="Auto" oninput="wizField('model',this.value)">
+      </div>` : ""}
       <div class="acts" style="justify-content:flex-start">
         ${hasPresets
           ? `<button class="primary" onclick="wizAnalyzePresetDirs()" ${w.step === "job" ? "disabled" : ""}>识别所选目录</button>
@@ -1999,12 +2005,15 @@ function viewNewProject() {
     let errBox = "";
     if (job.state === "failed") {
       const e = job.error || "";
+      const modelRejected = e.startsWith("model_not_supported");
       const hint = e.startsWith("agent_not_available")
         ? "Agent 不可用：到 Agent 连接页做一次验证调用，或换一个 agent 重试。"
+        : modelRejected && !w.model?.trim() ? tr("请更新 Codex CLI，或检查当前连接的模型配置。", "Update the Codex CLI or check this connection's model configuration.")
         : e.startsWith("timeout") ? "调用超时（进程组已终止，无残留）：可重试。" : "";
       errBox = `<div class="result-box bad">${esc(e)}${hint ? `<br>${esc(hint)}` : ""}</div>
         <div class="acts" style="justify-content:flex-start">
           <button onclick="wizStartAnalyze(null, wiz.jobDir)">重试</button>
+          ${modelRejected && w.model?.trim() ? `<button onclick="wizField('model',''); wizStartAnalyze('codex', wiz.jobDir)">${tr("用 Auto 重试", "Retry with Auto")}</button>` : ""}
           <button onclick="wizRetryOther()">换一个 agent 重试</button>
           <button onclick="setView('agents')">去 Agent 连接</button>
           <button onclick="externalAgentPrompt()">复制外部 Agent 提示词</button>
@@ -3247,8 +3256,9 @@ async function wizStartAnalyze(agentOverride, dirOverride, w = wiz, continuing =
   try {
     const target = w.target;
     const existing = registry?.registry?.projects?.some(p => p.id === target?.id);
+    const model = w.agent === "codex" ? w.model?.trim() || undefined : undefined;
     const [code, res] = await api("POST", "/api/analyze",
-        {directory: dir, agent: w.agent, project_id: existing ? target.id : undefined});
+        {directory: dir, agent: w.agent, project_id: existing ? target.id : undefined, model});
     if (code === 202 && res?.job_id) {
       w.jobId = res.job_id;
       wizPoll(w, res.job_id);

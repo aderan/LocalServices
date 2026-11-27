@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from . import detect, invoke
+from . import codex_models, detect, invoke
 from ..controller import redact
 
 _SCHEMA = {
@@ -44,9 +44,13 @@ def run(agent: str, evidence: dict, language: str) -> dict:
         argv = adapter.build_argv(directory, str(prompt), str(schema), timeout, last_message)
         if agent == "codex":
             argv[2:2] = ["-c", 'model_reasoning_effort="low"']
-        if agent == "claude":
+            attempt = codex_models.run_bounded(argv, directory, last_message, timeout)
+            if attempt.model_error:
+                raise ValueError(f"Codex 模型不可用：{redact(attempt.model_error)[:350]}")
+            rc, out, err, timed_out = attempt.rc, attempt.stdout, attempt.stderr, attempt.timed_out
+        else:
             argv[argv.index("--tools") + 1] = ""
-        rc, out, err, timed_out = detect._run_bounded(argv, directory, timeout)
+            rc, out, err, timed_out = detect._run_bounded(argv, directory, timeout)
         if timed_out:
             raise ValueError(f"{agent} 诊断超时（{timeout} 秒）")
         if rc:

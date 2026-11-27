@@ -406,17 +406,23 @@ def handle_analyze(body: dict) -> tuple[int, dict]:
         focus = body.get("focus")
         if focus is not None and not isinstance(focus, str):
             return 400, {"ok": False, "error": "focus 必须是字符串"}
+        model = body.get("model")
+        if model is not None and not isinstance(model, str):
+            return 400, {"ok": False, "error": "model 必须是字符串"}
+        model = (model or "").strip() or None
+        if model and agent != "codex":
+            return 400, {"ok": False, "error": "model 仅支持 Codex"}
         timeout = 240.0
         if body.get("timeout") is not None:
             if not isinstance(body["timeout"], (int, float)) or isinstance(body["timeout"], bool):
                 return 400, {"ok": False, "error": "timeout 必须是数字"}
             timeout = min(max(float(body["timeout"]), 1.0), MAX_ANALYZE_TIMEOUT)
 
-        key = ("analyze", agent, str(d), project_id, focus)
+        key = ("analyze", agent, str(d), project_id, focus, model)
         fields = {"kind": "analyze", "agent": agent, "directory": str(d),
                   "project_id": project_id, "timeout": timeout}
         run = partial(invoke.run_analysis, agent, str(d), focus=focus,
-                      timeout=timeout, project_context=project_ctx)
+                      timeout=timeout, project_context=project_ctx, model=model)
         return _enqueue_job(key, fields, run)
     except Exception as e:  # noqa: BLE001
         return 500, {"ok": False, "error": str(e)}

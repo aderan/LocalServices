@@ -181,6 +181,7 @@ def main(argv=None) -> int:
     sp.add_argument("--agent", required=True, choices=["codex", "claude"])
     sp.add_argument("--project", dest="project", help="target project id (V2.10 context)")
     sp.add_argument("--focus", help="e.g. 只识别 Admin 管理端")
+    sp.add_argument("--model", help="pin a Codex model for this task (default: Auto)")
     sp.add_argument("--wait", type=float, default=0, help="seconds to wait for the job")
     sp.add_argument("--json", action="store_true")
 
@@ -360,6 +361,8 @@ def main(argv=None) -> int:
                 body["project_id"] = a.project
             if a.focus:
                 body["focus"] = a.focus
+            if a.model:
+                body["model"] = a.model
             code, res = call("POST", "/api/analyze", body, timeout=30)
             if not res.get("ok"):
                 print(json.dumps(res, ensure_ascii=False, indent=1) if a.json else res.get("error", res))

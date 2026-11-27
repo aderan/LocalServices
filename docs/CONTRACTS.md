@@ -100,6 +100,9 @@ Docker 不可达时 `{"ok": false, "error": "..."}`，不阻塞其余 API。服�
 
 - `POST /api/analyze` `{"directory": "/abs", "agent": "codex|claude", "project_id"?: "..."}`
   → `202 {"ok": true, "job_id": "..."}`。
+- Codex 默认 Auto。洛湾读取生效配置和当前连接的模型列表。未配置时由 CLI 自选，配置不兼容时用连接推荐的
+  默认模型。可传 `model` 为当前识别任务固定模型，固定模型不可用时返回 `model_not_supported`。
+  成功结果的 `evidence` 记录可确定的模型和回退状态。模型选择只影响当次调用。
 - `GET /api/jobs/<id>` → `{"id", "kind": "analyze", "state": "queued|running|done|failed",
   "agent", "directory", "started_at", "finished_at", "timeout"?, "activity"?, "output"?, "result"?, "error"?}`；
   `activity` 保留最近 16 条 `{event, at}`，`at` 为 Unix 秒。包含连接检查、扫描、CLI 启动、
@@ -108,7 +111,8 @@ Docker 不可达时 `{"ok": false, "error": "..."}`，不阻塞其余 API。服�
   添加服务页按任务独立读取这些记录。识别只创建任务，服务与新项目在确认登记后同事务写入。
   `result` = `{"services": [服务定义（§2 service 结构）], "evidence": {...}, "unresolved": [...]}`。
 - `POST /api/agents/default` `{"kind"}` 切换默认连接（404 = 未发现该 Agent）。
-- Wrapper 一次有界调用（默认 240s，上限 600s）：只读沙箱（codex `--sandbox read-only`；claude 只允许
+- Wrapper 有界调用（默认 240s，上限 600s），Auto 仅在 Codex 明确拒绝模型且工作尚未开始时允许换模型重试一次。
+  只读沙箱（codex `--sandbox read-only`；claude 只允许
   Read/Glob/Grep 类工具），超时杀整个子进程组，绝无残留。输出过 `schemas/agent-analysis.schema.json`
   校验后再做本地校验（cwd 在范围内、cmd 可解析、端口不冲突——同 §2 规则），违规候选进 `unresolved`
   并给出原因，不静默丢弃整个结果。

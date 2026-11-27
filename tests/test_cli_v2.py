@@ -220,6 +220,13 @@ class AnalyzeProjectFlagTest(unittest.TestCase):
         rc, calls, _ = run_cli(["analyze", "/tmp/x", "--agent", "claude"],
                                lambda m, p, b: (202, {"ok": True, "job_id": "job-1"}))
         self.assertNotIn("project_id", calls[0]["body"])
+        self.assertNotIn("model", calls[0]["body"])
+
+    def test_fixed_codex_model_flows_into_request_body(self):
+        rc, calls, _ = run_cli(["analyze", "/tmp/x", "--agent", "codex", "--model", "pinned"],
+                               lambda m, p, b: (202, {"ok": True, "job_id": "job-1"}))
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls[0]["body"]["model"], "pinned")
 
     def test_wait_polls_until_done(self):
         states = iter([(200, {"id": "job-1", "state": "running"}),

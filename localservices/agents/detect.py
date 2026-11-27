@@ -238,10 +238,10 @@ def agent_environment() -> dict[str, str]:
     return env
 
 
-def _run_bounded(argv: list[str], cwd: str, timeout: float) -> tuple[int, str, str, bool]:
+def _run_bounded(argv: list[str], cwd: str, timeout: float, *, env: dict | None = None) -> tuple[int, str, str, bool]:
     """有界运行：返回 (returncode, stdout, stderr, timed_out)；超时杀整组绝无残留。"""
     proc = subprocess.Popen(
-        argv, cwd=cwd, stdin=subprocess.DEVNULL, env=agent_environment(),
+        argv, cwd=cwd, stdin=subprocess.DEVNULL, env=env if env is not None else agent_environment(),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         start_new_session=True,
     )
@@ -266,7 +266,7 @@ def _verify_argv(kind: str, path: str, tmpdir: str, last_message: str) -> list[s
     """最小真实调用 argv（只读沙箱）。"""
     if kind == "codex":
         return [
-            path, "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
+            path, "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
             "-C", tmpdir, "-o", last_message, VERIFY_PROMPT,
         ]
     # claude：--tools 白名单只保留读类工具（无 Bash/Edit/Write），--permission-prompts
@@ -293,7 +293,15 @@ def verify(kind: str, timeout: float = 60.0) -> AgentConnection:
     with tempfile.TemporaryDirectory(prefix="ls-verify-") as tmp:
         last_message = str(Path(tmp) / "last-message.txt")
         argv = _verify_argv(kind, conn.path, tmp, last_message)
-        rc, out, err, timed_out = _run_bounded(argv, tmp, timeout)
+        model_error = ""
+        if kind == "codex":
+            from . import codex_models
+
+            attempt = codex_models.run_bounded(argv, tmp, last_message, timeout)
+            rc, out, err, timed_out = attempt.rc, attempt.stdout, attempt.stderr, attempt.timed_out
+            model_error = attempt.model_error
+        else:
+            rc, out, err, timed_out = _run_bounded(argv, tmp, timeout)
         tail = ""
         try:
             tail = Path(last_message).read_text(encoding="utf-8", errors="replace")[:400]
@@ -304,6 +312,9 @@ def verify(kind: str, timeout: float = 60.0) -> AgentConnection:
             conn = conn.replace(status="call_failed", detail=f"verify 超时（{timeout:.0f}s）后已杀进程组", verified_at=time.time())
         elif rc == 0 and "OK" in (f"{out}\n{tail}"):
             conn = conn.replace(status="available", detail="最小调用返回 OK", verified_at=time.time())
+        elif model_error:
+            conn = conn.replace(status="call_failed", detail=f"Codex 模型不可用：{model_error[:300]}",
+                                verified_at=time.time())
         elif _looks_like_login_failure(combined):
             conn = conn.replace(
                 status="needs_login", verified_at=time.time(),

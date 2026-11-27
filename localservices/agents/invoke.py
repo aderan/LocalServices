@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from . import codex_models
 from .. import paths
 # R01 最后一道防线复用 controller.redact 的 SECRET_RE 家族（controller 不 import
 # agents，无循环依赖；只读复用，绝不修改 controller）。
@@ -257,7 +258,8 @@ def _snip(text: str) -> str:
 
 
 def _collect_cli(proc: subprocess.Popen, timeout: float, adapter,
-                 report: Callable[[str], None], output: Callable[[str], None]) -> tuple[bytes, bytes]:
+                 report: Callable[[str], None], output: Callable[[str], None],
+                 model_events: codex_models.Events | None = None) -> tuple[bytes, bytes]:
     """Read CLI events as they arrive, retaining the final result and bounded diagnostics."""
     deadline = time.monotonic() + timeout
     stderr = bytearray()
@@ -290,9 +292,10 @@ def _collect_cli(proc: subprocess.Popen, timeout: float, adapter,
                         except (ValueError, UnicodeError):
                             event = None
                         if isinstance(event, dict):
-                            for entry in adapter.display_output(event):
-                                if isinstance(entry, str) and entry.strip():
-                                    output(_snip(entry))
+                            if model_events is None or not model_events.observe(event):
+                                for entry in adapter.display_output(event):
+                                    if isinstance(entry, str) and entry.strip():
+                                        output(_snip(entry))
                             for activity in adapter.activity(event):
                                 report(activity)
                             if event.get("type") == "result":
@@ -315,7 +318,8 @@ def _collect_cli(proc: subprocess.Popen, timeout: float, adapter,
 def run_analysis(kind: str, directory: str, focus: str | None = None,
                  timeout: float = 240.0, project_context: dict | None = None,
                  on_activity: Callable[[str], None] | None = None,
-                 on_output: Callable[[str], None] | None = None) -> dict:
+                 on_output: Callable[[str], None] | None = None, *,
+                 model: str | None = None) -> dict:
     """对 directory 做一次 Agent 分析。绝不以目标目录为 cwd 执行任何东西；
     超时杀整个进程组；坏 JSON/根级 schema 违规整单失败，服务级违规降级进 unresolved。
     project_context（V2.10）：目标项目既有服务/覆盖层/资源摘要，只进 prompt。"""
@@ -359,31 +363,45 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
         last_message = str(Path(workdir) / "last-message.txt")
         argv = adapter.build_argv(str(root), prompt_file, str(SCHEMA_PATH), timeout, last_message)
 
-        report("launch_cli")
-        with subprocess.Popen(
-            argv, cwd=workdir, env=detect.agent_environment(),  # 临时空目录，绝不是目标目录
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            start_new_session=True,
-        ) as proc:
-            try:
-                out_b, err_b = _collect_cli(proc, timeout, adapter, report,
-                                            on_output or (lambda _: None))
-                timed_out = False
-            except subprocess.TimeoutExpired as error:
-                _kill_group(proc)
-                proc.wait()
-                timed_out = True
-                out_b, err_b = b"", error.stderr or b""
-            except BaseException:
-                _kill_group(proc)
-                raise
-        stdout = (out_b or b"")[:MAX_CAPTURE].decode("utf-8", "replace")
-        stderr = (err_b or b"")[:MAX_CAPTURE].decode("utf-8", "replace")
+        env = detect.agent_environment()
+
+        def execute(args: list[str], budget: float) -> codex_models.Attempt:
+            report("launch_cli")
+            Path(last_message).unlink(missing_ok=True)
+            events = codex_models.Events()
+            with subprocess.Popen(
+                args, cwd=workdir, env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+            ) as proc:
+                try:
+                    out, err = _collect_cli(proc, budget, adapter, report, on_output or (lambda _: None),
+                                            events if kind == "codex" else None)
+                    timed_out = False
+                except subprocess.TimeoutExpired as error:
+                    _kill_group(proc)
+                    proc.wait()
+                    timed_out = True
+                    out, err = b"", error.stderr or b""
+                except BaseException:
+                    _kill_group(proc)
+                    raise
+            return codex_models.Attempt(proc.returncode, out[:MAX_CAPTURE].decode("utf-8", "replace"),
+                                        err[:MAX_CAPTURE].decode("utf-8", "replace"), timed_out, events)
+
+        selection = {}
+        if kind == "codex":
+            attempt, selection = codex_models.run(argv, workdir, str(root), env, timeout, execute, fixed=model)
+        else:
+            attempt = execute(argv, timeout)
+        stdout, stderr, timed_out = attempt.stdout, attempt.stderr, attempt.timed_out
         if timed_out:
             return {"ok": False, "error": "timeout",
                     "detail": f"{timeout:.0f}s 超时，进程组已终止。stderr: {_snip(stderr)}",
                     "agent": kind, "duration": round(time.monotonic() - started, 2)}
+
+        if kind == "codex" and attempt.model_error:
+            return {"ok": False, "error": "model_not_supported", "detail": _snip(attempt.model_error),
+                    "agent": kind, **selection, "duration": round(time.monotonic() - started, 2)}
 
         report("validate_result")
         try:
@@ -400,7 +418,7 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
                     api_err = m.group(1)[:300]
                 if api_err:
                     break
-            if proc.returncode != 0:
+            if attempt.rc != 0:
                 detail = str(error) if kind == "claude" and stdout.lstrip().startswith("{") else stderr or stdout
                 reason = _snip(api_err or detail)
                 low = reason.lower()
@@ -447,6 +465,7 @@ def run_analysis(kind: str, directory: str, focus: str | None = None,
         "evidence": {
             "agent": kind,
             "agent_version": conn.version,
+            **selection,
             "directory": str(root),
             "duration": duration,
             "scan_entries": len(evidence.get("entries", [])),
