@@ -1880,13 +1880,17 @@ function showProjectPrompt(prompt, title = tr("项目修复提示词", "Project 
     ${reason ? `<p class="reason bad">${esc(reason)}</p>` : ""}
     <p class="note">${tr("在项目目录中打开 Agent，再粘贴执行。", "Open an agent in the project directory and paste the prompt.")}</p>
     <textarea aria-label="${esc(title)}" readonly rows="12" style="width:100%">${esc(prompt)}</textarea>`,
-    onOk: async () => {
+    onOk: async body => {
+      const clipboard = window.webkit?.messageHandlers?.lsclipboard;
+      if (clipboard) {
+        try { if (await clipboard.postMessage(prompt) === true) return true; } catch (e) { /* try the web clipboard */ }
+      }
       if (navigator.clipboard?.writeText) {
         try { await navigator.clipboard.writeText(prompt); return true; } catch (e) { /* use selection */ }
       }
-      const field = document.querySelector('.modal textarea');
-      field?.select();
-      return document.execCommand("copy") ? true : "keep";
+      body.querySelector("textarea")?.select();
+      try { if (document.execCommand("copy")) return true; } catch (e) { /* keep the selected text */ }
+      return "keep";
     }});
 }
 

@@ -833,6 +833,8 @@ section("port repair actions");
 {
   const originalFetch = globalThis.fetch;
   const originalSnap = page.snapGet();
+  const originalWebKit = window.webkit;
+  const copied = [];
   const sid = "gui-port-repair";
   const issue = {kind: "occupied", component: "web", host: "127.0.0.1", port: 48229};
   const fixture = {id: sid, name: "Repair fixture", state: "conflict", intent: "stopped",
@@ -865,8 +867,12 @@ section("port repair actions");
     const modal = page.getModalState();
     check("提示词可选中复制", calls[1]?.mode === "prompt" &&
           modal?.overlay?.children[0]?.children[1]?.innerHTML.includes("请在项目目录修复端口 48229"));
-    if (modal) for (const listener of [...keyHandlers]) listener({key: "Escape", preventDefault() {}, stopPropagation() {}});
+    window.webkit = {messageHandlers: {lsclipboard: {postMessage: async text => { copied.push(text); return true; }}}};
+    await modal?.okBtn?.onclick();
+    check("原生复制将完整提示词写入剪贴板后关闭", copied[0] === "请在项目目录修复端口 48229" && !page.modalOpen());
+    if (page.modalOpen()) dispatchKey("Escape");
   } finally {
+    window.webkit = originalWebKit;
     globalThis.fetch = originalFetch;
     page.setSnap(originalSnap);
   }

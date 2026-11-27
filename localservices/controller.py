@@ -407,7 +407,7 @@ class Controller:
                     if entry is not None:
                         if entry.get("skip"):
                             continue
-                        entry["listeners"] = [row]
+                        entry["listeners"] = [dataclasses.asdict(row)]
                         if not any(e.get("container") == entry["container"] and e["component"] == c.id
                                    for e in out):
                             out.append(entry)
@@ -432,7 +432,7 @@ class Controller:
                 tree = procs.descendants(root, ps)
                 out.append({"component": c.id, "name": c.name or c.id, "pid": root, "tree": sorted(tree),
                             "ports": sorted({pt for t in tree for pt in ports_of.get(t, ())}), "why": why,
-                            "listeners": [row for row in blocked if row.pid in tree],
+                            "listeners": [dataclasses.asdict(row) for row in blocked if row.pid in tree],
                             "cmd": ps[root].cmd[:120] if root in ps else "?",
                             "same_project": pid not in other_owners and
                                             (inside(pid, want, True) if c.external_cwd_exact else inside(pid)),
@@ -466,7 +466,7 @@ class Controller:
         issues = []
         for c in p.managed_components():
             entries = [e for e in instances if e["component"] == c.id and e.get("listeners")]
-            rows = list(dict.fromkeys(row for e in entries for row in e["listeners"]))
+            rows = list(dict.fromkeys(procs.TCPListener(**row) for e in entries for row in e["listeners"]))
             if rows:
                 issue = ports.occupancy(c.id, ports.target_host(c, p.open), c.port, rows)
                 issue["owners"] = [{"pid": e["pid"], "service": e.get("managed_project"),

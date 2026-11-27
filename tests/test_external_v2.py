@@ -20,6 +20,7 @@ if str(REPO) not in sys.path:
 
 from localservices import compose, dockerctx, launchd, procs  # noqa: E402
 from localservices.controller import Controller, LAUNCHER_RE  # noqa: E402
+from localservices.registry import Registry  # noqa: E402
 
 
 class ExternalV2Base(unittest.TestCase):
@@ -144,6 +145,12 @@ class DockerProxyAttributionTest(ExternalV2Base):
         conflicts = self.ctl.conflicts(p)
         self.assertEqual(conflicts, ["web：端口 18250 由容器 unknown-web 发布占用（未登记）"])
         self.assertNotIn("非本工具进程", "".join(conflicts))
+
+    def test_removal_preview_serializes_listener_evidence(self):
+        self.docker_ps_publish({18250: ["unknown-web"]})
+        preview = Registry().service_remove_preview("climb", self.ctl)
+        row = json.loads(json.dumps(preview))["external_instances"][0]
+        self.assertEqual(row["listeners"], [{"pid": 400, "address": "127.0.0.1", "family": "IPv4"}])
 
     def test_dependency_container_running_is_no_external_instance(self):
         from localservices.manifest import Dependency, Probe

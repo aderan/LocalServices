@@ -7,7 +7,8 @@ import AppKit
 import SwiftUI
 import WebKit
 
-final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelegate,
+                                  WKScriptMessageHandler, WKScriptMessageHandlerWithReply {
     let window: NSWindow
     let webView: WKWebView
     let shortcuts = ShortcutAction.allCases.map { GlobalShortcut(action: $0) }
@@ -58,6 +59,7 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
         retryButton.bezelStyle = .rounded
         super.init()
         config.userContentController.add(self, name: "lsbridge") // 原生桥：lsbridge
+        config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "lsclipboard")
         webView.navigationDelegate = self
         retryButton.target = self
         layoutOverlay()
@@ -200,6 +202,20 @@ final class MainWindowController: NSObject, NSWindowDelegate, WKNavigationDelega
         if action == "openExternally", let s = body["url"] as? String, let url = URL(string: s) {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        guard message.frameInfo.isMainFrame,
+              let origin = message.frameInfo.request.url, isDashboardOrigin(origin),
+              let text = message.body as? String else {
+            replyHandler(false, nil)
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        replyHandler(pasteboard.setString(text, forType: .string), nil)
     }
 
     private func publishShortcut() {
