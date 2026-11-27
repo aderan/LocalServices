@@ -6,7 +6,7 @@ Locove 是一款用于运行本地开发服务的 macOS 菜单栏应用，配有
 
 ## 安装
 
-**0.2.0 源码预览版**需要 macOS 13 或更高版本、Xcode 命令行工具以及 Python 3.11 或更高版本。预览版已在 Apple 芯片的 Mac 上测试。[下载源码包与校验文件](https://github.com/aderan/LocalServices/releases/tag/v0.2.0)。
+**0.5.1 源码预览版**需要 macOS 13 或更高版本、Xcode 命令行工具以及 Python 3.11 或更高版本。预览版已在 Apple 芯片的 Mac 上测试。[下载源码包与校验文件](https://github.com/aderan/LocalServices/releases/tag/v0.5.1)。
 
 将源码解压到准备长期保留的目录，在终端中进入该目录并运行：
 

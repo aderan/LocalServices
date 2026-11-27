@@ -6,7 +6,7 @@ Locove is a macOS menu bar app and workbench for running local development servi
 
 ## Install
 
-The **0.2.0 source preview** requires macOS 13 or later, the Xcode command-line tools, and Python 3.11 or later. The preview has been tested on Apple silicon. [Download the source archive and checksum](https://github.com/aderan/LocalServices/releases/tag/v0.2.0).
+The **0.5.1 source preview** requires macOS 13 or later, the Xcode command-line tools, and Python 3.11 or later. The preview has been tested on Apple silicon. [Download the source archive and checksum](https://github.com/aderan/LocalServices/releases/tag/v0.5.1).
 
 Extract the source to a directory you can keep. Open Terminal in that directory and run:
 

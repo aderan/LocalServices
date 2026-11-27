@@ -25,6 +25,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from localservices import __version__
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD = REPO_ROOT / "localservices" / "web" / "dashboard.html"
 
@@ -359,7 +361,7 @@ class MenubarBuildTest(unittest.TestCase):
         self.assertTrue((app / "Contents" / "Info.plist").exists())
         plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
         metadata = plistlib.loads(plist.encode())
-        self.assertEqual(metadata["CFBundleShortVersionString"], "0.2.0")
+        self.assertEqual(metadata["CFBundleShortVersionString"], __version__)
         self.assertEqual(metadata["LSMinimumSystemVersion"], "13.0")
         for key in ("CFBundleName", "CFBundleDisplayName", "CFBundleExecutable"):
             self.assertEqual(metadata[key], "Locove", key)

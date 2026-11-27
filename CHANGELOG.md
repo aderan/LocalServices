@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.1] - 2026-11-27
+
+- Service readiness checks verify that the registered process owns the listening port. When the port is occupied, the workbench reports the conflict and shows the available actions.
+- Test a suggested or custom replacement port from the workbench. Locove saves the new port after a successful trial. When the project must change its configuration, copy a repair prompt from the workbench.
+- Codex uses Auto by default. It keeps the effective configured model when the current CLI supports it and uses the connection's recommended default when that model is incompatible. A manually pinned model stays fixed and offers an explicit **Retry with Auto** action if rejected. Locove reads the Codex configuration and applies any fallback to the current invocation.
+- Fixed prompt copying in the macOS workbench and removal previews for services with port conflicts.
+
+Build from source on macOS. See [installation, updates, and removal](https://github.com/aderan/LocalServices/blob/v0.5.1/docs/INSTALLATION.md) for requirements and checksum instructions.
+
 ## [0.2.0] - 2026-11-17
 
 Locove's first public source preview for macOS. Use the menu bar, workbench, or `lsctl` to register, start, open, and troubleshoot local development services.
