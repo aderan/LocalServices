@@ -46,7 +46,7 @@ class ExternalV2Base(unittest.TestCase):
         for boundary in (
             patch.object(launchd, "info", return_value=launchd.JobInfo()),
             patch.object(procs, "snapshot", return_value={}),
-            patch.object(procs, "listeners", return_value={}),
+            patch.object(procs, "tcp_listeners", return_value={}),
             patch.object(procs, "all_cwds", return_value={}),
         ):
             boundary.start()
@@ -56,7 +56,9 @@ class ExternalV2Base(unittest.TestCase):
 
     def use_ps(self, ps, listeners, cwds):
         stop1 = patch.object(procs, "snapshot", return_value=ps)
-        stop2 = patch.object(procs, "listeners", return_value=listeners)
+        stop2 = patch.object(procs, "tcp_listeners",
+                             return_value={port: [procs.TCPListener(pid, "127.0.0.1")]
+                                           for port, pid in listeners.items()})
         stop3 = patch.object(procs, "all_cwds", return_value=cwds)
         for s in (stop1, stop2, stop3):
             s.start()

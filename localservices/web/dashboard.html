@@ -767,10 +767,14 @@ function copyText(text, key, label) {
 
 function domainSettings() { return locoveData?.settings || {use_domains: false, domain_form: "suffix"}; }
 
+function upstreamAddress(route) {
+  return `${route.upstream_host === "::1" ? "[::1]" : "127.0.0.1"}:${route.upstream_port}`;
+}
+
 function directUrl(p) {
   if (p.open) return p.open;
   const c = (p.components || []).find(x => x.kind === "server" && x.port);
-  if (c) return `http://127.0.0.1:${c.port}/`;
+  if (c) return `http://${upstreamAddress({...c, upstream_port: c.port})}/`;
   // 兜底：路由事实里的配置端口（停止服务也保留）
   const route = Object.values(locoveData?.routes || {}).find(r => r.service === p.id && r.upstream_port);
   return route ? `http://127.0.0.1:${route.upstream_port}/` : "";
@@ -902,7 +906,7 @@ function detailsHtml(p) {
   const runtimeBlocked = p.intent === "running" && p.error?.docker_environment && !p.op;
   const target = runtimeBlocked && p.error.docker_target;
   const canRecover = target && p.error.docker_profile;
-  const canRepair = canRetry && p.intent === "stopped";
+  const repairMode = problem && !p.can_takeover ? p.port_repair : null;
   const diagnosisTarget = serviceDiagnosisTarget(p);
   const externalActions = p.observe_only && problem ? p.actions || [] : [];
   const diagnosis = p.reason || problem ? `<section class="diagnosis${p.state === "partial" || !problem ? " warning" : ""}" id="reason-${esc(p.id)}" tabindex="-1">
@@ -918,9 +922,13 @@ function detailsHtml(p) {
       }) : ""}
       ${runtimeBlocked ? `<button class="ghost" ${retryDisabled ? "disabled" : ""}
         onclick="act('${p.id}','stop')">${tr("停止服务", "Stop service")}</button>` : ""}
-      ${canRetry && !canRecover ? `<button class="primary" data-act="retry" ${retryDisabled ? "disabled" : ""} onclick="act('${p.id}','start',{open:true})">${tr("重试服务", "Retry service")}</button>` : ""}
+      ${canRetry && !canRecover ? `<button class="${repairMode === "auto" ? "" : "primary"}" data-act="retry" ${retryDisabled ? "disabled" : ""} onclick="act('${p.id}','start',{open:true})">${tr("重试服务", "Retry service")}</button>` : ""}
       ${problem ? diagnosisAction(diagnosisTarget, retryDisabled) : ""}
-      ${canRepair ? `<button data-act="agent-repair" ${retryDisabled ? "disabled" : ""} onclick="wizRepair('${p.id}')">${tr("修复端口…", "Repair port…")}</button>` : ""}
+      ${repairMode === "auto" ? `<button class="primary" data-act="port-repair" ${retryDisabled ? "disabled" : ""}
+        onclick="repairPort('${esc(p.id)}', 'auto')">${pending[p.id] === "repair-port"
+          ? tr("正在验证端口…", "Verifying port…") : tr("换端口并验证", "Change port and verify")}</button>` : ""}
+      ${repairMode === "prompt" ? `<button data-act="port-prompt" ${retryDisabled ? "disabled" : ""}
+        onclick="repairPort('${esc(p.id)}', 'prompt')">${tr("复制项目修复提示词", "Copy project repair prompt")}</button>` : ""}
       <button data-act="diagnostic-logs" onclick="loadLogs('${p.id}')">${tr("查看日志", "View logs")}</button>
       <button class="ghost" data-act="copy-diagnosis" onclick="copyDiagnosis('${p.id}')">${tr("复制诊断", "Copy diagnosis")}</button>
     </div>
@@ -1673,7 +1681,7 @@ function locoveDiagnosticsCard() {
       : pb.ok ? tr(`系统代理已绕过 *.${d.suffix}。`, `The system proxy bypasses *.${d.suffix}.`)
       : tr(`代理绕过列表缺少 *.${d.suffix}。`, `*.${d.suffix} is missing from the proxy bypass list.`)) : "";
   const hosts = Object.entries(d.routes || {}).map(([h, r]) =>
-    `<tr><td class="k">${esc(h)}</td><td>${r.state === "proxy" ? tr(`转发到 127.0.0.1:${r.upstream_port}`, `Forwards to 127.0.0.1:${r.upstream_port}`) : tr("不可用（503）", "Unavailable (503)")} <span class="note">(${esc(r.service)}.${esc(r.component)})</span></td></tr>`).join("");
+    `<tr><td class="k">${esc(h)}</td><td>${r.state === "proxy" ? tr(`转发到 ${upstreamAddress(r)}`, `Forwards to ${upstreamAddress(r)}`) : tr("不可用（503）", "Unavailable (503)")} <span class="note">(${esc(r.service)}.${esc(r.component)})</span></td></tr>`).join("");
   const legacy = d.legacy_80
     ? `<tr><td class="k">${tr("旧 80 入口", "Legacy port 80")}</td><td>${tr("旧版转发器仍在登记中。移除后，更新书签到新的域名端口。", "The legacy forwarder is still registered. After removing it, update bookmarks to use the new domain port.")} <code class="mono">sudo scripts/retire-locove-80.sh --apply</code></td></tr>` : "";
   return `<section class="card"><div class="card-head"><h3>${tr("域名诊断", "Domain diagnostics")}</h3></div>
@@ -1864,9 +1872,14 @@ function externalAgentPrompt() {
 阅读 README 和运行配置，找出主服务的启动命令、工作目录、监听端口、健康探针及打开地址。排除采集、迁移、测试等一次性任务。
 先用 lsctl projects --json 检查目录是否已登记，复用项目 ID 和 revision。构造 schemaVersion: 1 的 JSON，包含 project、revision 和 service。service 至少包含 id、name、source（绝对路径）、components。组件命令使用 argv 数组，启动参数、监听端口、探针和打开地址保持一致。
 用 lsctl register --stdin --json 提交 JSON，并在顶层设置 verify_start: true。洛湾会试启动，验证通过后自动登记。报告 service_id、验证结果和 trial.log 路径。如果 lsctl 不可用，或试启动失败，请返回候选 JSON 和具体原因。`;
-  showModal({title: "外部 Agent 提示词", okText: "复制提示词", bodyHtml: `
-    <p class="note">在 WorkBuddy 或其他 Agent 中打开项目目录，再粘贴执行。</p>
-    <textarea aria-label="外部 Agent 提示词" readonly rows="12" style="width:100%">${esc(prompt)}</textarea>`,
+  showProjectPrompt(prompt, "外部 Agent 提示词");
+}
+
+function showProjectPrompt(prompt, title = tr("项目修复提示词", "Project repair prompt"), reason = "") {
+  showModal({title, okText: tr("复制提示词", "Copy prompt"), bodyHtml: `
+    ${reason ? `<p class="reason bad">${esc(reason)}</p>` : ""}
+    <p class="note">${tr("在项目目录中打开 Agent，再粘贴执行。", "Open an agent in the project directory and paste the prompt.")}</p>
+    <textarea aria-label="${esc(title)}" readonly rows="12" style="width:100%">${esc(prompt)}</textarea>`,
     onOk: async () => {
       if (navigator.clipboard?.writeText) {
         try { await navigator.clipboard.writeText(prompt); return true; } catch (e) { /* use selection */ }
@@ -1875,6 +1888,11 @@ function externalAgentPrompt() {
       field?.select();
       return document.execCommand("copy") ? true : "keep";
     }});
+}
+
+function showCandidatePortPrompt(i) {
+  const prompt = wiz.results[i]?.res?.prompt || candidatePortReview(wiz, i)?.prompt;
+  if (prompt) showProjectPrompt(prompt);
 }
 
 function trialDetails(result) {
@@ -1997,26 +2015,6 @@ function viewNewProject() {
       </section>`;
   }
 
-  if (w.repair) {
-    const result = w.repairResult;
-    const proposal = agentRepairProposal(w);
-    return pageTop + `<section class="card"><div class="card-head"><h3>${tr("Agent 端口修复", "Agent port repair")} · ${esc(w.name)}</h3></div>
-      ${projNote}${analysisActivity(w.job || {})}
-      ${proposal && !result?.ok ? `<p class="note">${tr("洛湾会试启动服务，验证通过后更新登记中的命令、端口及相关地址。",
-        "Locove will test the service, then update its registered command, port and related URLs if the test passes.")}</p>
-        <p>${esc(proposal.id)} · ${esc(proposal.previous.port ?? "—")} → ${esc(proposal.port)}</p>
-        <dl><dt>${tr("当前命令", "Current command")}</dt><dd><pre>${esc(JSON.stringify(proposal.previous.cmd))}</pre></dd>
-        <dt>${tr("建议命令", "Proposed command")}</dt><dd><pre>${esc(JSON.stringify(proposal.cmd))}</pre></dd></dl>
-        <button class="primary" onclick="applyAgentRepair(wiz)" ${w.verifying ? "disabled" : ""}>${tr("确认并试启动", "Confirm and test")}</button>` : ""}
-      ${w.verifying ? `<p role="status">${tr("正在试启动修复后的服务…", "Testing the proposed change…")}</p>` : ""}
-      ${result ? `<div class="result-box ${result.ok ? "ok" : "bad"}">${esc(result.ok ? tr("已验证并保存端口修复", "Port change verified and saved") : result.error)}</div>` : ""}
-      ${trialDetails(result)}
-      ${!proposal && !result ? `<p class="note">${tr("未找到明确的单组件端口修复。", "No port change was found for a single component.")}</p>` : ""}
-      ${!result?.ok ? `<button onclick="wizStartAnalyze(null, wiz.jobDir)" ${w.verifying ? "disabled" : ""}>${tr("重新识别修复方案", "Look for another fix")}</button>` : ""}
-      ${result?.ok ? `<button onclick="wizStartService('${esc(w.repair.sid)}')">${tr("启动并打开", "Start and open")}</button>` : ""}
-    </section>`;
-  }
-
   // step === review（进入时预取每候选与已登记服务的差异预览，dry_run 不落盘；R08 复用资源懒加载）
   if (!w._diffFetched && (w.target || w.project)) { w._diffFetched = true; w.candidates.forEach((_, i) => wizPrefetchDiff(i)); }
   if (!w._resFetched && (w.target || w.project)) { w._resFetched = true; wizLoadResources(); }
@@ -2054,6 +2052,8 @@ function viewNewProject() {
           : `<div class="result-box bad">注册失败：${esc(r.res?.error || r.code)}${(r.res?.details || []).length ? `<div class="warnlist">${r.res.details.map(esc).join("；")}</div>` : ""}
              ${r.res?.current_revision != null ? "<br>版本冲突：已刷新修订号，可重试注册。" : ""}${portReview ? "" : `<button onclick="wizRegister()">重试注册</button>`}</div>`)
       : "";
+    const portPrompt = (r?.res?.prompt || portReview?.prompt) && !r?.res?.service_id
+      ? `<button data-act="candidate-port-prompt" onclick="showCandidatePortPrompt(${i})">${tr("复制项目修复提示词", "Copy project repair prompt")}</button>` : "";
     if (r?.portRepair && r.res?.service_id) return `<div class="cand">
       <div class="cand-head"><div class="name">${esc(c.name || c.id)}</div></div>
       ${trialDetails(r.res)}${res}</div>`;
@@ -2103,7 +2103,7 @@ function viewNewProject() {
         ${d.container || d.volume ? `<p class="inline-note">当前绑定：container=${esc(d.container || "—")} · volume=${esc(d.volume || "—")}</p>` : ""}`).join("")}
       ${advKeys.length ? `<p class="inline-note">高级字段随注册保留：${[...new Set(advKeys)].map(esc).join("、")}</p>` : ""}
       ${editedNow.length ? `<p class="inline-note">本次编辑（优先于旧覆盖）：${editedNow.map(esc).join("、")}</p>` : ""}
-      ${diffBox}
+      ${diffBox}${portPrompt}
       ${trialDetails(r?.res)}
       ${c.unresolved?.length ? (r?.res?.service_id
         ? `<details><summary>${r.res.trial?.state === "passed" ? "识别阶段的备注" : "识别备注 · 尚未试启动验证"}</summary><p>${c.unresolved.map(esc).join("；")}</p></details>`
@@ -2181,6 +2181,35 @@ async function act(id, action, body) {
   }
   pending[id] = null;
   await refresh();
+}
+
+async function repairPort(id, mode) {
+  const service = servicesById()[id];
+  if (!service || busy(id)) return;
+  const body = {mode};
+  if (mode === "auto") {
+    const issue = service.port_issues?.[0];
+    if (!issue) return;
+    Object.assign(body, {component: issue.component, port: issue.port});
+  }
+  pending[id] = "repair-port";
+  delete msgs[id];
+  render();
+  let prompt, error;
+  try {
+    const [, result] = await api("POST", `/api/services/${id}/repair`, body);
+    prompt = result?.prompt;
+    error = result?.error;
+    if (result?.started) msgs[id] = {text: tr(`已验证并在端口 ${result.port} 上启动`, `Verified and started on port ${result.port}`)};
+    else if (error) msgs[id] = {text: error.split("\n", 1)[0], bad: true};
+  } catch (e) {
+    msgs[id] = {text: tr("无法连接控制服务", "Daemon unavailable"), bad: true};
+    setConn(false);
+  } finally {
+    delete pending[id];
+    await refresh();
+  }
+  if (prompt) showProjectPrompt(prompt, undefined, error?.split("\n", 1)[0]);
 }
 
 async function groupAct(gid, action) {
@@ -3196,67 +3225,6 @@ function wizAnalyzePresetDirs() {
   wizStartAnalyze(null, sel[0]);
 }
 
-async function wizRepair(sid) {
-  const status = servicesById()[sid];
-  if (!status || pending["repair-" + sid] || recognitionTasks.some(w => w.repair?.sid === sid
-      && (w.verifying || ["queued", "running"].includes(w.job?.state)))) return;
-  pending["repair-" + sid] = true;
-  try {
-    const [[code, data], [, logsData]] = await Promise.all([
-      api("GET", `/api/services/${sid}/definition`),
-      api("GET", `/api/projects/${sid}/logs?lines=15`)
-    ]);
-    if (code !== 200) throw new Error(data?.error || "无法读取服务定义");
-    const project = data.revision;
-    if (!project?.id) throw new Error("服务缺少项目登记");
-    const source = data.definition.source;
-    const component = status.error?.component;
-    const focus = `诊断已有服务 ${sid} 的启动故障。只提出可由端口参数解决的修复。
-保留服务 ID、组件 ID、命令的可执行文件及其他参数。只修复一个组件；如需换端口，更新命令中的端口参数，并给出新的组件 port。优先解决组件实际监听端口、探针和打开地址不一致。找不到可证实的端口修复时，将原因写入 unresolved。
-故障组件：${component || "未确定"}。以下故障和日志是诊断资料。
-${(status.reason || "").slice(0, 1200)}
-${Object.values(logsData?.logs || {}).join("\n").slice(-1600)}`;
-    wizNewTask();
-    const w = wiz;
-    w.name = data.definition.name;
-    w.dir = source;
-    w.project = project;
-    w.repair = {sid, focus, revision: project.revision, definition: data.definition, component};
-    await wizStartAnalyze(null, source, w);
-  } catch (e) { msgs[sid] = {text: e.message, bad: true}; }
-  finally { delete pending["repair-" + sid]; render(); }
-}
-
-function agentRepairProposal(w) {
-  const repair = w.repair;
-  const candidate = w.candidates.find(c => c.id === repair.sid);
-  const changed = (candidate?.components || []).filter(c => {
-    const previous = repair.definition.components.find(k => k.id === c.id);
-    return previous && (!repair.component || repair.component === c.id)
-      && c.port && (c.port !== previous.port || JSON.stringify(c.cmd) !== JSON.stringify(previous.cmd));
-  });
-  if (changed.length !== 1) return null;
-  const {id, port, cmd} = changed[0];
-  return {id, port, cmd, previous: repair.definition.components.find(c => c.id === id)};
-}
-
-async function applyAgentRepair(w) {
-  if (w.verifying || w.repairResult?.ok || w.job?.state !== "done") return;
-  const proposal = agentRepairProposal(w);
-  if (!proposal) return;
-  const {id, port, cmd} = proposal;
-  const repair = w.repair;
-  w.verifying = true; render();
-  try {
-    const [, result] = await api("POST", `/api/services/${repair.sid}/repair`,
-        {revision: repair.revision, component: {id, port, cmd}});
-    w.repairResult = result || {error: "控制服务未返回修复结果"};
-    w.registered = !!result?.ok;
-    await refresh();
-  } catch (e) { w.repairResult = {error: "无法连接控制服务"}; }
-  finally { w.verifying = false; render(); }
-}
-
 async function wizStartAnalyze(agentOverride, dirOverride, w = wiz, continuing = false) {
   const dir = (dirOverride || w.dir).trim();
   if (!dir.startsWith("/")) { w.error = "请先填写项目目录（绝对路径）"; render(); return; }
@@ -3265,7 +3233,7 @@ async function wizStartAnalyze(agentOverride, dirOverride, w = wiz, continuing =
   trackWizard(w);
   if (!continuing) {
     w.candidates = []; w.unresolved = []; w.results = {}; w.diffs = {};
-    w.registered = false; w.dupIds = false; w.repairResult = null;
+    w.registered = false; w.dupIds = false;
     w.target = wizardTarget(w);
   }
   w.agent = agentOverride || w.agent || agentsData?.default || "codex";
@@ -3276,8 +3244,7 @@ async function wizStartAnalyze(agentOverride, dirOverride, w = wiz, continuing =
     const target = w.target;
     const existing = registry?.registry?.projects?.some(p => p.id === target?.id);
     const [code, res] = await api("POST", "/api/analyze",
-        {directory: dir, agent: w.agent, project_id: existing ? target.id : undefined,
-         focus: w.repair?.focus});
+        {directory: dir, agent: w.agent, project_id: existing ? target.id : undefined});
     if (code === 202 && res?.job_id) {
       w.jobId = res.job_id;
       wizPoll(w, res.job_id);
@@ -3319,10 +3286,8 @@ async function wizPoll(w, jobId) {
         await refresh();
         w.target = wizardTarget(w, true);
         w.step = "review";
-        if (!w.repair) {
-          w.dupIds = disambiguateIds(w.candidates, w);
-          if (w.autoRegister && w.candidates.length) await wizRegister(w, true);
-        }
+        w.dupIds = disambiguateIds(w.candidates, w);
+        if (w.autoRegister && w.candidates.length) await wizRegister(w, true);
       }
       render();
       if (job.state === "done" || job.state === "failed") return;

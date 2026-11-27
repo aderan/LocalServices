@@ -73,6 +73,13 @@ class DesiredRoutesTest(Env):
         r = routes["buildbase.locove"]
         self.assertEqual((r.state, r.upstream_port, r.service), ("proxy", 3000, "buildbase"))
 
+    def test_ipv6_loopback_uses_verified_upstream_address(self):
+        p = make_project("app", "app.locove", 3001)
+        component = {**comp_state("web", "ready", 3001), "upstream_host": "::1"}
+        snap = {"projects": [{"id": "app", "state": "available", "components": [component]}]}
+        routes = locove.desired_routes({"app": p}, snap)
+        self.assertIn("reverse_proxy [::1]:3001", locove.render_caddyfile(routes))
+
     def test_stopped_service_is_unavailable(self):
         p = make_project("app", "app.locove", 3001)
         snap = {"projects": [{"id": "app", "state": "stopped",

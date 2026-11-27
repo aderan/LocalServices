@@ -26,7 +26,7 @@ import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import dockerctx, manifest, overrides, paths, resources, tombstones
+from . import dockerctx, manifest, overrides, paths, ports, procs, resources, tombstones
 
 SCHEMA_VERSION = 1
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -317,27 +317,27 @@ def _diff_definitions(old: dict, new: dict) -> list[dict]:
 
 
 def _registration_port_conflicts(components: list[manifest.Component], owners: dict[int, str],
-                                 listeners: dict[int, int] | None) -> list[dict]:
+                                 listeners: dict[int, list[procs.TCPListener]] | None,
+                                 reserved: set[int], opening: str | None, existing: manifest.Project | None) -> list[dict]:
     listening = listeners or {}
-    occupied = set(owners) | set(listening) | {paths.daemon_port()}
-    occupied.update(c.port for c in components if c.port)
+    occupied = set(owners) | set(listening) | reserved | {c.port for c in components if c.port}
+    previous_ports = {c.id: c.port for c in existing.managed_components()} if existing else {}
     conflicts = []
     for component in components:
         port = component.port
         if component.kind == "generator" or not port:
             continue
-        owner, pid = owners.get(port), listening.get(port)
-        if not owner and not pid:
+        host = ports.target_host(component, opening)
+        rows = ports.component_listeners(listening, component, opening) if previous_ports.get(component.id) != port else []
+        owner = owners.get(port) or ("Locove" if port in reserved and previous_ports.get(component.id) != port else None)
+        if not owner and not rows:
             continue
-        suggested = None
-        if listeners is not None:
-            suggested = next((p for p in range(max(port + 1, 1024), 65536) if p not in occupied), None)
-            if suggested is None:
-                suggested = next((p for p in range(1024, port) if p not in occupied), None)
-            if suggested is not None:
-                occupied.add(suggested)
-        conflicts.append({"component": component.id, "port": port, "reserved_by": owner,
-                          "listener_pid": pid, "suggested_port": suggested})
+        proposed = ports.suggest(port, occupied) if listeners is not None else None
+        if proposed is not None:
+            occupied.add(proposed)
+        issue = (ports.occupancy(component.id, host, port, rows) if rows else
+                 {"kind": "reserved", "component": component.id, "host": host, "port": port, "listener_pid": None})
+        conflicts.append({**issue, "reserved_by": owner, "suggested_port": proposed})
     return conflicts
 
 
@@ -723,7 +723,7 @@ class Registry:
     # ---------- 注册（CONTRACTS §2） ----------
 
     def register_service(self, payload: dict, dry_run: bool = False, *, trial=None,
-                         listeners: dict[int, int] | None = None) -> dict:
+                         listeners: dict[int, list[procs.TCPListener]] | None = None) -> dict:
         try:
             return self._register(payload, dry_run=dry_run, trial=trial, listeners=listeners)
         except RegistryError as e:
@@ -732,7 +732,7 @@ class Registry:
             return out
 
     def _register(self, payload: dict, dry_run: bool = False, *, trial=None,
-                  listeners: dict[int, int] | None = None) -> dict:
+                  listeners: dict[int, list[procs.TCPListener]] | None = None) -> dict:
         if not isinstance(payload, dict):
             return {"ok": False, "error": "payload 必须是对象", "details": []}
         if payload.get("schemaVersion") != 1:
@@ -876,7 +876,8 @@ class Registry:
             owners = {c.port: f"{p.id}.{c.id}" for p in loaded.values() if p.id != sid
                       for c in p.managed_components() if c.port}
             conflicts = _registration_port_conflicts(
-                comp_objs, owners, listeners if action == "created" else None)
+                comp_objs, owners, listeners, ports.control_ports(data.get("settings")),
+                final_def.get("open"), existing)
             if conflicts:
                 first = conflicts[0]
                 details = []
@@ -890,7 +891,8 @@ class Registry:
                     c.kind == "server" and c.run == "local" and c.port and not c.build
                     for c in comp_objs)
                 return {"ok": False, "error": f"端口 {first['port']} 已被占用", "details": details,
-                        "port_conflicts": conflicts, "can_repair_ports": can_repair}
+                        "port_conflicts": conflicts, "can_repair_ports": can_repair,
+                        "prompt": ports.project_prompt(str(src), sid, conflicts)}
 
             # V3 域名冲突（锁内重读后的最新状态；以实际将写盘的定义计算，预览 = 实际）
             host_owner: dict[str, str] = {}

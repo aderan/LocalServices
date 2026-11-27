@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 from . import manifest, paths
 
@@ -58,8 +59,24 @@ def main(argv: list[str]) -> int:
             failures = 0
     rec["fresh"] = False
 
+    candidate = None
     try:
-        project = manifest.load_all()[project_id]
+        project = None
+        if len(argv) > 2:
+            # One launch may consume a verified candidate. Later launchd retries
+            # always read the current registration, including after a failed repair.
+            staged = Path(argv[2])
+            try:
+                project = manifest.load_file(staged)
+            except FileNotFoundError:
+                pass
+            else:
+                staged.unlink()
+                candidate = str(staged)
+                if project.id != project_id:
+                    raise ValueError("试启动清单的服务 ID 不匹配")
+        if project is None:
+            project = manifest.load_all()[project_id]
         comp = project.component(comp_id)
     except Exception as e:  # manifest broken: give up immediately, visible to daemon
         rec.update({"gave_up": True, "error": f"manifest: {e}", "failures": failures})
@@ -88,6 +105,7 @@ def main(argv: list[str]) -> int:
     rec.update({
         "failures": failures, "gave_up": False, "error": None, "backoff": 0, "phase": "exec",
         "started_at": time.time(), "pid": os.getpid(), "cmd": comp.cmd, "cwd": str(cwd),
+        "candidate": candidate,
     })
     write_record(project_id, comp_id, rec)
     print(f"[localservices] {time.strftime('%Y-%m-%d %H:%M:%S')} start {project_id}/{comp_id}: "

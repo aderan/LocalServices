@@ -136,8 +136,10 @@ def container_name(p: Project, c: Component) -> str | None:
     return None
 
 
-def _inspect_state(container: str) -> dict | None:
-    r = _run(["container", "inspect", "--format", "{{json .State}}", container])
+def _inspect_state(container: str, *, include_ports: bool = False) -> dict | None:
+    template = ('{"state":{{json .State}},"ports":{{json .NetworkSettings.Ports}}}'
+                if include_ports else "{{json .State}}")
+    r = _run(["container", "inspect", "--format", template, container])
     if r.returncode != 0:
         return None
     try:
@@ -220,13 +222,16 @@ def component_state(p: Project, c: Component) -> dict:
     name = container_name(p, c)
     if not name:
         return {"state": "missing", "health": None, "container": None}
-    state = _inspect_state(name)
-    if state is None:
+    inspected = _inspect_state(name, include_ports=bool(c.port))
+    if inspected is None:
         return {"state": "missing", "health": None, "container": None}
+    state = inspected["state"] if c.port else inspected
     health = (state.get("Health") or {}).get("Status")  # None = 容器没有 healthcheck
-    if state.get("Running"):
-        return {"state": "running", "health": health, "container": name}
-    return {"state": state.get("Status") or "exited", "health": health, "container": name}
+    result = {"state": "running" if state.get("Running") else state.get("Status") or "exited",
+              "health": health, "container": name}
+    if c.port:
+        result["published_ports"] = inspected["ports"] or {}
+    return result
 
 
 @_bound

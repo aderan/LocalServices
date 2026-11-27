@@ -30,7 +30,8 @@ def plist_path(label: str) -> Path:
     return paths.agents_dir() / f"{label}.plist"
 
 
-def write_plist(label: str, project: str, component: str, log_path: Path, env: dict[str, str]) -> Path:
+def write_plist(label: str, project: str, component: str, log_path: Path, env: dict[str, str],
+                staged: Path | None = None) -> Path:
     data = {
         "Label": label,
         "ProgramArguments": [sys.executable, "-m", "localservices.runner", project, component],
@@ -44,6 +45,8 @@ def write_plist(label: str, project: str, component: str, log_path: Path, env: d
         "StandardOutPath": str(log_path),
         "StandardErrorPath": str(log_path),
     }
+    if staged is not None:
+        data["ProgramArguments"].append(str(staged))
     p = plist_path(label)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")

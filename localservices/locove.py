@@ -114,10 +114,13 @@ class Route:
     state: str  # proxy | unavailable
     loopback_host: bool = False
     loopback_origin: bool = False
+    upstream_host: str = "127.0.0.1"
 
     def to_json(self) -> dict:
         row = {"service": self.service, "component": self.component,
                "upstream_port": self.upstream_port, "state": self.state}
+        if self.upstream_host != "127.0.0.1":
+            row["upstream_host"] = self.upstream_host
         if self.loopback_host:
             row["loopback_host"] = True
         if self.loopback_origin:
@@ -193,21 +196,24 @@ def desired_routes(projects: dict, snapshot: dict | None = None,
             comp = p.component_by_id(e.component)
             port = ext_ports.get(e.component) or (comp.port if comp else None)
             ext_port = ext_ports.get(e.component)
+            cs = comp_states.get(e.component)
+            upstream = cs.get("upstream_host", "127.0.0.1") if cs else "127.0.0.1"
             if ext_port:
                 # 外部实例：快照 external_ports 是「组件 -> 实际监听端口」，仅经归属+就绪
                 # 验证（Controller._adoptable）后才会出现；用实际端口作上游
                 state, port = "proxy", ext_port
             else:
-                cs = comp_states.get(e.component)
                 if cs is not None and cs.get("state") == "ready" and cs.get("running", True):
                     port = cs.get("port") or (comp.port if comp else None)
                     state = "proxy" if port else "unavailable"
                 else:
                     state = "unavailable"
+            if upstream not in ("127.0.0.1", "::1"):
+                state = "unavailable"
             loopback_origin = state == "proxy" and loopback_endpoints.get(e.host) == {
                 "service": pid, "component": e.component}
             routes[e.host] = Route(host=e.host, service=pid, component=e.component,
-                                   upstream_port=port, state=state,
+                                   upstream_port=port, state=state, upstream_host=upstream or "127.0.0.1",
                                    loopback_host=loopback_origin or (state == "proxy" and _vite_component(p, comp)),
                                    loopback_origin=loopback_origin)
     return routes
@@ -290,7 +296,8 @@ def render_caddyfile(routes: dict[str, Route], port: int | None = None,
     for host, r in sorted(routes.items()):
         parts.append(f'\nhttp://{host} {{')
         if r.state == "proxy" and r.upstream_port:
-            upstream = f"127.0.0.1:{r.upstream_port}"
+            authority_host = "[::1]" if r.upstream_host == "::1" else "127.0.0.1"
+            upstream = f"{authority_host}:{r.upstream_port}"
             indent = "\t"
             if r.loopback_origin:
                 authority = host if public_port == 80 else f"{host}:{public_port}"

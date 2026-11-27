@@ -74,6 +74,8 @@ Docker 不可达时 `{"ok": false, "error": "..."}`，不阻塞其余 API。服�
 - 注册成功 ≠ 运行验证成功。响应含 `validation.warnings[]`；启动是独立的 `POST /api/projects/<id>/start`。
 - `verify_start: true` 可在正式注册前试启动新登记的本地服务，验证监听归属、探针和打开地址。通过后停止试运行进程并登记；失败保留验证记录，项目和服务定义不落盘。响应的 `trial` 提供状态、检查项和本机日志路径。
 - `POST /api/services/<sid>/repair` 接收 `{revision, component: {id, port, cmd}}`，为已停止的服务验证并保存受限的端口修复。启动命令的端口参数、监听端口、探针与打开地址一起更新。
+- 同一端点接收 `{mode:"auto", component?, port?, revision?, open?}`，其中 `port` 是当前登记端口。适用时选择候选端口，通过 launchd 启动并核对进程归属、探针与打开地址，随后保存新登记。成功响应包含 `started`、`previous_port` 和 `port`。失败时清理候选进程，保留原登记，并在可改项目时返回 `prompt`。`{mode:"prompt"}` 只生成项目修复提示词。CLI 对应 `lsctl repair-port <sid> [--open | --prompt] [--json]`。
+- 服务状态的 `port_issues[]` 包含组件、地址、端口、冲突类型和可用的监听归属。启动失败保留当次证据，当前监听释放后可用原端口重试。可执行的端口动作通过 `port_repair` 提供（`auto`、`prompt` 或 `null`）。本地组件的监听归属和声明的 TCP/HTTP 探针均须通过。Compose 组件声明的端口对应宿主机发布的 TCP 端口。
 - 注册审核提交 `review_ports: true`，同时检查新服务的 TCP 监听与登记预留。冲突响应的 `port_conflicts[]` 包含 `component`、`port`、`reserved_by`、`listener_pid` 和 `suggested_port`，最后三项可为 `null`。推荐端口避开现有预留、监听和同一候选的组件端口。
 - `port_changes: [{component, port}]` 与 `verify_start: true` 一起提交。服务端调整本地启动命令、探针和关联打开地址，其他字段沿用候选值。试启动通过后，在登记锁内再次核对定义与预留端口，再提交新登记。
 - 登记预检使用 `dry_run: true`。当 `action` 为 `diff` 时，`registration_action` 区分

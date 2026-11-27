@@ -32,6 +32,22 @@ def run_cli(argv, responder=None):
     return rc, fake.calls, buf.getvalue()
 
 
+class PortRepairTest(unittest.TestCase):
+    def test_repair_requests_verified_start(self):
+        rc, calls, out = run_cli(["repair-port", "demo", "--open", "--json"],
+                                 lambda m, p, b: (200, {"ok": True, "started": True, "port": 3001}))
+        self.assertEqual(calls, [{"method": "POST", "path": "/api/services/demo/repair",
+                                  "body": {"mode": "auto", "open": True}}])
+        self.assertEqual(rc, 0)
+        self.assertTrue(json.loads(out)["started"])
+
+    def test_prompt_prints_copyable_text(self):
+        rc, calls, out = run_cli(["repair-port", "demo", "--prompt"],
+                                 lambda m, p, b: (200, {"ok": True, "prompt": "修复 /tmp/demo 的监听配置"}))
+        self.assertEqual(calls[0]["body"], {"mode": "prompt"})
+        self.assertEqual((rc, out.strip()), (0, "修复 /tmp/demo 的监听配置"))
+
+
 class LocoveBypassTest(unittest.TestCase):
     def test_applies_bypass_through_daemon(self):
         rc, calls, out = run_cli(["locove-bypass", "--json"],

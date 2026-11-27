@@ -4,6 +4,7 @@ OS process inspection/launchd are replaced at their boundary; all state is tempo
 """
 
 import os
+import socket
 from pathlib import Path
 import tempfile
 import threading
@@ -13,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from localservices import launchd, manifest, procs
-from localservices.controller import Controller
+from localservices.controller import Controller, log_path
 
 
 class StartupTest(unittest.TestCase):
@@ -71,7 +72,7 @@ class StartupTest(unittest.TestCase):
             patch.object(procs, "snapshot", side_effect=lambda: {
                 42: procs.Proc(42, 1, 0, "fixture")
             } if state["loaded"] and state["running"] else {}),
-            patch.object(procs, "listeners", side_effect=lambda: {49001: 42} if state["loaded"] else {}),
+            patch.object(procs, "tcp_listeners", side_effect=lambda: {49001: [procs.TCPListener(42, "127.0.0.1")]} if state["loaded"] else {}),
             patch.object(procs, "all_cwds", return_value={42: str(self.root / "fixture")}),
             patch.object(procs, "probe", side_effect=probe),
         ]
@@ -96,7 +97,7 @@ class StartupTest(unittest.TestCase):
         cwd = project.source / "apps/explore" if nested else project.source
         process = {42: procs.Proc(42, 1, 0, f"node vite --port {port}")}
         with patch.object(launchd, "info", return_value=launchd.JobInfo()), \
-                patch.object(procs, "listeners", return_value={port: 42}), \
+                patch.object(procs, "tcp_listeners", return_value={port: [procs.TCPListener(42, "127.0.0.1")]}), \
                 patch.object(procs, "all_cwds", return_value={42: str(cwd.resolve())}):
             return ctl, project, ctl.external_instances(project, process)
 
@@ -133,7 +134,7 @@ class StartupTest(unittest.TestCase):
 
         with patch.object(launchd, "info", side_effect=job_info), \
                 patch.object(procs, "snapshot", return_value=process), \
-                patch.object(procs, "listeners", return_value={3000: 42}), \
+                patch.object(procs, "tcp_listeners", return_value={3000: [procs.TCPListener(42, "127.0.0.1")]}), \
                 patch.object(procs, "all_cwds", return_value={42: str(self.root / "climbo")}):
             response = ctl.start("buildbase")
             self.assertFalse(response["accepted"])
@@ -215,16 +216,67 @@ class StartupTest(unittest.TestCase):
     def test_listener_owned_by_someone_else_cannot_satisfy_readiness(self):
         ctl, state = self.simulated_service(lambda *args, **kwargs: (True, ""))
         # A process acquires the port after the initial preflight but before our probe.
-        with patch.object(procs, "listeners", side_effect=lambda: {49001: 99} if state["loaded"] else {}):
+        with patch.object(procs, "tcp_listeners", side_effect=lambda: {49001: [procs.TCPListener(99, "127.0.0.1")]} if state["loaded"] else {}):
             ctl.start("fixture")
             self.assertTrue(self.wait_finished(ctl))
         status = ctl.project_status(ctl.projects["fixture"])
         self.assertEqual(status["state"], "failed")
-        self.assertIn("pid 99", status["reason"])
+        self.assertIn("pid 99", status["error"]["message"])
+        self.assertIn("可以重试", status["reason"])
+        self.assertIsNone(status["port_repair"])
+
+    def test_failed_bind_is_recorded_from_this_start_attempt(self):
+        ctl, state = self.simulated_service(lambda *args: (True, ""))
+        state["running"] = False
+        original = launchd.bootstrap
+
+        def bootstrap(label):
+            with log_path("fixture", "web").open("a") as log:
+                log.write("listen EADDRINUSE: address already in use 127.0.0.1:49001\n")
+            return original(label)
+
+        with patch.object(launchd, "bootstrap", side_effect=bootstrap):
+            self.assertTrue(ctl.start("fixture")["accepted"])
+            self.assertTrue(self.wait_finished(ctl))
+        status = ctl.project_status(ctl.projects["fixture"])
+        self.assertEqual([issue["kind"] for issue in status["port_issues"]], ["bind_failed"])
+        self.assertTrue(ctl.start("fixture")["accepted"])
+        self.assertTrue(self.wait_finished(ctl))
+        self.assertEqual(ctl.project_status(ctl.projects["fixture"])["port_issues"], [])
+
+    def test_ipv6_only_listener_does_not_block_a_distinct_ipv4_endpoint(self):
+        with socket.socket(socket.AF_INET6) as listener:
+            listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            listener.bind(("::1", 0))
+            listener.listen()
+            self.project("fixture", listener.getsockname()[1])
+            ctl = self.controller()
+            with patch.object(launchd, "info", return_value=launchd.JobInfo()):
+                status = ctl.project_status(ctl.projects["fixture"])
+            self.assertEqual(status["state"], "stopped", status["reason"])
+
+    def test_running_process_without_probe_must_listen_on_its_declared_port(self):
+        ctl, state = self.simulated_service(lambda *args: (True, ""))
+        project = ctl.projects["fixture"]
+        project.component("web").ready = None
+        with patch.object(procs, "tcp_listeners", side_effect=lambda: {49002: [procs.TCPListener(42, "127.0.0.1")]} if state["loaded"] else {}):
+            with patch("localservices.controller.STARTUP_TIMEOUT", 0.2):
+                self.assertTrue(ctl.start("fixture")["accepted"])
+                self.assertTrue(self.wait_finished(ctl))
+                status = ctl.project_status(project)
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(status["error"]["port_issue"]["kind"], "wrong_port")
+        self.assertEqual(status["error"]["port_issue"]["actual_ports"], [49002])
+
+    def test_released_port_clears_conflict_without_another_start(self):
+        ctl, _ = self.simulated_service(lambda *args: (True, ""))
+        with patch.object(procs, "tcp_listeners", return_value={49001: [procs.TCPListener(99, "127.0.0.1")]}):
+            self.assertFalse(ctl.start("fixture")["accepted"])
+        self.assertEqual(ctl.project_status(ctl.projects["fixture"])["state"], "stopped")
 
     def test_start_can_retry_after_a_port_conflict_is_removed(self):
         ctl, state = self.simulated_service(lambda *args, **kwargs: (True, ""))
-        with patch.object(procs, "listeners", return_value={49001: 99}):
+        with patch.object(procs, "tcp_listeners", return_value={49001: [procs.TCPListener(99, "127.0.0.1")]}):
             self.assertFalse(ctl.start("fixture")["accepted"])
         self.assertTrue(ctl.start("fixture")["accepted"])
         self.assertTrue(self.wait_finished(ctl))

@@ -134,6 +134,13 @@ def main(argv=None) -> int:
     grp.add_argument("--stdin", action="store_true")
     sp.add_argument("--json", action="store_true")
 
+    sp = sub.add_parser("repair-port", help="verify a replacement port or print project repair instructions")
+    sp.add_argument("service")
+    grp = sp.add_mutually_exclusive_group()
+    grp.add_argument("--prompt", action="store_true", help="print instructions without starting the service")
+    grp.add_argument("--open", action="store_true")
+    sp.add_argument("--json", action="store_true")
+
     sp = sub.add_parser("projects", help="list workspace projects")
     sp.add_argument("--json", action="store_true")
 
@@ -283,6 +290,18 @@ def main(argv=None) -> int:
             if res.get("ok"):
                 return 0
             return 5 if code == 409 else (4 if code == 400 else 1)
+        if a.cmd == "repair-port":
+            body = {"mode": "prompt" if a.prompt else "auto"}
+            if a.open:
+                body["open"] = True
+            code, res = call("POST", f"/api/services/{a.service}/repair", body, timeout=330 if not a.prompt else 15)
+            if a.json:
+                print(json.dumps(res, ensure_ascii=False, indent=1))
+            elif res.get("started"):
+                print(f"已验证并在端口 {res['port']} 上启动 {a.service}")
+            else:
+                print("\n\n".join(str(res[k]) for k in ("error", "prompt") if res.get(k)) or str(res))
+            return 0 if res.get("ok") else (5 if code == 409 else 4 if code == 400 else 1)
         if a.cmd == "projects":
             code, res = call("GET", "/api/registry", timeout=15)
             if a.json:

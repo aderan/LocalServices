@@ -18,7 +18,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import adapters, compose, dockerctx, launchd, manifest, paths, procs, runner, sourcewatch
+from . import adapters, compose, dockerctx, launchd, manifest, paths, ports, procs, runner, sourcewatch
 from .manifest import Component, Project
 from .infrastructure import DependencyError, Infrastructure, RuntimeUnavailable
 
@@ -31,6 +31,7 @@ STATE_LABELS = {
     "stopped": "已停止",
     "starting": "启动中",
     "preparing": "准备环境",
+    "repairing": "验证新端口",
     "available": "可用",
     "partial": "部分可用",
     "failed": "故障",
@@ -71,12 +72,12 @@ def redact(text: str) -> str:
     return text
 
 
-def tail(path: Path, lines: int = 80) -> str:
+def tail(path: Path, lines: int = 80, offset: int = 0) -> str:
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)
             size = f.tell()
-            f.seek(max(0, size - 64 * 1024))
+            f.seek(max(offset, size - 64 * 1024))
             data = f.read().decode("utf-8", "replace")
     except OSError:
         return ""
@@ -366,19 +367,24 @@ class Controller:
                 "cmd": f"容器 {name}（docker 端口代理 pid {holder_pid}）", "same_project": False,
                 "managed_project": self._container_owner(name, p)}
 
-    def external_instances(self, p: Project, ps: dict | None = None, fresh: bool = True) -> list[dict]:
+    def external_instances(self, p: Project, ps: dict | None = None, fresh: bool = True,
+                           listen: dict | None = None) -> list[dict]:
         """Instances of p's components not started by us. `same_project` = runs from p's own source
         folder (can be adopted / taken over); otherwise an unrelated process holds our port."""
-        ps = ps or procs.snapshot()
+        ps = procs.snapshot() if ps is None else ps
         ours = self.our_pids(ps, p)
         other_owners = {pid: other.id for other in self.projects.values() if other.id != p.id
                         for pid in self.our_pids(ps, other)}
-        listen = procs.listeners()
-        ports_of: dict[int, list[int]] = {}
-        for port, pid in listen.items():
-            ports_of.setdefault(pid, []).append(port)
+        listen = procs.tcp_listeners() if listen is None else listen
+        ports_of: dict[int, set[int]] = {}
+        for port, rows in listen.items():
+            for row in rows:
+                ports_of.setdefault(row.pid, set()).add(port)
+        holders = {c.id: [row for row in ports.component_listeners(listen, c, p.open)
+                          if row.pid not in ours]
+                   for c in p.managed_components() if c.port}
         cwds = self.cwds(0 if fresh else 15)
-        held = [listen[c.port] for c in p.managed_components() if c.port in listen and listen[c.port] not in ours]
+        held = [row.pid for rows in holders.values() for row in rows]
         if any(pid not in cwds for pid in held):
             cwds = self.cwds(0)
         src = str(p.source.resolve())
@@ -391,8 +397,9 @@ class Controller:
         for c in p.managed_components():
             want = str((p.source / (c.external_cwd or c.cwd)).resolve())
             cands = []
-            if c.port and c.port in listen and listen[c.port] not in ours:
-                holder_pid = listen[c.port]
+            blocked = []
+            for row in holders.get(c.id, []):
+                holder_pid = row.pid
                 holder = ps.get(holder_pid)
                 if holder is not None and procs.looks_like_docker_proxy(holder.cmd):
                     # docker 宿主代理：端口实际由某容器发布，归属到容器而不是进程冲突
@@ -400,15 +407,17 @@ class Controller:
                     if entry is not None:
                         if entry.get("skip"):
                             continue
-                        if not any(e.get("kind") == "docker-container" and e.get("container") == entry["container"]
+                        entry["listeners"] = [row]
+                        if not any(e.get("container") == entry["container"] and e["component"] == c.id
                                    for e in out):
                             out.append(entry)
                         continue
+                blocked.append(row)
                 cands.append((holder_pid, "port"))
             if c.external_cmd:
                 rx = re.compile(c.external_cmd)
                 cands += [(pid, "cmd") for pid, pr in ps.items()
-                          if pid not in ours and pid != os.getpid() and inside(pid, want, c.external_cwd_exact) and rx.search(pr.cmd)]
+                          if pid not in ours and pid not in other_owners and pid != os.getpid() and inside(pid, want, c.external_cwd_exact) and rx.search(pr.cmd)]
             for pid, why in cands:
                 root = pid
                 # climb through launcher wrappers (npm run dev → sh -c → node), never into shells/apps
@@ -417,21 +426,27 @@ class Controller:
                     if par <= 1 or par in ours or par not in ps or not inside(par) or not LAUNCHER_RE.search(ps[par].cmd):
                         break
                     root = par
-                if root in roots:
+                if (c.id, root) in roots:
                     continue
-                roots.add(root)
+                roots.add((c.id, root))
                 tree = procs.descendants(root, ps)
                 out.append({"component": c.id, "name": c.name or c.id, "pid": root, "tree": sorted(tree),
-                            "ports": sorted(pt for t in tree for pt in ports_of.get(t, [])), "why": why,
+                            "ports": sorted({pt for t in tree for pt in ports_of.get(t, ())}), "why": why,
+                            "listeners": [row for row in blocked if row.pid in tree],
                             "cmd": ps[root].cmd[:120] if root in ps else "?",
-                            "same_project": inside(pid, want, True) if c.external_cwd_exact else inside(pid),
+                            "same_project": pid not in other_owners and
+                                            (inside(pid, want, True) if c.external_cwd_exact else inside(pid)),
                             "managed_project": other_owners.get(pid)})
         return out
 
-    def conflicts(self, p: Project, ps: dict | None = None, fresh: bool = True) -> list[str]:
+    def conflicts(self, p: Project) -> list[str]:
         """Instances not started by us that would collide with starting p."""
+        return self._conflict_messages(self.external_instances(p))
+
+    @staticmethod
+    def _conflict_messages(instances: list[dict]) -> list[str]:
         out: list[str] = []
-        for e in self.external_instances(p, ps, fresh):
+        for e in instances:
             if e.get("kind") == "docker-container":
                 if e.get("same_project"):
                     continue  # 自己的容器在运行：compose up 幂等，不是冲突
@@ -446,12 +461,27 @@ class Controller:
                        + f"（pid {e['pid']}：{e['cmd']}）")
         return out
 
-    def _adoptable(self, p: Project, ext: list[dict]) -> tuple[bool, dict[str, int]]:
+    @staticmethod
+    def _external_port_issues(p: Project, instances: list[dict]) -> list[dict]:
+        issues = []
+        for c in p.managed_components():
+            entries = [e for e in instances if e["component"] == c.id and e.get("listeners")]
+            rows = list(dict.fromkeys(row for e in entries for row in e["listeners"]))
+            if rows:
+                issue = ports.occupancy(c.id, ports.target_host(c, p.open), c.port, rows)
+                issue["owners"] = [{"pid": e["pid"], "service": e.get("managed_project"),
+                                    "container": e.get("container"), "same_project": e["same_project"]}
+                                   for e in entries]
+                issues.append(issue)
+        return issues
+
+    def _adoptable(self, p: Project, ext: list[dict], listen: dict | None = None) -> tuple[bool, dict[str, int]]:
         """External instances run p from its own folder and every required server answers its probe
         on the port it actually listens on. Returns (ok, component -> port)."""
         if not ext or not all(e["same_project"] for e in ext):
             return False, {}
-        ports: dict[str, int] = {}
+        listen = procs.tcp_listeners() if listen is None else listen
+        actual_ports: dict[str, int] = {}
         for c in p.managed_components():
             if not c.required or not c.port:
                 continue
@@ -461,8 +491,10 @@ class Controller:
             if not e:
                 return False, {}
             port = c.port if c.port in e["ports"] else (e["ports"][0] if e["ports"] else None)
-            if not port:
-                return False, {}
+            for host in ports.target_hosts(c, p.open):
+                matching = procs.matching_listeners(listen, host, port)
+                if not matching or any(row.pid not in e["tree"] for row in matching):
+                    return False, {}
             if c.ready:
                 pr = dataclasses.replace(c.ready, http=c.ready.http.replace(f":{c.port}", f":{port}") if c.ready.http else None,
                                          tcp=c.ready.tcp.replace(f":{c.port}", f":{port}") if c.ready.tcp else None)
@@ -473,8 +505,8 @@ class Controller:
                     if not ok:
                         return False, {}
                     self._probe_cache[key] = time.time()
-            ports[c.id] = port
-        return True, ports
+            actual_ports[c.id] = port
+        return True, actual_ports
 
     def _external_url(self, p: Project, ports: dict[str, int]) -> str | None:
         url = self.adapters[p.id].open_url()
@@ -541,8 +573,10 @@ class Controller:
             err["message"] = ("外部实例停止后又被它的启动方重新拉起，需在启动它的程序（如 IDE / agent 会话）中关闭："
                               + err["message"].removeprefix("无法启动："))
 
-    def _set_error(self, pid: str, comp: str, msg: str) -> None:
+    def _set_error(self, pid: str, comp: str, msg: str, port_issue: dict | None = None) -> None:
         self.errors[pid] = {"component": comp, "message": msg, "at": time.time()}
+        if port_issue:
+            self.errors[pid]["port_issue"] = port_issue
 
     def _run_step(self, p: Project, c: Component, cmd: list[str], what: str, timeout: float) -> tuple[bool, str]:
         if self.ops.get(p.id, {}).get("deadline") is not None:
@@ -604,11 +638,13 @@ class Controller:
         self.store.save()
         return ok, err
 
-    def _bootstrap(self, p: Project, c: Component) -> tuple[bool, str]:
+    def _bootstrap(self, p: Project, c: Component, staged: Path | None = None) -> tuple[bool, str]:
         label = self.label(p, c)
         lp = log_path(p.id, c.id)
         rotate(lp)
-        launchd.write_plist(label, p.id, c.id, lp, self._plist_env())
+        if p.id in self.ops:
+            self.ops[p.id].setdefault("log_offsets", {})[c.id] = lp.stat().st_size
+        launchd.write_plist(label, p.id, c.id, lp, self._plist_env(), staged=staged)
         runner.reset_record(p.id, c.id)
         return launchd.bootstrap(label)
 
@@ -673,10 +709,15 @@ class Controller:
             detail = "" if st.get("state") == "missing" else f"容器状态 {st.get('state')}"
             cs.update(state="stopped", label="未运行", detail=detail)
             return cs
-        if health is not None:
-            if health == "healthy":
-                cs.update(state="ready", label="就绪", detail=note)
-            elif health == "unhealthy":
+        published = ports.published_listeners(st)
+        issue = ports.published_port_issue(p, c, st, published)
+        if c.port and not issue:
+            cs["upstream_host"] = ports.loopback_host(published, c.port, {0}, ports.target_host(c, p.open))
+        if issue:
+            cs.update(state="unhealthy", label="未就绪", detail=ports.describe(issue), port_issue=issue)
+            return cs
+        if health not in (None, "healthy"):
+            if health == "unhealthy":
                 cs.update(state="unhealthy", label="未就绪", detail="容器健康检查失败" + (f"；{note}" if note else ""))
             else:
                 cs.update(state="starting", label="启动中", detail=f"健康检查 {health}" + (f"；{note}" if note else ""))
@@ -701,12 +742,13 @@ class Controller:
         our own launchd job are ever signalled."""
         label = self.label(p, c)
         ji = launchd.info(label)
-        tree = procs.descendants(ji.pid, procs.snapshot()) if ji.pid else set()
+        ps = procs.snapshot() if ji.pid else {}
+        tree = {pid: ps[pid].start for pid in procs.descendants(ji.pid, ps) if pid in ps}
         ok, err = launchd.bootout(label)
 
         def alive() -> set[int]:
-            ps = procs.snapshot()
-            return {pid for pid in tree if pid in ps}
+            snapshot = procs.snapshot()
+            return {pid for pid, started in tree.items() if pid in snapshot and snapshot[pid].start == started}
         if not procs.wait_until(lambda: not alive(), timeout):
             for pid in alive():
                 try:
@@ -750,7 +792,7 @@ class Controller:
             if pid in self.ops:
                 return False
             self.ops[pid] = {"kind": kind, "since": time.time()}
-            if kind == "starting":
+            if kind in ("starting", "repairing"):
                 self.ops[pid]["budget"] = budget if budget is not None else STARTUP_TIMEOUT
                 self.ops[pid]["deadline"] = time.monotonic() + self.ops[pid]["budget"]
             return True
@@ -841,12 +883,17 @@ class Controller:
         if snap["state"] == "conflict":
             # A previous failure remains visible until retry. Recheck live ownership
             # rather than rejecting a retry based on that historical error.
-            conflicts = self.conflicts(p)
-            if conflicts:
-                reason = "；".join(conflicts)
-                self.store.set_intent(pid, "stopped", by="conflict")
-                self._set_error(pid, "", "无法启动：" + reason)
-                return {"ok": False, "accepted": False, "error": reason}
+            ext = self.external_instances(p)
+            if ext:
+                reason = "；".join(self._conflict_messages(ext))
+                issues = self._external_port_issues(p, ext)
+                with self.lock:
+                    if pid in self.ops or self.projects.get(pid) is not p:
+                        return {"ok": True, "accepted": False, "message": "服务状态已变化，请重试"}
+                    self.store.set_intent(pid, "stopped", by="conflict")
+                    self._set_error(pid, issues[0]["component"] if issues else "", "无法启动：" + reason,
+                                    issues[0] if issues else None)
+                return {"ok": False, "accepted": False, "error": reason, "port_issues": issues}
         if snap["state"] in ("available", "external"):
             if open_after:
                 self.open(pid)
@@ -854,6 +901,10 @@ class Controller:
                     "message": "已在运行" if snap["state"] == "available" else "已有外部实例在运行，已直接打开；可点「接管」改由本工具管理"}
         if not self._begin(pid, "starting", budget=self._startup_budget(p)):
             return {"ok": True, "accepted": False, "message": "启动中，请稍候"}
+        p = self.projects.get(pid)
+        if not p:
+            self._end(pid)
+            return {"ok": False, "accepted": False, "error": "服务登记已变化，请重试"}
         self.store.set_intent(pid, "running")
         threading.Thread(target=self._do_start, args=(p, open_after), daemon=True).start()
         return {"ok": True, "accepted": True, "message": "启动中"}
@@ -868,10 +919,12 @@ class Controller:
             ps = procs.snapshot()
             mine = self.our_pids(ps)
             previous = [c for c in p.managed_components() if launchd.info(self.label(p, c)).running]
-            conf = self.conflicts(p, ps)
-            if conf:
+            ext = self.external_instances(p, ps)
+            if ext:
                 conflicted = True
-                self._set_error(p.id, "", "无法启动：" + "；".join(conf))
+                issues = self._external_port_issues(p, ext)
+                self._set_error(p.id, issues[0]["component"] if issues else "",
+                                "无法启动：" + "；".join(self._conflict_messages(ext)), issues[0] if issues else None)
                 if by_user:
                     self.store.set_intent(p.id, "stopped", by="conflict")
                 # automatic start (autostart / re-login): keep intent, retry after the guard period
@@ -887,7 +940,9 @@ class Controller:
                     try:
                         res = compose.ensure_started(p, c)
                     except compose.ComposeError as e:
-                        self._set_error(p.id, c.id, f"无法启动：compose 服务 {c.compose_service} 启动失败：{e}")
+                        error = redact(str(e))
+                        self._set_error(p.id, c.id, f"无法启动：compose 服务 {c.compose_service} 启动失败：{error}",
+                                        ports.bind_failure(p, c, error))
                         return
                     if res.get("action") != "already-running":
                         # 只有本次真正带起的容器才参与失败回滚；先前已在运行的容器不动
@@ -899,7 +954,8 @@ class Controller:
                 self._startup_remaining(p)
                 ji = launchd.info(self.label(p, c))
                 if ji.running and ji.pid in mine:
-                    ok, _ = self._ready(p, c, timeout=self._startup_remaining(p))
+                    issue = ports.readiness(p, c, ji.pid, ps, procs.tcp_listeners()) if c.port else None
+                    ok, _ = self._ready(p, c, timeout=self._startup_remaining(p)) if not issue else (False, "")
                     if ok:
                         continue
                 if not skip_build:
@@ -955,7 +1011,8 @@ class Controller:
                                 ok, err = False, str(e)
                             if not ok:
                                 original = self.errors.get(p.id, {}).get("message", "启动失败")
-                                self._set_error(p.id, c.id, f"{original}；清理失败：{err}")
+                                issue = self.errors.get(p.id, {}).get("port_issue")
+                                self._set_error(p.id, c.id, f"{original}；清理失败：{err}", issue)
             finally:
                 self._end(p.id)
         if success and open_after:
@@ -981,11 +1038,12 @@ class Controller:
             if st["state"] != "running":
                 time.sleep(min(0.2, max(0.0, end - time.monotonic())))
                 continue
+            issue = ports.published_port_issue(p, c, st, ports.published_listeners(st))
+            if issue:
+                self._set_error(p.id, c.id, ports.describe(issue), issue)
+                return False
             health = st.get("health")
-            if health is not None:
-                if health == "healthy":
-                    self._compose_probe_used.discard(key)
-                    return True
+            if health not in (None, "healthy"):
                 if health == "unhealthy":
                     self._set_error(p.id, c.id, f"无法启动：容器健康检查失败（unhealthy）")
                     return False
@@ -1003,31 +1061,93 @@ class Controller:
         self._set_error(p.id, c.id, f"启动就绪超时（总预算 {STARTUP_TIMEOUT:g}s）：{detail}")
         return False
 
+    def verify_port_repair(self, p: Project, commit) -> dict:
+        """Commit a candidate only while the verified launchd job is live."""
+        c = p.managed_components()[0]
+        if launchd.info(self.label(p, c)).loaded:
+            return {"ok": False, "error": "服务运行状态已改变，请重新检查端口"}
+        committed = False
+        result = {}
+        try:
+            self.errors.pop(p.id, None)
+            result = self._launch_port_candidate(p, c)
+            if result.get("ok"):
+                result = commit()
+                committed = result.get("ok", False)
+                if committed:
+                    self.reload(force=True)
+                    result["started"] = True
+                    try:
+                        self.store.set_intent(p.id, "running", by="port-repair")
+                    except OSError as error:
+                        result["warning"] = f"服务已启动，写入运行意图失败：{redact(str(error))}"
+        finally:
+            if not committed:
+                try:
+                    ok, error = self._bootout_wait(p, c)
+                except (OSError, subprocess.SubprocessError) as exc:
+                    ok, error = False, str(exc)
+                if not ok:
+                    cleanup_error = f"候选进程清理失败：{redact(error)}"
+                    result["cleanup_error"] = cleanup_error
+                    self._set_error(p.id, c.id, cleanup_error)
+        return result
+
+    def _launch_port_candidate(self, p: Project, c: Component) -> dict:
+        label = self.label(p, c)
+        ok, error = self._bootstrap(p, c, staged=p.file)
+        if not ok:
+            return {"ok": False, "error": f"launchd 拒绝启动：{redact(error)}"}
+        if not self._wait_ready(p, c):
+            error = self.errors[p.id]
+            return {"ok": False, "error": error["message"], "port_issue": error.get("port_issue")}
+        job = launchd.info(label)
+        record = runner.read_record(p.id, c.id)
+        if not job.running or record.get("pid") != job.pid or record.get("candidate") != str(p.file):
+            return {"ok": False, "error": "launchd 未使用候选配置，请重新检查服务"}
+        if p.open:
+            probe = manifest.Probe(http=p.open)
+            entry = dataclasses.replace(c, ready=probe)
+            ok, detail = procs.probe(probe, min(probe.timeout, self._startup_remaining(p)))
+            current = launchd.info(label)
+            if (not ok or not current.running or current.pid != job.pid or
+                    ports.readiness(p, entry, current.pid, procs.snapshot(), procs.tcp_listeners())):
+                return {"ok": False, "error": f"新端口的打开地址未通过检查：{detail or '监听已改变'}"}
+        return {"ok": True}
+
+    def _startup_error(self, p: Project, c: Component, message: str, issue: dict | None = None) -> bool:
+        offset = self.ops.get(p.id, {}).get("log_offsets", {}).get(c.id)
+        output = tail(log_path(p.id, c.id), 15, offset) if offset is not None else ""
+        issue = ports.bind_failure(p, c, output) or issue
+        self._set_error(p.id, c.id, message + (f"\n{output}" if output else ""), issue)
+        return False
+
     def _wait_ready(self, p: Project, c: Component) -> bool:
         end = time.monotonic() + min(c.start_timeout, self._startup_remaining(p))
         label = self.label(p, c)
         detail = ""
+        issue = None
         while time.monotonic() < end:
             rec = runner.read_record(p.id, c.id)
             if rec.get("gave_up"):
-                self._set_error(p.id, c.id, f"{rec.get('error')}\n{tail(log_path(p.id, c.id), 15)}")
-                return False
+                return self._startup_error(p, c, rec.get("error") or "进程已停止自动恢复", issue)
             ji = launchd.info(label)
             if not ji.loaded:
-                self._set_error(p.id, c.id, "进程未在 launchd 中运行")
-                return False
+                return self._startup_error(p, c, "进程未在 launchd 中运行", issue)
             if not ji.running and ji.last_exit not in (None, "(never exited)"):
-                self._set_error(p.id, c.id, f"进程在就绪前退出（exit {ji.last_exit}）\n{tail(log_path(p.id, c.id), 15)}")
-                return False
+                return self._startup_error(p, c, f"进程在就绪前退出（exit {ji.last_exit}）", issue)
             if not ji.running:
                 time.sleep(min(0.1, max(0, end - time.monotonic())))
                 continue
             if c.port:
-                listener = procs.listeners().get(c.port)
-                if listener is not None and listener not in procs.descendants(ji.pid, procs.snapshot()):
-                    self._set_error(p.id, c.id, f"端口 {c.port} 被其他进程占用（pid {listener}）")
-                    return False
-            remaining = min(end - time.monotonic(), self._startup_remaining(p))
+                issue = ports.readiness(p, c, ji.pid, procs.snapshot(), procs.tcp_listeners())
+                if issue:
+                    detail = ports.describe(issue)
+                    if issue["kind"] == "occupied":
+                        return self._startup_error(p, c, detail, issue)
+                    time.sleep(min(0.1, max(0, end - time.monotonic())))
+                    continue
+            remaining = end - time.monotonic()
             if remaining <= 0:
                 break
             future = self._pool.submit(self._ready, p, c, cached=False, timeout=remaining)
@@ -1037,10 +1157,17 @@ class Controller:
                 future.cancel()
                 break
             if ok and time.monotonic() < end:
-                return True
+                current = launchd.info(label)
+                if current.running and current.pid == ji.pid:
+                    issue = ports.readiness(p, c, ji.pid, procs.snapshot(), procs.tcp_listeners()) if c.port else None
+                    if issue is None and time.monotonic() < end:
+                        return True
+                    if issue:
+                        detail = ports.describe(issue)
+                        if issue["kind"] == "occupied":
+                            return self._startup_error(p, c, detail, issue)
             time.sleep(min(0.1, max(0, end - time.monotonic())))
-        self._set_error(p.id, c.id, f"启动就绪超时（总预算 {STARTUP_TIMEOUT:g}s）：{detail}\n{tail(log_path(p.id, c.id), 15)}")
-        return False
+        return self._startup_error(p, c, f"启动就绪超时（总预算 {STARTUP_TIMEOUT:g}s）：{detail}", issue)
 
     def stop(self, pid: str) -> dict:
         p = self.projects.get(pid)
@@ -1594,7 +1721,15 @@ class Controller:
                           detail=f"最近退出码 {ji.last_exit}")
                 started = None
             elif ji.running:
-                ok, detail = self._ready(p, c)
+                if c.port and listen is None:
+                    listen = procs.tcp_listeners()
+                issue = ports.readiness(p, c, ji.pid, ps, listen) if c.port else None
+                ok, detail = (False, ports.describe(issue)) if issue else self._ready(p, c)
+                if issue:
+                    cs["port_issue"] = issue
+                elif c.port and ok:
+                    cs["upstream_host"] = ports.loopback_host(
+                        listen, c.port, procs.descendants(ji.pid, ps), ports.target_host(c, p.open))
                 age = time.time() - (started or time.time())
                 if ok:
                     cs.update(state="ready", label="就绪", detail="")
@@ -1652,14 +1787,13 @@ class Controller:
                 state = "partial"
             else:
                 state = "failed"
-        if (state in ("stopped", "failed") and err and err.get("message", "").startswith("无法启动")
-                and not any_running):
-            state = "conflict"
         external, ext_ports, ext_reason = [], {}, ""
+        port_issues = [cs["port_issue"] for cs in managed if cs.get("port_issue")]
         if state in ("stopped", "failed", "conflict") and not any_running and not op:
-            ext = external = self.external_instances(p, ps, fresh=False)
+            listen = procs.tcp_listeners() if listen is None else listen
+            ext = external = self.external_instances(p, ps, fresh=False, listen=listen)
             if ext:
-                adopt, ext_ports = self._adoptable(p, ext)
+                adopt, ext_ports = self._adoptable(p, ext, listen)
                 desc = "；".join(f"{e['name']}" + (f"（项目 {e['managed_project']}）" if e.get("managed_project") else "")
                                  + f" pid {e['pid']}" + (f"，端口 {'/'.join(map(str, e['ports']))}" if e["ports"] else "")
                                  + f"（{e['cmd']}）" for e in ext)
@@ -1670,6 +1804,10 @@ class Controller:
                             f"pid {e['pid']}" + (f" 端口 {'/'.join(map(str, e['ports']))}" if e["ports"] else "") for e in mine))
                 if adopt:
                     state = "external"
+                    for cid, actual in ext_ports.items():
+                        owned = {pid for e in ext if e["component"] == cid for pid in e["tree"]}
+                        comp_map[cid]["upstream_host"] = ports.loopback_host(
+                            listen, actual, owned, ports.target_host(p.component(cid), p.open))
                     pending = self.store.proj(p.id).get("takeover_pending")
                     ext_reason = (f"由其他程序启动，正在运行：{desc}。可直接打开；"
                                   + ("有活动任务，空闲后自动接管" if pending else "点「接管」改由本工具管理（会停止该实例）"))
@@ -1677,8 +1815,13 @@ class Controller:
                         err = None
                 else:
                     state = "conflict"
+                    port_issues.extend(self._external_port_issues(p, ext))
                     ext_reason = ("检测到非本工具启动的实例，" + ("但未通过就绪检查" if all(e["same_project"] for e in ext)
                                                        else "且不是本项目的进程，本工具不会停止它") + "：" + desc)
+        historical_port = err and err.get("port_issue")
+        if (historical_port and state == "failed" and historical_port["kind"] not in ("not_listening", "occupied")
+                and not any(issue["component"] == historical_port["component"] for issue in port_issues)):
+            port_issues.append(historical_port)
         problems = []
         for cs in managed:
             if intent == "running" and cs["state"] not in ("ready",):
@@ -1692,10 +1835,14 @@ class Controller:
             problems.append(f"{g['name']}：{g['label']}")
         if op and op.get("detail"):
             reason = op["detail"]
-        elif err:
-            reason = err["message"]
         elif ext_reason:
             reason = ext_reason
+        elif historical_port and historical_port["kind"] == "occupied" and not port_issues:
+            reason = "端口已释放，可以重试"
+        elif err and state == "stopped" and self.store.proj(p.id).get("intent_by") == "conflict":
+            reason = "外部实例已退出，可以重试"
+        elif err:
+            reason = err["message"]
         elif problems and state in ("partial", "failed"):
             reason = "；".join(problems)
 
@@ -1711,6 +1858,9 @@ class Controller:
                 code["label"] = "已同步（热更新）" if all(s["label"].startswith("已同步（热") for s in code_states) else "已同步"
             starts = [cs["started_at"] for cs in managed if cs.get("started_at")]
             code["process_started"] = min(starts) if starts else None
+        repair = ports.repair_action(p, port_issues) if not op and state in ("conflict", "failed", "partial") else None
+        if repair == "auto" and any_running:
+            repair = "prompt"
         base.update({
             "state": state, "label": STATE_LABELS[state], "intent": intent,
             "intent_by": self.store.proj(p.id).get("intent_by"),
@@ -1719,6 +1869,8 @@ class Controller:
             "can_open": bool(ad.open_url()) and state in ("available", "partial", "external"),
             "can_takeover": bool(external) and all(e["same_project"] for e in external),
             "external_ports": ext_ports,
+            "port_issues": port_issues,
+            "port_repair": repair,
             "managed_by": "localservices",
         })
         if p.uses_docker():
@@ -1736,9 +1888,9 @@ class Controller:
         finally:
             self._refresh_lock.release()
 
-    def _status_safe(self, p: Project, ps: dict) -> dict:
+    def _status_safe(self, p: Project, ps: dict, listen: dict | None) -> dict:
         try:
-            return self.project_status(p, ps)
+            return self.project_status(p, ps, listen=listen)
         except Exception as e:  # noqa: BLE001
             return {"id": p.id, "name": p.name, "state": "unknown", "label": "未知", "reason": f"状态探测失败：{e}",
                     "components": [], "code": {"state": "unknown", "label": "未知"}, "source": str(p.source),
@@ -1750,7 +1902,11 @@ class Controller:
         self.reload()
         ps = procs.snapshot()
         projects = list(self.projects.values())
-        out = list(self._pool.map(lambda p: self._status_safe(p, ps), projects))
+        try:
+            listen = procs.tcp_listeners() if any(not p.observe_only for p in projects) else {}
+        except (OSError, subprocess.SubprocessError):
+            listen = None  # Per-service status will report an observation failure if retry also fails.
+        out = list(self._pool.map(lambda p: self._status_safe(p, ps, listen), projects))
         system = []
         if self.fsevents.get("ok") is False:
             system.append(self.fsevents["detail"])

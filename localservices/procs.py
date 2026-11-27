@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+import shutil
 import socket
 import subprocess
 import time
@@ -62,7 +64,7 @@ def looks_like_docker_proxy(cmd: str) -> bool:
 
 
 def all_cwds() -> dict[int, str]:
-    r = subprocess.run(["lsof", "-nP", "-w", "-d", "cwd", "-Fpn"], capture_output=True, text=True, timeout=20)
+    r = subprocess.run([shutil.which("lsof") or "/usr/sbin/lsof", "-nP", "-w", "-d", "cwd", "-Fpn"], capture_output=True, text=True, timeout=20)
     out: dict[int, str] = {}
     pid = None
     for line in r.stdout.splitlines():
@@ -73,27 +75,81 @@ def all_cwds() -> dict[int, str]:
     return out
 
 
-def listeners() -> dict[int, int]:
-    """port -> pid for TCP listeners."""
-    r = subprocess.run(["lsof", "-nP", "-w", "-iTCP", "-sTCP:LISTEN", "-Fpn"], capture_output=True, text=True, timeout=20)
-    out: dict[int, int] = {}
-    pid = None
-    for line in r.stdout.splitlines():
+@dataclass(frozen=True)
+class TCPListener:
+    pid: int
+    address: str
+    family: str = "IPv4"
+
+
+def tcp_listeners() -> dict[int, list[TCPListener]]:
+    """Snapshot TCP listeners by port, retaining every address, family and owner."""
+    result = subprocess.run([shutil.which("lsof") or "/usr/sbin/lsof", "-nP", "-w", "-iTCP", "-sTCP:LISTEN", "-Fpftn"],
+                            capture_output=True, text=True, timeout=3)
+    if result.returncode > 1 or (result.returncode == 1 and result.stderr):
+        raise OSError("无法读取本机 TCP 监听")
+    out: dict[int, list[TCPListener]] = {}
+    pid, family = None, ""
+    for line in result.stdout.splitlines():
         if line.startswith("p"):
             pid = int(line[1:])
+        elif line.startswith("f"):
+            family = ""
+        elif line.startswith("t"):
+            family = line[1:]
         elif line.startswith("n") and pid is not None:
-            try:
-                port = int(line.rsplit(":", 1)[1])
-            except (IndexError, ValueError):
+            address, _, port = line[1:].rpartition(":")
+            if not port.isdigit():
                 continue
-            out.setdefault(port, pid)
+            listener = TCPListener(pid, address.strip("[]"), family)
+            rows = out.setdefault(int(port), [])
+            if listener not in rows:
+                rows.append(listener)
     return out
+
+
+def listeners() -> dict[int, int]:
+    """Compatibility view for callers that only need one listener per port."""
+    return {port: rows[0].pid for port, rows in tcp_listeners().items()}
+
+
+def matching_listeners(listen: dict[int, list[TCPListener]], host: str, port: int) -> list[TCPListener]:
+    """Find listeners that can serve the target address, including dual-stack wildcards."""
+    rows = listen.get(port, [])
+    if host == "localhost":
+        return list(dict.fromkeys(matching_listeners(listen, "127.0.0.1", port)
+                                  + matching_listeners(listen, "::1", port)))
+    try:
+        target = ipaddress.ip_address(host)
+    except ValueError:
+        return list(rows)  # A hostname outside localhost gives no reliable bind address.
+    matches, ipv6_wildcards = [], []
+    for row in rows:
+        if row.address == "*":
+            if target.version == 4 and row.family == "IPv6":
+                ipv6_wildcards.append(row)
+            elif row.family == f"IPv{target.version}":
+                matches.append(row)
+            continue
+        try:
+            address = ipaddress.ip_address(row.address)
+        except ValueError:
+            continue
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        if address == target or (address.is_unspecified and address.version == target.version):
+            matches.append(row)
+        elif isinstance(address, ipaddress.IPv6Address) and address.is_unspecified and target.version == 4:
+            ipv6_wildcards.append(row)
+    if not matches and ipv6_wildcards and target.is_loopback and tcp_ok(f"{target}:{port}", 0.1):
+        return ipv6_wildcards
+    return matches
 
 
 def tcp_ok(hostport: str, timeout: float = 1.0) -> bool:
     host, port = hostport.rsplit(":", 1)
     try:
-        with socket.create_connection((host, int(port)), timeout=timeout):
+        with socket.create_connection((host.strip("[]"), int(port)), timeout=timeout):
             return True
     except OSError:
         return False
@@ -129,12 +185,14 @@ def http_get(url: str, timeout: float = 2.0, headers: dict | None = None,
 
 def probe(p, timeout: float | None = None) -> tuple[bool, str]:
     """Run a manifest Probe. Returns (ok, detail)."""
-    t = timeout or p.timeout
-    if p.tcp:
-        ok = tcp_ok(p.tcp, t)
-        return ok, "" if ok else f"无法连接 {p.tcp}"
+    deadline = time.monotonic() + (timeout if timeout is not None else p.timeout)
+    if p.tcp and not tcp_ok(p.tcp, max(0, deadline - time.monotonic())):
+        return False, f"无法连接 {p.tcp}"
     if p.http:
-        code, body, err = http_get(p.http, t)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, "HTTP 探针超时"
+        code, body, err = http_get(p.http, remaining)
         if code == 0:
             return False, f"无法连接：{err}"
         if code >= 400:

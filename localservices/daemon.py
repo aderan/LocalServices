@@ -350,9 +350,9 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 sid = m.group(1)
                 res = register_api.handle_service_repair(sid, body, self.ctl)
-                if res[1].get("ok"):
+                if res[1].get("action") == "updated":
                     self.ctl.errors.pop(sid, None)
-                self._registry_changed(res[1])
+                    self._registry_changed(res[1])
                 self._send(*res)
                 return
             if u.path == "/api/projects":

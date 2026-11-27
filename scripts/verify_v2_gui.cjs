@@ -137,7 +137,7 @@ const dispatchKey = (key, target) => {
     fn({key, target: target || null, preventDefault() {}, stopPropagation() {}});
 };
 
-const runner = new Function(script + "\n; return {render, api, refresh, removeDir, viewProject, wizField, wizNewTask, wizSelectTask, wizardTarget, wizRegister, wizPoll, wizPrefetchDiff, wizTryCandidatePorts, applyAgentRepair, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
+const runner = new Function(script + "\n; return {render, api, refresh, removeDir, viewProject, wizField, wizNewTask, wizSelectTask, wizardTarget, wizRegister, wizPoll, wizPrefetchDiff, wizTryCandidatePorts, repairPort, showModal, modalOpen, uiLocked, toggleMenu, closeMenu, menuItems, serviceMenuItems, lifecycleMenuItems, askRemoveService, askProjectRemove, disambiguateIds, wizAcceptNew, candPayload, toggleAutostart, editService, editedPaths, serviceEditedPaths, candidateEditedPaths, editField, editComp, editPayload, editFullService, editStateGet: () => editState, isComposeCand, effectiveProvision, wizConfirmProvision, wizBindDependency, wizLoadResources, loadResources, viewAll, detailsHtml, domainChip, renderHealth, viewSettings, viewNewProject, draftCards, serviceRow, toggleDetail, getLocoveData: () => locoveData, snapGet: () => snap, setOpen: o => {Object.assign(open, o);}, setLocoveData: d => {locoveData = d;}, setViewRaw: v => {view = v;}, regGet: () => registry, viewRemoved, loadRemoved, restoreService, restoreProject, setWiz: w => {wiz = w;}, wizGet: () => wiz, getModalState: () => modalState, getMenuState: () => menuState, getRequests: () => requests, setRegistry: r => {registry = r;}, setSnap: s => {snap = s;}, setResourcesData: d => {resourcesData = d;}, replaceMain, domPath, findByDomPath, showServiceReason, lsDiagnose: window.lsDiagnose, logReading};");
 const page = runner();
 const out = [];
 const SECTIONS = [];
@@ -829,42 +829,46 @@ section("verified registration");
   } finally { page.setWiz(oldWizard); }
 }
 
-section("port repair confirmation");
+section("port repair actions");
 {
-  const oldWizard = page.wizGet();
   const originalFetch = globalThis.fetch;
-  const oldPort = 48229, newPort = 48230;
-  const current = {id: "web", port: oldPort, cmd: ["npm", "run", "dev", "--", "--port", String(oldPort)]};
-  const proposed = {...current, port: newPort, cmd: [...current.cmd.slice(0, -1), String(newPort)]};
-  const sid = "repair-fixture";
-  const job = {state: "done", result: {services: [{id: sid, components: [proposed]}]}};
+  const originalSnap = page.snapGet();
+  const sid = "gui-port-repair";
+  const issue = {kind: "occupied", component: "web", host: "127.0.0.1", port: 48229};
+  const fixture = {id: sid, name: "Repair fixture", state: "conflict", intent: "stopped",
+    components: [{id: "web", name: "Web", kind: "server", port: issue.port}],
+    port_repair: "auto", port_issues: [issue]};
   const calls = [];
-  const wizard = {
-    step: "job", name: "Repair fixture", dir: srcA, agent: "codex", project: {id: sid},
-    candidates: [], unresolved: [], repair: {sid, revision: 1, definition: {components: [current]}},
-  };
+  const installSnap = value => page.setSnap({...originalSnap, projects: [...originalSnap.projects, value]});
   globalThis.fetch = async (url, options) => {
-    if (url === "/api/jobs/repair-fixture") return {ok: true, status: 200, json: async () => job};
-    if (url === "/api/services/repair-fixture/repair") {
-      calls.push(JSON.parse(options.body));
-      return {ok: true, status: 200, json: async () => ({ok: true})};
+    if (url === `/api/services/${sid}/repair`) {
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      return {ok: true, status: 200, json: async () => body.mode === "auto"
+        ? {ok: true, started: true, port: 48230}
+        : {ok: true, prompt: "请在项目目录修复端口 48229"}};
     }
     return originalFetch(url, options);
   };
   try {
-    page.setWiz(wizard);
-    await page.wizPoll(wizard, sid);
-    const preview = page.viewNewProject();
-    check("端口修复先展示差异，未确认不提交",
-          calls.length === 0 && preview.includes("确认并试启动") && preview.includes("48229 → 48230")
-          && preview.includes("当前命令") && preview.includes("建议命令"));
-    await page.applyAgentRepair(wizard);
-    check("确认后提交已展示的端口与命令",
-          calls.length === 1 && calls[0].revision === 1
-          && JSON.stringify(calls[0].component) === JSON.stringify(proposed));
+    const failure = { ...fixture, state: "failed", port_repair: null, port_issues: [] };
+    check("普通启动失败不显示端口修复", !page.detailsHtml(failure).includes('data-act="port-repair"'));
+    installSnap(fixture);
+    check("确认的端口冲突提供一键验证入口", page.detailsHtml(fixture).includes("换端口并验证"));
+    await page.repairPort(sid, "auto");
+    check("一键修复提交当前组件和冲突端口",
+          JSON.stringify(calls[0]) === JSON.stringify({mode: "auto", component: "web", port: 48229}));
+    const manual = {...fixture, port_repair: "prompt"};
+    installSnap(manual);
+    check("项目配置问题显示提示词入口", page.detailsHtml(manual).includes("复制项目修复提示词"));
+    await page.repairPort(sid, "prompt");
+    const modal = page.getModalState();
+    check("提示词可选中复制", calls[1]?.mode === "prompt" &&
+          modal?.overlay?.children[0]?.children[1]?.innerHTML.includes("请在项目目录修复端口 48229"));
+    if (modal) for (const listener of [...keyHandlers]) listener({key: "Escape", preventDefault() {}, stopPropagation() {}});
   } finally {
     globalThis.fetch = originalFetch;
-    page.setWiz(oldWizard);
+    page.setSnap(originalSnap);
   }
 }
 
@@ -892,6 +896,7 @@ section("registration review port conflict");
     await page.wizPrefetchDiff(0);
     const recommended = wizard.diffs[0]?.port_conflicts?.[0]?.suggested_port;
     const preview = page.viewNewProject();
+    check("候选冲突提供项目修复提示词", preview.includes("复制项目修复提示词"));
     check("候选端口冲突显示登记预留、推荐和手动试启动", recommended &&
           preview.includes("登记预留") && preview.includes("review-port-owner.web") &&
           preview.includes(`用 ${recommended} 试启动`) && preview.includes("手动端口试启动"));

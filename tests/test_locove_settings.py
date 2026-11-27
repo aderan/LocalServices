@@ -151,7 +151,7 @@ class OpenGatingTest(SettingsEnv):
         ji = SimpleNamespace(running=False, loaded=False, pid=None, last_exit=None)
         with patch("localservices.controller.launchd.info", return_value=ji), \
              patch("localservices.controller.procs.snapshot", return_value={}), \
-             patch("localservices.controller.procs.listeners", return_value={}), \
+             patch("localservices.controller.procs.tcp_listeners", return_value={}), \
              patch("localservices.controller.procs.probe", return_value=(False, "")), \
              patch("localservices.controller.procs.all_cwds", return_value={}), \
              patch.object(ctl, "domain_settings", return_value=settings), \

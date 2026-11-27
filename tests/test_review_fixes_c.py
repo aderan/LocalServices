@@ -167,6 +167,9 @@ class DefinitionEndpointShapeTest(unittest.TestCase):
         cls.src = root / "src"
         cls.src.mkdir()
         cls.port = free_port()
+        cls.service_port = free_port()
+        while cls.service_port == cls.port:
+            cls.service_port = free_port()
         env = dict(os.environ,
                    LOCALSERVICES_HOME=str(cls.home),
                    LOCALSERVICES_SERVICES=str(cls.services),
@@ -207,13 +210,13 @@ class DefinitionEndpointShapeTest(unittest.TestCase):
             "directories": [{"path": str(cls.src), "role": "source"}],
             "service": {
                 "id": "def-svc", "name": "Def", "description": "d",
-                "open": f"http://127.0.0.1:{cls.port}/",
+                "open": f"http://127.0.0.1:{cls.service_port}/",
                 "source": str(cls.src),
                 "evidence": {"agent": "none", "summary": "definition shape fixture"},
                 "components": [
                     {"id": "api", "kind": "server", "name": "api",
-                     "cmd": ["/bin/sleep", "100"], "cwd": ".", "port": cls.port,
-                     "ready": {"http": f"http://127.0.0.1:{cls.port}/"},
+                     "cmd": ["/bin/sleep", "100"], "cwd": ".", "port": cls.service_port,
+                     "ready": {"http": f"http://127.0.0.1:{cls.service_port}/"},
                      "env": {"NODE_ENV": "prod"}, "build": ["make", "build"],
                      "install": ["npm", "ci"], "after": ["worker"]},
                     {"id": "worker", "kind": "worker", "name": "worker",
@@ -270,7 +273,7 @@ class DefinitionEndpointShapeTest(unittest.TestCase):
         # 本地 server：cmd/port/ready/env/build/install/after 全保留
         api = comps["api"]
         self.assertEqual(api["cmd"], ["/bin/sleep", "100"])
-        self.assertEqual(api["port"], self.port)
+        self.assertEqual(api["port"], self.service_port)
         self.assertEqual(api["env"], {"NODE_ENV": "prod"})
         self.assertEqual(api["build"], ["make", "build"])
         self.assertEqual(api["install"], ["npm", "ci"])

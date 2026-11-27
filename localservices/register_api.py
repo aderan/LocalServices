@@ -11,15 +11,18 @@ from __future__ import annotations
 import copy
 import json
 import os
+import subprocess
+import tempfile
 import threading
 import time
 import tomllib
 import uuid
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import dockerctx, manifest, paths, procs, trial
+from . import dockerctx, manifest, paths, ports, procs, trial
 from .controller import redact
-from .registry import ID_RE, Registry, RegistryError, dumps_toml
+from .registry import ID_RE, SERVICE_KEYS, Registry, RegistryError, dumps_toml
 
 _trial_lock = threading.Lock()
 
@@ -42,7 +45,8 @@ def _register_status(res: dict) -> tuple[int, dict]:
 
 # ---------------------------------------------------------------- 注册
 
-def _verified_register(body: dict, ctl, repair_sid: str | None = None) -> tuple[int, dict]:
+def _verified_register(body: dict, ctl, repair_sid: str | None = None, *,
+                       original: bytes | None = None) -> tuple[int, dict]:
     """Capture, trial and compare the effective manifest before committing."""
     if not _trial_lock.acquire(blocking=False):
         return 409, {"ok": False, "error": "已有服务正在试启动，请稍后重试"}
@@ -52,18 +56,19 @@ def _verified_register(body: dict, ctl, repair_sid: str | None = None) -> tuple[
         def capture(action, definition, existing):
             nonlocal expected
             if repair_sid:
-                if action != "updated" or existing is None or existing.id != repair_sid:
+                if (action != "updated" or existing is None or existing.id != repair_sid
+                        or (original is not None and existing.file.read_bytes() != original)):
                     raise RegistryError("修复目标已变更，请重新识别", status=409)
-                _check_repair_target(ctl, repair_sid)
             elif action != "created":
-                raise RegistryError("已有登记，请使用服务的 Agent 修复入口")
+                raise RegistryError("已有登记，请使用服务的端口修复入口")
             effective = {key: value for key, value in definition.items() if key != "registered"}
             if expected is None:
                 expected = copy.deepcopy(effective)
             elif expected != effective:
                 raise RegistryError("试启动期间定义已变更，请重新验证", status=409)
 
-        listeners = procs.listeners() if body.get("review_ports") or body.get("port_changes") else None
+        listeners = (procs.tcp_listeners()
+                     if repair_sid or body.get("review_ports") or body.get("port_changes") else None)
         preview = _registry.register_service(body, dry_run=True, trial=capture, listeners=listeners)
         if not preview.get("ok") or expected is None:
             return _register_status(preview)
@@ -72,16 +77,45 @@ def _verified_register(body: dict, ctl, repair_sid: str | None = None) -> tuple[
         record = log_dir / f'{preview["service_id"]}.trial-{uuid.uuid4().hex[:12]}.log'
         fd = os.open(record, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(fd)
-        report = trial.run(dumps_toml(expected).encode(), record, repair=bool(repair_sid))
-        if report["state"] == "passed":
-            result = _registry.register_service(body, trial=capture)
+        candidate = dumps_toml(expected).encode()
+
+        def commit():
+            return _registry.register_service(body, trial=capture)
+
+        if original is not None:
+            with tempfile.TemporaryDirectory(prefix="locove-port-repair-") as tmp:
+                staged = Path(tmp) / "service.toml"
+                staged.write_bytes(candidate)
+                service = manifest.load_file(staged)
+                components = service.managed_components()
+                try:
+                    deadline = ctl.ops[repair_sid]["deadline"]
+                    trial.validate(service, components, repair=True, deadline=deadline)
+                    result = ctl.verify_port_repair(service, commit)
+                except (OSError, subprocess.SubprocessError, ValueError) as error:
+                    result = {"ok": False, "error": redact(str(error))}
+                checks = [{"component": comp.id, "port": comp.port} for comp in components] if result.get("started") else []
+                report = {"state": "passed" if result.get("started") else "failed", "checks": checks}
+                if result.get("port_issue"):
+                    report["port_issue"] = result.pop("port_issue")
         else:
-            result = {"ok": False, "error": report["error"]}
+            report = trial.run(candidate, record, repair=bool(repair_sid))
+            if report["state"] == "passed":
+                if repair_sid:
+                    _check_repair_target(ctl, repair_sid)
+                result = commit()
+            else:
+                result = {"ok": False, "error": report["error"]}
         report.update(log=str(record), at=time.time(), registration=result.get("action", "failed"))
         if result.get("error"):
             report["error"] = redact(result["error"])
-        with record.open("a", encoding="utf-8") as stream:
-            stream.write(redact(json.dumps(report, ensure_ascii=False)) + "\n")
+            if not repair_sid and report.get("port_issue"):
+                result["prompt"] = ports.project_prompt(expected["source"], preview["service_id"], [report["port_issue"]])
+        try:
+            with record.open("a", encoding="utf-8") as stream:
+                stream.write(redact(json.dumps(report, ensure_ascii=False)) + "\n")
+        except OSError as error:
+            report["log_error"] = redact(str(error))
         return _register_status({**result, "trial": report})
     finally:
         _trial_lock.release()
@@ -103,6 +137,8 @@ def handle_service_repair(sid: str, body: dict, ctl) -> tuple[int, dict]:
     try:
         if not isinstance(body, dict):
             raise RegistryError("缺少修复参数")
+        if body.get("mode") in ("auto", "prompt"):
+            return _repair_from_evidence(sid, body, ctl)
         _check_repair_target(ctl, sid)
         current = manifest.load_all().get(sid)
         if current is None:
@@ -140,6 +176,88 @@ def handle_service_repair(sid: str, body: dict, ctl) -> tuple[int, dict]:
         return _fail(error)
 
 
+def _repair_from_evidence(sid: str, body: dict, ctl) -> tuple[int, dict]:
+    if ctl is None:
+        raise RegistryError("控制服务不可用", status=503)
+    ctl.reload()
+    current = ctl.projects.get(sid)
+    if current is None:
+        raise RegistryError("未找到服务", status=404)
+    status = ctl.project_status(current)
+    issues = [dict(item) for item in status.get("port_issues", []) if item["kind"] != "not_listening"]
+    if not issues:
+        raise RegistryError("当前没有可修复的端口问题，请重新检查服务状态", status=409)
+    settings = ctl.domain_settings()
+    occupied = set(procs.tcp_listeners()) | ports.control_ports(settings)
+    occupied.update(c.port for p in ctl.projects.values() for c in p.managed_components() if c.port)
+    for issue in issues:
+        suggested = ports.suggest(issue["port"], occupied)
+        issue["suggested_port"] = suggested
+        if suggested:
+            occupied.add(suggested)
+    prompt = ports.project_prompt(str(current.source), sid, issues)
+    if body["mode"] == "prompt":
+        return 200, {"ok": True, "prompt": prompt, "port_issues": issues}
+    if status.get("port_repair") != "auto":
+        raise RegistryError("端口需要在项目配置中修改", status=409, prompt=prompt, port_issues=issues)
+    _check_repair_target(ctl, sid)
+    issue = issues[0]
+    port = issue["suggested_port"]
+    if not port:
+        raise RegistryError("没有找到可用的候选端口", status=409, prompt=prompt)
+    if body.get("component") not in (None, issue["component"]) or body.get("port") not in (None, issue["port"]):
+        raise RegistryError("端口问题已变化，请重新检查服务状态", status=409)
+    code, definition = handle_service_definition(sid)
+    if code != 200:
+        return code, definition
+    revision = definition["revision"]
+    if not revision or body.get("revision", revision["revision"]) != revision["revision"]:
+        raise RegistryError("revision conflict", status=409)
+    # Read all the existing fields from disk so the repair changes only the port configuration.
+    original = current.file.read_bytes()
+    raw = tomllib.loads(original.decode("utf-8"))
+    service = {key: value for key, value in raw.items() if key in SERVICE_KEYS}
+    metadata = raw.get("registered") or {}
+    service["evidence"] = {"agent": metadata.get("agent"), "summary": metadata.get("evidence_summary", "")}
+    if len(service.get("components", [])) != 1:
+        raise RegistryError("登记已变化，请重新检查端口", status=409)
+    component = service["components"][0]
+    configured = current.component(issue["component"])
+    strategy = ports.repair_strategy(current, configured)
+    if (strategy is None or component["id"] != configured.id or component.get("port") != configured.port
+            or component.get("cmd") != configured.cmd or component.get("env", {}) != configured.env):
+        raise RegistryError("登记已变化，请重新检查端口", status=409)
+    mode, index = strategy
+    command = list(configured.cmd)
+    if mode != "env":
+        command[index] = f"--port={port}" if mode == "cmd_inline" else str(port)
+    update_open = bool(service.get("open")) and trial.local_url(service["open"])[1] == configured.port
+    service["edited"] = _apply_port_change(service, component, port, command if mode != "env" else None, update_open)
+    if mode == "env":
+        component["env"]["PORT"] = str(port)
+        service["edited"].append(f"components[{configured.id}].env.PORT")
+
+    with ctl.lock:
+        if ctl.projects.get(sid) is not current or not ctl._begin(sid, "repairing", budget=ctl._startup_budget(current)):
+            raise RegistryError("服务状态已变化，请重新检查端口", status=409)
+    try:
+        code, result = _verified_register({"schemaVersion": 1, "revision": revision["revision"],
+                                           "project": {"id": revision["id"]}, "service": service,
+                                           "by": "gui"}, ctl, repair_sid=sid, original=original)
+    finally:
+        ctl._end(sid)
+    if result.get("ok"):
+        if body.get("open") is True:
+            try:
+                result["opening"] = ctl.open(sid, sync_routes=True)
+            except (OSError, ValueError) as error:
+                result["opening"] = {"ok": False, "error": redact(str(error))}
+        return code, {**result, "port": port, "previous_port": issue["port"]}
+    prompt = ports.project_prompt(str(current.source), sid, issues,
+                                  rejected_port=port if result.get("trial") else None)
+    return code, {**result, "prompt": prompt, "port_issues": issues}
+
+
 def _with_port(url: str, port: int) -> str:
     host, _ = trial.local_url(url)
     parts = urlsplit(url)
@@ -147,11 +265,14 @@ def _with_port(url: str, port: int) -> str:
     return urlunsplit(parts._replace(netloc=f"{host}:{port}"))
 
 
-def _apply_port_change(service: dict, component: dict, port: int, cmd: list[str],
+def _apply_port_change(service: dict, component: dict, port: int, cmd: list[str] | None,
                        update_open: bool) -> list[str]:
-    component.update(cmd=cmd, port=port)
+    component["port"] = port
     prefix = f'components[{component["id"]}]'
-    changes = [f"{prefix}.cmd", f"{prefix}.port"]
+    changes = [f"{prefix}.port"]
+    if cmd is not None:
+        component["cmd"] = cmd
+        changes.append(f"{prefix}.cmd")
     ready = component.get("ready")
     if isinstance(ready, dict):
         if isinstance(ready.get("http"), str) and ready["http"]:
@@ -271,7 +392,7 @@ def handle_register(body: dict, ctl) -> tuple[int, dict]:
                         return 409, {"ok": False, "error": "请先停止服务，再更换 Docker 运行环境"}
         if body.get("verify_start") is True and not body.get("dry_run"):
             return _verified_register(body, ctl)
-        listeners = procs.listeners() if body.get("review_ports") else None
+        listeners = procs.tcp_listeners() if body.get("review_ports") else None
         return _register_status(_registry.register_service(
             body, dry_run=bool(body.get("dry_run")), listeners=listeners))
     except ValueError as e:

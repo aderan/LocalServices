@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import ipaddress
 import os
 import signal
@@ -11,7 +12,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import manifest, procs
+from . import manifest, ports, procs
 from .controller import Controller, STARTUP_TIMEOUT as START_TIMEOUT, tail
 
 
@@ -19,7 +20,7 @@ def local_address(host: str | None) -> bool:
     if host == "localhost":
         return True
     try:
-        return ipaddress.ip_address(host).is_loopback
+        return ipaddress.ip_address((host or "").strip("[]")).is_loopback
     except ValueError:
         return False
 
@@ -66,23 +67,35 @@ def validate(project: manifest.Project, components: list[manifest.Component],
             raise ValueError(f"必要依赖 {dep.name} 未就绪")
 
 
-def wait_ready(process: subprocess.Popen, port: int, probe: manifest.Probe, deadline: float) -> None:
+class PortError(ValueError):
+    def __init__(self, issue: dict):
+        self.issue = issue
+        super().__init__(ports.describe(issue))
+
+
+def wait_ready(process: subprocess.Popen, project: manifest.Project, component: manifest.Component,
+               probe: manifest.Probe, deadline: float) -> None:
     detail = "等待进程监听端口"
+    issue = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise ValueError(f"试启动进程已退出（{process.returncode}）")
-        listener = procs.listeners().get(port)
-        if listener is not None:
-            if listener not in procs.descendants(process.pid, procs.snapshot()):
-                raise ValueError(f"端口 {port} 由其他进程监听")
+        issue = ports.readiness(project, component, process.pid, procs.snapshot(), procs.tcp_listeners())
+        if issue and issue["kind"] == "occupied":
+            raise PortError(issue)
+        if issue is None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             ok, detail = procs.probe(probe, min(probe.timeout, remaining))
             if ok and process.poll() is None:
-                return
-        time.sleep(.1)
-    raise ValueError(f"端口 {port} 试启动超时：{detail}")
+                issue = ports.readiness(project, component, process.pid, procs.snapshot(), procs.tcp_listeners())
+                if issue is None and time.monotonic() < deadline:
+                    return
+        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+    if issue:
+        raise PortError(issue)
+    raise ValueError(f"端口 {component.port} 试启动超时：{detail}")
 
 
 def run(definition: bytes, record: Path, *, repair: bool = False) -> dict:
@@ -90,6 +103,7 @@ def run(definition: bytes, record: Path, *, repair: bool = False) -> dict:
     processes = []
     logs = []
     checks = []
+    comp = None
     with tempfile.TemporaryDirectory(prefix="ls-trial-") as tmp:
         try:
             config = Path(tmp) / "service.toml"
@@ -98,10 +112,12 @@ def run(definition: bytes, record: Path, *, repair: bool = False) -> dict:
             components = Controller._order(project)
             deadline = time.monotonic() + START_TIMEOUT
             validate(project, components, repair, deadline)
-            occupied = procs.listeners()
+            occupied = procs.tcp_listeners()
             for comp in components:
-                if comp.port in occupied or procs.tcp_ok(f"127.0.0.1:{comp.port}", .15):
-                    raise ValueError(f"端口 {comp.port} 已被占用")
+                for host in ports.target_hosts(comp, project.open):
+                    matching = procs.matching_listeners(occupied, host, comp.port)
+                    if matching:
+                        raise PortError(ports.occupancy(comp.id, host, comp.port, matching))
             for comp in components:
                 if time.monotonic() >= deadline:
                     raise ValueError("已达到试启动时限")
@@ -113,19 +129,28 @@ def run(definition: bytes, record: Path, *, repair: bool = False) -> dict:
                                                stdin=subprocess.DEVNULL, stdout=stream,
                                                stderr=stream, start_new_session=True)
                 processes.append(process)
-                probe = comp.ready or manifest.Probe(tcp=f"127.0.0.1:{comp.port}")
-                wait_ready(process, comp.port, probe, min(deadline, time.monotonic() + comp.start_timeout))
+                host = ports.target_host(comp, project.open)
+                probe = comp.ready or manifest.Probe(tcp=f"{host}:{comp.port}")
+                wait_ready(process, project, comp, probe, min(deadline, time.monotonic() + comp.start_timeout))
                 checks.append({"component": comp.id, "port": comp.port})
             if project.open:
                 _, port = local_url(project.open)
                 index = next(i for i, comp in enumerate(components) if comp.port == port)
-                wait_ready(processes[index], port, manifest.Probe(http=project.open), deadline)
+                comp = components[index]
+                entry = manifest.Probe(http=project.open)
+                wait_ready(processes[index], project, dataclasses.replace(comp, ready=entry), entry, deadline)
             if any(process.poll() is not None for process in processes):
                 raise ValueError("试启动组件在验证完成前退出")
             result = {"state": "passed", "checks": checks,
                       "skipped": [g.id for g in project.generators()]}
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             result = {"state": "failed", "error": str(error), "checks": checks}
+            if isinstance(error, PortError):
+                result["port_issue"] = error.issue
+            elif comp is not None and logs and logs[-1].stem == comp.id:
+                issue = ports.bind_failure(project, comp, tail(logs[-1], 20))
+                if issue:
+                    result["port_issue"] = issue
         finally:
             for process in reversed(processes):
                 try:

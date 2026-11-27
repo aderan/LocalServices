@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from localservices import locove, manifest, overrides, register_api  # noqa: E402
+from localservices import locove, manifest, overrides, procs, register_api  # noqa: E402
 from localservices.controller import Controller  # noqa: E402
 from localservices.registry import Registry, RegistryError  # noqa: E402
 
@@ -225,7 +225,7 @@ open_path = "/zh"
         ji = SimpleNamespace(running=False, loaded=False, pid=None, last_exit=None)
         return [patch("localservices.controller.launchd.info", return_value=ji),
                 patch("localservices.controller.procs.snapshot", return_value={}),
-                patch("localservices.controller.procs.listeners", return_value={}),
+                patch("localservices.controller.procs.tcp_listeners", return_value={}),
                 patch("localservices.controller.procs.probe", return_value=(False, "")),
                 patch("localservices.controller.procs.all_cwds", return_value={})]
 
@@ -261,11 +261,14 @@ open_path = "/zh"
 
         with (
             patch.object(ctl, "domain_settings", return_value=settings),
-            patch.object(ctl, "conflicts", return_value=[]),
             patch.object(ctl, "_bootstrap", side_effect=bootstrap),
             patch("localservices.controller.launchd.info", return_value=job),
             patch("localservices.controller.procs.snapshot", return_value={}),
-            patch("localservices.controller.procs.listeners", return_value={}),
+            patch("localservices.controller.procs.tcp_listeners", side_effect=lambda: {
+                48801: [procs.TCPListener(job.pid, "127.0.0.1")]
+            } if job.running else {}),
+            patch("localservices.controller.procs.probe", return_value=(True, "")),
+            patch("localservices.controller.procs.all_cwds", return_value={}),
             patch("localservices.locove.module_status", return_value={"state": "available"}),
             patch("localservices.locove._caddy_control_enabled", return_value=True),
             patch("localservices.locove._port_open", return_value=True),

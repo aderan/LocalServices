@@ -80,7 +80,10 @@ class ComposeBase(unittest.TestCase):
             row = next((r for r in self.ps_rows if r.get("Names") == name), None)
             if row is None:
                 return ns(rc=1, stderr="no such container")
-            return ns(stdout=json.dumps(row.get("_state", {"Running": row.get("State") == "running"})))
+            state = row.get("_state", {"Running": row.get("State") == "running"})
+            if ".NetworkSettings.Ports" in args[-2]:
+                state = {"state": state, "ports": row.get("_ports")}
+            return ns(stdout=json.dumps(state))
         if args[0] == "start":
             for r in self.ps_rows:
                 if r.get("Names") == args[1]:
@@ -260,6 +263,13 @@ class StateAndLogsTest(ComposeBase):
         st = compose.component_state(self.project, self.component)
         self.assertEqual((st["state"], st["health"]), ("running", "starting"))
 
+    def test_component_state_includes_tcp_publishings_when_port_is_declared(self):
+        self.component.port = 49111
+        container = self.add_container("demo-web-1")
+        container["_ports"] = {"80/tcp": [{"HostIp": "127.0.0.1", "HostPort": "49111"}]}
+        self.assertEqual(compose.component_state(self.project, self.component)["published_ports"],
+                         container["_ports"])
+
     def test_logs_uses_docker_logs_tail(self):
         self.add_container("demo-web-1")
         out = compose.logs(self.project, self.component, lines=50)
@@ -347,7 +357,9 @@ class ControllerComposeTest(unittest.TestCase):
             patch.object(compose, "logs", side_effect=compose_logs),
             patch.object(self.ctl.infrastructure, "ensure"),
             patch.object(procs, "snapshot", return_value={}),
-            patch.object(procs, "listeners", return_value={}),
+            patch.object(procs, "tcp_listeners", side_effect=lambda: {
+                49001: [procs.TCPListener(42, "127.0.0.1")]
+            } if self.state["loaded"] else {}),
             patch.object(procs, "all_cwds", return_value={}),
             patch.object(procs, "probe", return_value=(True, "")),
         ]
@@ -381,6 +393,17 @@ class ControllerComposeTest(unittest.TestCase):
         self.assertEqual(db["state"], "ready")
         self.assertIn("容器已在运行", db["detail"])
         self.assertIn("无需接管", db["detail"])
+
+    def test_healthy_container_publishing_a_different_port_is_not_ready(self):
+        component = self.p.component("db")
+        component.port = 49201
+        self.compose_state["published_ports"] = {"5432/tcp": [{"HostIp": "127.0.0.1", "HostPort": "49202"}]}
+        self.ctl.set_intent_direct("mixed", "running")
+        status = self.ctl.project_status(self.p)
+        db = next(c for c in status["components"] if c["id"] == "db")
+        self.assertEqual(db["state"], "unhealthy")
+        self.assertEqual(status["port_issues"][0]["actual_ports"], [49202])
+        self.assertEqual(status["port_repair"], "prompt")
 
     def test_compose_readiness_falls_back_to_probe_without_health(self):
         self.compose_state.update(health=None)
